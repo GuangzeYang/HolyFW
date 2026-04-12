@@ -1,0 +1,18 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Logs
+logs/
+**/logs/
+*.log
+
+# Task data files
+commander/role_task/tasks_*.json
+**/tasks_*.json
