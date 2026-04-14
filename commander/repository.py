@@ -11,6 +11,11 @@ from filelock import FileLock
 
 from common import load_json_file, parse_task_ref, save_json_atomic, tasks_path
 
+try:
+    from domain import apply_report_transition, move_to_waiting
+except ImportError:
+    from commander.domain import apply_report_transition, move_to_waiting
+
 
 class DailyTaskRepository:
     """Repository for daily task file reads/writes with file locking."""
@@ -120,7 +125,12 @@ class DailyTaskRepository:
             matched["task_id"] = task_id
             if task_text:
                 matched["task"] = task_text
-            matched["status"] = "waiting"
+            allowed, next_status = move_to_waiting(matched.get("status"))
+            if not allowed:
+                raise ValueError(
+                    f"Invalid status transition to waiting for role={role}, task_id={task_id}"
+                )
+            matched["status"] = next_status
             matched["issued_at"] = issued
             matched["expiry_time"] = expiry_time
             save_json_atomic(path, data)
@@ -156,7 +166,17 @@ class DailyTaskRepository:
             found = False
             for item in tasks:
                 if isinstance(item, dict) and item.get("task_id") == task_id:
-                    item["status"] = status
+                    allowed, next_status = apply_report_transition(item.get("status"), status)
+                    if not allowed:
+                        current_status = item.get("status")
+                        return {
+                            "ok": False,
+                            "error": (
+                                f"Invalid status transition for task {task_id}: "
+                                f"{current_status} -> {status}"
+                            ),
+                        }
+                    item["status"] = next_status
                     item["completed_at"] = datetime.now(timezone.utc).isoformat()
                     if message is not None:
                         item["report_message"] = message

@@ -7,11 +7,21 @@ HolyFramework/
 ├── common.py                    # 共享函数库
 ├── domain_resource.md          # 共享领域资源文档
 ├── commander/                  # commander端（可独立部署）
-│   ├── commander.py           # 主服务（含TCP监听+定时扫描）
-│   ├── dispatch.py            # 任务分发器
-│   ├── generate_role_task.py  # 任务生成脚本
+│   ├── commander.py           # 主服务入口（TCP监听+装配）
+│   ├── dispatch.py            # 手动任务分发入口
+│   ├── repository.py          # 任务文件仓储层
+│   ├── role_file_service.py   # 任务文件生成/修复服务
+│   ├── scanner_service.py     # 扫描应用服务
+│   ├── policies.py            # 任务选择策略
+│   ├── domain.py              # 状态迁移规则
+│   ├── dispatch_client.py     # 分发适配器
+│   ├── logging_setup.py       # 日志初始化
+│   ├── target_config.py       # 目标配置读取
+│   ├── generate_role_task.py  # 独立任务生成脚本
 │   ├── commander.ini          # commander配置
 │   ├── README.md              # 使用文档
+│   ├── ARCHITECTURE.md        # 架构图与模块依赖说明
+│   ├── DEVELOPER_ONBOARDING.md # 开发者上手清单
 │   ├── role_task/            # 统一任务目录（tasks_MM-DD.json）
 │   └── logs/                  # commander日志
 ├── soldier/                   # soldier端（可独立部署）
@@ -24,6 +34,9 @@ HolyFramework/
 ```
 
 ## 新功能：自动任务生成与分发
+
+Commander 详细架构图与模块依赖说明见 `commander/ARCHITECTURE.md`。
+开发者快速上手见 `commander/DEVELOPER_ONBOARDING.md`。
 
 ### 新增特性
 
@@ -113,7 +126,6 @@ python dispatch.py --target=hr --command='opencode run "使用Exchange查看邮�
       "is_load": false,
       "task": "使用Exchange查看邮件",
       "task_id": "hex_uuid",
-      "description": "任务描述",
       "status": "waiting|successed|failed",
       "issued_at": "ISO时间戳",
       "expiry_time": "ISO时间戳",
@@ -127,6 +139,8 @@ python dispatch.py --target=hr --command='opencode run "使用Exchange查看邮�
   "developer": [...]
 }
 ```
+
+说明：任务文本字段统一使用 `task`，不再使用 `description`。
 
 ## 错误处理
 

@@ -16,19 +16,17 @@ import json
 import socket
 import threading
 import time
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
-from common import (
-    build_role_task_prompt,
-    extract_json_object,
-    normalize_role_tasks,
-    validate_role_tasks,
-)
+from dispatch_client import DispatchClient
+from logging_setup import configure_daily_logging
+from policies import EarliestPendingSelectionPolicy
 from repository import DailyTaskRepository
+from role_file_service import RoleTaskFileService
+from scanner_service import TaskScanService
 import logging
-import logging.handlers
 
 DEFAULT_PORT = 38471
 MAX_LINE_BYTES = 65536
@@ -145,353 +143,37 @@ class TaskScanner:
     def __init__(self, repository: DailyTaskRepository):
         self.repository = repository
         self.data_dir = repository.data_dir
+        self.dispatch_client = DispatchClient(Path(__file__).resolve().parent / "dispatch.py")
         self.role_pointers = {}  # {"hr": 0, "finance": 0, ...}
         self.last_date = None
         self.roles = ("hr", "finance", "ceo", "developer")
+        self.role_file_service = RoleTaskFileService(self.data_dir, self.roles)
+        self.selection_policy = EarliestPendingSelectionPolicy()
+        self.scan_service = TaskScanService(
+            repository=self.repository,
+            selection_policy=self.selection_policy,
+            dispatch_task=self.dispatch_client.dispatch,
+        )
     
     def _get_role_task_file(self) -> Path:
         """Return path to unified daily tasks file tasks_MM-DD.json."""
-        return self.repository.day_path(date.today().isoformat())
+        return self.role_file_service.get_today_role_task_file()
     
     def _ensure_role_file(self, role_file: Path) -> bool:
         """Ensure unified role task file exists, generate if missing."""
-        if role_file.exists():
-            try:
-                with open(role_file, encoding="utf-8") as f:
-                    data = json.load(f)
-                # Validate structure
-                if not isinstance(data, dict):
-                    logging.warning(f"Role file {role_file} is not a dict")
-                    return False
-
-                has_runtime_fields = False
-                for tasks in data.values():
-                    if not isinstance(tasks, list):
-                        continue
-                    for item in tasks:
-                        if not isinstance(item, dict):
-                            continue
-                        status_value = item.get("status")
-                        task_id_value = item.get("task_id")
-                        issued_value = item.get("issued_at")
-                        if (
-                            status_value in {"waiting", "successed", "failed"}
-                            or bool(task_id_value)
-                            or bool(issued_value)
-                        ):
-                            has_runtime_fields = True
-                            break
-                    if has_runtime_fields:
-                        break
-
-                # Do not normalize live task files to avoid overwriting runtime state.
-                if has_runtime_fields:
-                    missing_roles: list[str] = []
-                    schema_updated = False
-                    for role in self.roles:
-                        tasks = data.get(role)
-                        if not isinstance(tasks, list):
-                            data[role] = []
-                            missing_roles.append(role)
-                            schema_updated = True
-                            continue
-
-                        for item in tasks:
-                            if not isinstance(item, dict):
-                                continue
-                            if "description" in item:
-                                del item["description"]
-                                schema_updated = True
-                            base_desc = item.get("task") if isinstance(item.get("task"), str) else ""
-                            defaults = {
-                                "time": "",
-                                "is_load": False,
-                                "task": base_desc,
-                                "task_id": "",
-                                "status": "planned",
-                                "issued_at": "",
-                                "expiry_time": "",
-                                "completed_at": "",
-                                "report_message": "",
-                                "exit_code": None,
-                                "stdout": "",
-                                "stderr": "",
-                            }
-                            for key, value in defaults.items():
-                                if key not in item:
-                                    item[key] = value
-                                    schema_updated = True
-                    if missing_roles:
-                        logging.warning(
-                            f"Role file {role_file} missing role lists {missing_roles}; auto-filled as empty lists"
-                        )
-                    if schema_updated:
-                        with open(role_file, "w", encoding="utf-8") as f:
-                            json.dump(data, f, ensure_ascii=False, indent=2)
-                        logging.info(f"Role file {role_file} runtime schema auto-backfilled")
-                    logging.info(f"Role file {role_file} exists and contains runtime fields")
-                    return True
-
-                valid, reason = validate_role_tasks(
-                    data,
-                    min_tasks_per_role=18,
-                    min_non_five_ratio=0.8,
-                )
-                if not valid:
-                    logging.warning(f"Role file {role_file} quality check failed: {reason}")
-                    normalized = normalize_role_tasks(data, min_tasks_per_role=18)
-                    valid_after_fix, reason_after_fix = validate_role_tasks(
-                        normalized,
-                        min_tasks_per_role=18,
-                        min_non_five_ratio=0.8,
-                    )
-                    if not valid_after_fix:
-                        logging.warning(
-                            f"Failed to normalize role file {role_file}: {reason_after_fix}"
-                        )
-                        return False
-                    with open(role_file, "w", encoding="utf-8") as f:
-                        json.dump(normalized, f, ensure_ascii=False, indent=2)
-                    logging.info(f"Role file {role_file} was normalized and repaired")
-                logging.info(f"Role file {role_file} exists and is valid")
-                return True
-            except (json.JSONDecodeError, OSError) as e:
-                logging.warning(f"Role file {role_file} is corrupted: {e}")
-                pass
-        
-        # Generate new unified role tasks
-        logging.info(f"Generating new role task file: {role_file}")
-        return self._generate_role_tasks(role_file)
+        return self.role_file_service.ensure_role_file(role_file)
     
     def _generate_role_tasks(self, role_file: Path) -> bool:
         """Generate role tasks using opencode CLI."""
-        try:
-            import subprocess
-            # Read domain resource as context
-            domain_resource_path = Path(__file__).resolve().parent.parent / "domain_resource.md"
-            domain_context = ""
-            if domain_resource_path.exists():
-                with open(domain_resource_path, encoding="utf-8") as f:
-                    domain_context = f.read()
-                logging.info(f"Read domain resource from {domain_resource_path}")
-            else:
-                logging.warning(f"Domain resource not found: {domain_resource_path}")
-            min_tasks_per_role = 18
-            max_attempts = 3
-            opencode_timeout_sec = 180
-            prompt = build_role_task_prompt(domain_context, min_tasks_per_role=min_tasks_per_role)
-            
-            # Try different opencode paths
-            import platform
-            opencode_paths = ["opencode"]  # First try PATH
-            
-            # Add platform-specific paths
-            system = platform.system()
-            if system == "Windows":
-                opencode_paths.extend([
-                    "C:\\Users\\21276\\AppData\\Roaming\\npm\\opencode",
-                    "C:\\Users\\21276\\AppData\\Roaming\\npm\\opencode.cmd",
-                    os.path.expanduser("~\\AppData\\Roaming\\npm\\opencode"),
-                    os.path.expanduser("~\\AppData\\Roaming\\npm\\opencode.cmd")
-                ])
-            elif system == "Linux":
-                opencode_paths.extend([
-                    "/usr/local/bin/opencode",
-                    "/usr/bin/opencode",
-                    os.path.expanduser("~/.npm/bin/opencode"),
-                    os.path.expanduser("~/.local/bin/opencode")
-                ])
-
-            saw_timeout = False
-            saw_nonzero_exit = False
-            saw_missing_binary = False
-
-            for attempt in range(1, max_attempts + 1):
-                logging.info(f"Role task generation attempt {attempt}/{max_attempts}")
-                for cmd in opencode_paths:
-                    try:
-                        logging.info(f"Trying opencode at: {cmd}")
-                        result = subprocess.run(
-                            [cmd, "run", prompt],
-                            capture_output=True,
-                            text=True,
-                            timeout=opencode_timeout_sec,
-                            shell=False
-                        )
-                        if result.returncode != 0:
-                            saw_nonzero_exit = True
-                            logging.warning(f"opencode at {cmd} failed with exit code {result.returncode}")
-                            continue
-
-                        parsed = extract_json_object(result.stdout)
-                        if parsed is None:
-                            logging.error(f"No JSON found in opencode response from {cmd}")
-                            logging.error(f"stdout (first 500 chars): {result.stdout[:500]}")
-                            continue
-
-                        data = normalize_role_tasks(parsed, min_tasks_per_role=min_tasks_per_role)
-                        valid, reason = validate_role_tasks(
-                            data,
-                            min_tasks_per_role=min_tasks_per_role,
-                            min_non_five_ratio=0.8,
-                        )
-                        if not valid:
-                            logging.warning(f"Generated role tasks failed quality checks: {reason}")
-                            continue
-
-                        with open(role_file, "w", encoding="utf-8") as f:
-                            json.dump(data, f, ensure_ascii=False, indent=2)
-                        logging.info(f"Successfully generated role tasks file: {role_file} using {cmd}")
-                        return True
-                    except subprocess.TimeoutExpired:
-                        saw_timeout = True
-                        logging.warning(
-                            f"opencode at {cmd} timed out after {opencode_timeout_sec}s"
-                        )
-                        continue
-                    except FileNotFoundError:
-                        saw_missing_binary = True
-                        logging.debug(f"opencode not found at: {cmd}")
-                        continue
-                    except Exception as e:
-                        logging.warning(f"Error running opencode at {cmd}: {e}")
-                        continue
-
-            if saw_timeout:
-                logging.error(
-                    f"opencode execution timed out after {opencode_timeout_sec}s. "
-                    "Consider increasing timeout or reducing prompt complexity."
-                )
-            elif saw_nonzero_exit:
-                logging.error("opencode returned non-zero exit code for all attempts")
-            elif saw_missing_binary:
-                logging.error(f"Could not find opencode binary. Tried paths: {opencode_paths}")
-            else:
-                logging.error(f"Could not execute opencode. Tried paths: {opencode_paths}")
-
-            # Fallback: keep service available with local synthetic tasks.
-            fallback_data = normalize_role_tasks({}, min_tasks_per_role=min_tasks_per_role)
-            valid, reason = validate_role_tasks(
-                fallback_data,
-                min_tasks_per_role=min_tasks_per_role,
-                min_non_five_ratio=0.8,
-            )
-            if not valid:
-                logging.error(f"Fallback task generation failed validation: {reason}")
-                return False
-            with open(role_file, "w", encoding="utf-8") as f:
-                json.dump(fallback_data, f, ensure_ascii=False, indent=2)
-            logging.warning("Generated fallback unified tasks because opencode output was unusable")
-            return True
-        except Exception as e:
-            logging.error(f"Exception in _generate_role_tasks: {e}")
-            return False
+        return self.role_file_service.generate_role_tasks(role_file)
     
     def _load_role_tasks(self, role_file: Path) -> dict:
         """Load role tasks from file."""
-        try:
-            with open(role_file, encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            logging.error(f"Failed to load role tasks from {role_file}: {e}")
-            return {}
+        return self.role_file_service.load_role_tasks(role_file)
     
     def _save_role_tasks(self, role_file: Path, data: dict) -> None:
         """Save role tasks to file."""
-        try:
-            with open(role_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            logging.debug(f"Saved role tasks to {role_file}")
-        except OSError as e:
-            logging.error(f"Failed to save role tasks to {role_file}: {e}")
-    
-    def _has_waiting_task(self, role: str) -> bool:
-        """Check if role has waiting tasks in tasks_MM-DD.json."""
-        return self.repository.has_active_waiting_task(role, date.today().isoformat())
-    
-    def _parse_task_datetime(self, task_time_str: str, now: datetime) -> datetime | None:
-        """Parse task HH:MM time into a datetime for today."""
-        if not isinstance(task_time_str, str) or ":" not in task_time_str:
-            return None
-        try:
-            hour, minute = map(int, task_time_str.split(":", 1))
-            return datetime(now.year, now.month, now.day, hour, minute)
-        except (ValueError, AttributeError):
-            return None
-
-    def _needs_dispatch(self, task: dict[str, Any]) -> bool:
-        """Whether a task still needs to be dispatched."""
-        if not isinstance(task, dict):
-            return False
-        if not task.get("is_load", False):
-            return True
-        if task.get("task_id"):
-            return False
-        status = task.get("status")
-        return status in (None, "", "planned")
-
-    def _find_next_pending_index(self, tasks: list, start_index: int = 0) -> int | None:
-        """Find next task index that still needs dispatch from start_index."""
-        for idx in range(max(0, start_index), len(tasks)):
-            task = tasks[idx]
-            if isinstance(task, dict) and self._needs_dispatch(task):
-                return idx
-        return None
-
-    def _ensure_pointer(self, role_name: str, tasks: list) -> int:
-        """Ensure role pointer exists and is valid."""
-        pointer = self.role_pointers.get(role_name)
-        if not isinstance(pointer, int) or pointer < 0 or pointer >= len(tasks):
-            next_idx = self._find_next_pending_index(tasks, 0)
-            pointer = len(tasks) if next_idx is None else next_idx
-            self.role_pointers[role_name] = pointer
-        return pointer
-
-    def _move_pointer_after_success(self, role_name: str, tasks: list, current_index: int) -> int:
-        """Move pointer to next pending task after successful dispatch."""
-        next_idx = self._find_next_pending_index(tasks, current_index + 1)
-        pointer = len(tasks) if next_idx is None else next_idx
-        self.role_pointers[role_name] = pointer
-        return pointer
-    
-    def _dispatch_task(self, role: str, task_text: str, task_time: str | None = None) -> bool:
-        """Dispatch task to soldier via dispatch.py."""
-        try:
-            import subprocess
-            import sys
-            # Build command for soldier: opencode run with task description
-            command = f'opencode run "{task_text}"'
-            
-            # Call dispatch.py with appropriate arguments
-            dispatch_script = Path(__file__).resolve().parent / "dispatch.py"
-            args = [
-                sys.executable,
-                str(dispatch_script),
-                "--target", role,
-                "--command", command,
-                "--task", task_text,
-            ]
-            if task_time:
-                args.extend(["--planned-time", task_time])
-
-            result = subprocess.run(
-                args,
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            if result.returncode != 0:
-                stderr_text = (result.stderr or "").strip()
-                stdout_text = (result.stdout or "").strip()
-                logging.error(
-                    f"dispatch.py failed for role={role}, returncode={result.returncode}, "
-                    f"stderr={stderr_text[:300]}, stdout={stdout_text[:300]}"
-                )
-                return False
-            return True
-        except Exception as e:
-            logging.error(f"Exception when dispatching task for role={role}: {e}")
-            return False
+        self.role_file_service.save_role_tasks(role_file, data)
     
     def _scan_one_cycle(self):
         """One scan cycle: check and dispatch tasks."""
@@ -511,64 +193,13 @@ class TaskScanner:
         # Load tasks
         tasks_by_role = self._load_role_tasks(role_file)
         logging.debug(f"Loaded tasks for {len(tasks_by_role)} roles")
-        
-        # Process each role
-        for role_key in self.roles:
-            tasks = tasks_by_role.get(role_key)
-            if not isinstance(tasks, list) or not tasks:
-                continue
 
-            pointer = self._ensure_pointer(role_key, tasks)
-            if pointer >= len(tasks):
-                continue
-
-            while pointer < len(tasks):
-                # Waiting only blocks current role, not others.
-                if self._has_waiting_task(role_key):
-                    logging.debug(f"Role {role_key} has waiting task, pausing pointer at index {pointer}")
-                    break
-
-                task = tasks[pointer]
-                if not isinstance(task, dict):
-                    logging.warning(f"Invalid task format at {role_key}[{pointer}], skipping")
-                    pointer += 1
-                    self.role_pointers[role_key] = pointer
-                    continue
-
-                now = datetime.now()
-                task_time_raw = task.get("time")
-                task_time = self._parse_task_datetime(task_time_raw if isinstance(task_time_raw, str) else "", now)
-                if task_time is None:
-                    logging.warning(f"Invalid task time for {role_key}[{pointer}], skipping")
-                    task["is_load"] = True
-                    self._save_role_tasks(role_file, tasks_by_role)
-                    pointer += 1
-                    self.role_pointers[role_key] = pointer
-                    continue
-
-                # Keep earliest pending task; do not skip historical tasks.
-                if task_time > now:
-                    break
-
-                task_text = task.get("task", "")
-                truncated = task_text[:50] + "..." if task_text and len(task_text) > 50 else task_text
-
-                # Rule: reading task marks is_load=True before dispatch.
-                if not task.get("is_load", False):
-                    task["is_load"] = True
-                    self._save_role_tasks(role_file, tasks_by_role)
-                    logging.info(f"Marked task loaded for {role_key}[{pointer}]: {task.get('time')} - {truncated}")
-
-                logging.info(f"Dispatching task for {role_key}[{pointer}]: {task.get('time')} - {truncated}")
-                success = self._dispatch_task(role_key, task_text, task.get("time"))
-                if success:
-                    logging.info(f"Successfully dispatched task for {role_key}[{pointer}]")
-                    pointer = self._move_pointer_after_success(role_key, tasks, pointer)
-                    continue
-
-                # Rule: on dispatch failure, keep pointer unchanged for retry.
-                logging.error(f"Failed to dispatch task for {role_key}[{pointer}], pointer unchanged")
-                break
+        self.scan_service.process_roles(
+            tasks_by_role=tasks_by_role,
+            roles=self.roles,
+            role_pointers=self.role_pointers,
+            save_role_tasks=lambda data: self._save_role_tasks(role_file, data),
+        )
     
     def start(self):
         """Start scanning thread."""
@@ -612,39 +243,26 @@ def serve(host: str, port: int, data_dir: Path) -> None:
         sock.close()
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description="Task completion receipt service")
-    p.add_argument("--host", default="0.0.0.0", help="listen address")
-    p.add_argument("--port", type=int, default=DEFAULT_PORT, help="listen port")
-    p.add_argument(
+def build_parser() -> argparse.ArgumentParser:
+    """Build CLI parser for commander service."""
+    parser = argparse.ArgumentParser(description="Task completion receipt service")
+    parser.add_argument("--host", default="0.0.0.0", help="listen address")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="listen port")
+    parser.add_argument(
         "--data-dir",
         type=Path,
         default=Path(__file__).resolve().parent / "role_task",
         help="tasks_MM-DD.json directory (default: role_task/ under script directory)",
     )
-    args = p.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     
     logs_dir = Path(__file__).resolve().parent / "logs"
-    logs_dir.mkdir(exist_ok=True)
-    log_file = logs_dir / f"commander_{date.today().isoformat()}.log"
-    
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    file_handler = logging.handlers.TimedRotatingFileHandler(
-        log_file, when='midnight', interval=1, backupCount=7, encoding='utf-8'
-    )
-    file_handler.setLevel(logging.INFO)
-    
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    console_handler.setFormatter(formatter)
-    file_handler.setFormatter(formatter)
-    
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
-    
+    log_file = configure_daily_logging(logs_dir, "commander")
+
     logging.info(f"Starting commander, logs: {log_file}")
     serve(args.host, args.port, args.data_dir)
 
