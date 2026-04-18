@@ -8,10 +8,10 @@ from datetime import date, datetime
 from typing import Any, Callable
 
 try:
-    from policies import PendingSelectionPolicy
+    from policies import PendingSelectionPolicy, task_needs_dispatch
     from repository import DailyTaskRepository
 except ImportError:
-    from commander.policies import PendingSelectionPolicy
+    from commander.policies import PendingSelectionPolicy, task_needs_dispatch
     from commander.repository import DailyTaskRepository
 
 
@@ -43,10 +43,15 @@ class TaskScanService:
             tasks: list[dict[str, Any]] = tasks_any
 
             pointer = self._ensure_pointer(role_key, tasks, role_pointers)
+            pointer = self._rewind_pointer_if_earlier_pending(role_key, tasks, pointer, role_pointers)
             if pointer >= len(tasks):
                 continue
 
             while pointer < len(tasks):
+                pointer = self._rewind_pointer_if_earlier_pending(role_key, tasks, pointer, role_pointers)
+                if pointer >= len(tasks):
+                    break
+
                 if self.repository.has_active_waiting_task(role_key, date.today().isoformat()):
                     logging.debug(f"Role {role_key} has waiting task, pausing pointer at index {pointer}")
                     break
@@ -56,6 +61,10 @@ class TaskScanService:
                     logging.warning(f"Invalid task format at {role_key}[{pointer}], skipping")
                     pointer += 1
                     role_pointers[role_key] = pointer
+                    continue
+
+                if not task_needs_dispatch(task):
+                    pointer = self._move_pointer_after_success(role_key, tasks, pointer, role_pointers)
                     continue
 
                 now = datetime.now()
@@ -78,8 +87,10 @@ class TaskScanService:
                 truncated = task_text[:50] + "..." if task_text and len(task_text) > 50 else task_text
 
                 # Reading task marks is_load=True before dispatch.
+                marked_loaded = False
                 if not task.get("is_load", False):
                     task["is_load"] = True
+                    marked_loaded = True
                     save_role_tasks(tasks_by_role)
                     logging.info(
                         f"Marked task loaded for {role_key}[{pointer}]: {task.get('time')} - {truncated}"
@@ -93,6 +104,12 @@ class TaskScanService:
                     continue
 
                 # On dispatch failure, keep pointer unchanged for retry.
+                if marked_loaded:
+                    task["is_load"] = False
+                task["report_message"] = (
+                    f"Dispatch failed at {datetime.now().isoformat(timespec='seconds')}"
+                )
+                save_role_tasks(tasks_by_role)
                 logging.error(f"Failed to dispatch task for {role_key}[{pointer}], pointer unchanged")
                 break
 
@@ -115,6 +132,27 @@ class TaskScanService:
         if not isinstance(pointer, int) or pointer < 0 or pointer >= len(tasks):
             next_idx = self.selection_policy.find_next_pending_index(tasks, 0)
             pointer = len(tasks) if next_idx is None else next_idx
+            role_pointers[role_name] = pointer
+        return pointer
+
+    def _rewind_pointer_if_earlier_pending(
+        self,
+        role_name: str,
+        tasks: list[dict[str, Any]],
+        pointer: int,
+        role_pointers: dict[str, int],
+    ) -> int:
+        earliest_idx = self.selection_policy.find_next_pending_index(tasks, 0)
+        if earliest_idx is None:
+            pointer = len(tasks)
+            role_pointers[role_name] = pointer
+            return pointer
+
+        if earliest_idx < pointer:
+            logging.info(
+                f"Rewinding pointer for role {role_name}: {pointer} -> {earliest_idx}"
+            )
+            pointer = earliest_idx
             role_pointers[role_name] = pointer
         return pointer
 

@@ -8,6 +8,11 @@ import logging.handlers
 from datetime import date
 from pathlib import Path
 
+try:
+    import colorlog
+except ImportError:
+    colorlog = None
+
 
 def configure_daily_logging(
     logs_dir: Path,
@@ -46,9 +51,22 @@ def configure_daily_logging(
     )
     file_handler.setLevel(level)
 
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    console_handler.setFormatter(formatter)
-    file_handler.setFormatter(formatter)
+    plain_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    if colorlog is not None:
+        color_formatter = colorlog.ColoredFormatter(
+            "%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            log_colors={
+                "DEBUG": "cyan",
+                "INFO": "green",
+                "WARNING": "yellow",
+                "ERROR": "red",
+                "CRITICAL": "bold_red",
+            },
+        )
+        console_handler.setFormatter(color_formatter)
+    else:
+        console_handler.setFormatter(plain_formatter)
+    file_handler.setFormatter(plain_formatter)
 
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)

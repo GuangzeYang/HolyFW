@@ -90,11 +90,13 @@ python dispatch.py --target=hr --command='opencode run "使用Exchange查看邮�
 - 路径：`commander/logs/`
 - 文件：`commander_YYYY-MM-DD.log`、`dispatch_YYYY-MM-DD.log`
 - 轮转：每日轮转，保留 7 天
+- 控制台：按日志级别彩色显示（INFO/WARNING/ERROR）
+- 文件日志：保持无颜色纯文本，便于检索与分析
 
 ## 依赖
 
 ```bash
-pip install filelock>=3.13.0
+pip install filelock>=3.13.0 colorlog>=6.8.2
 ```
 
 并确保 `opencode` 可执行文件在 PATH 中。

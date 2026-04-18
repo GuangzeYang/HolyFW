@@ -25,6 +25,11 @@ from pathlib import Path
 import logging
 import logging.handlers
 
+try:
+    import colorlog
+except ImportError:
+    colorlog = None
+
 from common import (
     clean_old_files,
     validate_task_id,
@@ -40,6 +45,8 @@ DEFAULT_LISTEN_PORT = 38472
 DEFAULT_CONFIG_NAME = "soldier.ini"
 SUBPROCESS_TIMEOUT_DEFAULT = 3600
 MAX_LINE_BYTES = 65536
+OUTPUT_DIR_NAME = "output"
+LOG_BACKUP_COUNT = 7
 
 
 
@@ -68,6 +75,53 @@ def save_task_record(task_id: str, date_str: str, content: dict, received_at: st
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
     
     clean_old_files(script_dir, "received_task_*.jsonl", days=20)
+
+
+def _safe_received_at_for_filename(received_at: str) -> str:
+    try:
+        dt = datetime.fromisoformat(received_at.replace("Z", "+00:00"))
+    except ValueError:
+        dt = datetime.now(timezone.utc)
+    return dt.strftime("%Y%m%dT%H%M%S")
+
+
+def save_command_output(
+    task_id: str,
+    received_at: str,
+    task_ref: str,
+    command: str,
+    status: str,
+    exit_code: int,
+    stdout_text: str,
+    stderr_text: str,
+) -> Path:
+    script_dir = Path(__file__).resolve().parent
+    output_dir = script_dir / OUTPUT_DIR_NAME
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    file_name = f"{_safe_received_at_for_filename(received_at)}_{task_id}.txt"
+    file_path = output_dir / file_name
+
+    content = (
+        f"task_ref: {task_ref}\n"
+        f"task_id: {task_id}\n"
+        f"received_at: {received_at}\n"
+        f"status: {status}\n"
+        f"exit_code: {exit_code}\n"
+        f"command: {command}\n"
+        "\n"
+        "===== STDOUT =====\n"
+        f"{stdout_text}\n"
+        "\n"
+        "===== STDERR =====\n"
+        f"{stderr_text}\n"
+    )
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    clean_old_files(output_dir, "*.txt", days=20)
+    return file_path
 
 
 
@@ -387,6 +441,21 @@ def handle_dispatch_connection(
         if msg is not None:
             report["message"] = msg
 
+        try:
+            output_file = save_command_output(
+                task_id=task_id,
+                received_at=received_at,
+                task_ref=full_ref,
+                command=command,
+                status=status,
+                exit_code=exit_code,
+                stdout_text=out,
+                stderr_text=err_out,
+            )
+            logging.info(f"Command output saved to {output_file}")
+        except OSError as e:
+            logging.error(f"Failed to save command output for task {full_ref}: {e}")
+
         logging.info(f"Task {full_ref} executed, status={status}, exit_code={exit_code}")
         sresp, serr = send_report(commander_host, commander_port, report)
         if serr:
@@ -509,28 +578,52 @@ Default reads {DEFAULT_CONFIG_NAME} in same directory:
 
     args = parser.parse_args()
     
+    script_dir = Path(__file__).resolve().parent
     logs_dir = Path(__file__).resolve().parent / "logs"
-    logs_dir.mkdir(exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = script_dir / OUTPUT_DIR_NAME
+    output_dir.mkdir(parents=True, exist_ok=True)
     log_file = logs_dir / f"soldier_{date.today().isoformat()}.log"
     
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
+
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
     
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     file_handler = logging.handlers.TimedRotatingFileHandler(
-        log_file, when='midnight', interval=1, backupCount=7, encoding='utf-8'
+        log_file, when='midnight', interval=1, backupCount=LOG_BACKUP_COUNT, encoding='utf-8'
     )
     file_handler.setLevel(logging.INFO)
     
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    console_handler.setFormatter(formatter)
-    file_handler.setFormatter(formatter)
+    plain_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    if colorlog is not None:
+        color_formatter = colorlog.ColoredFormatter(
+            '%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            log_colors={
+                'DEBUG': 'cyan',
+                'INFO': 'green',
+                'WARNING': 'yellow',
+                'ERROR': 'red',
+                'CRITICAL': 'bold_red',
+            },
+        )
+        console_handler.setFormatter(color_formatter)
+    else:
+        console_handler.setFormatter(plain_formatter)
+    file_handler.setFormatter(plain_formatter)
     
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)
     
     logging.info(f"Soldier starting, logs: {log_file}")
+    logging.info(f"Command output directory: {output_dir}")
     
     cfg = args.config if getattr(args, "config", None) is not None else default_config_path()
 

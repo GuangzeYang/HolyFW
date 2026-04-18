@@ -96,6 +96,12 @@ timeout = 3600      # 命令超时时间 (秒)
 - **格式**：每行一个 JSON，包含 `task_id`、`content`、`received_at`
 - **清理**：自动清理 20 天前的记录
 
+### 5. 落盘命令输出
+每次任务执行都会将输出保存为单独 txt 文件，便于 commander 回报失败时本地排障：
+- **位置**：`output/`（位于 soldier.py 同级目录）
+- **命名**：`<任务到达时间>_<task_id>.txt`
+- **内容**：`task_ref`、`received_at`、`command`、`status`、`exit_code`、`stdout`、`stderr`
+
 ---
 
 ## 命令行参数
@@ -190,6 +196,8 @@ logs/soldier_YYYY-MM-DD.log
 ```
 - 每日轮转，保留 7 天
 - 包含连接、执行、报告等详细信息
+- 控制台日志按级别彩色显示（INFO/WARNING/ERROR）
+- 文件日志保持纯文本（不含颜色控制符）
 
 ---
 

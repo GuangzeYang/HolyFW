@@ -144,6 +144,7 @@ class RoleTaskFileService:
                             status_value in {"waiting", "successed", "failed"}
                             or bool(task_id_value)
                             or bool(issued_value)
+                            or bool(item.get("is_load", False))
                         ):
                             has_runtime_fields = True
                             break
@@ -154,6 +155,7 @@ class RoleTaskFileService:
                 if has_runtime_fields:
                     missing_roles: list[str] = []
                     schema_updated = False
+                    healed_stuck_tasks = 0
                     for role in self.roles:
                         tasks = data.get(role)
                         if not isinstance(tasks, list):
@@ -169,6 +171,17 @@ class RoleTaskFileService:
                                 del item["description"]
                                 schema_updated = True
                             base_desc = item.get("task") if isinstance(item.get("task"), str) else ""
+                            status_value = item.get("status")
+                            task_id_value = item.get("task_id")
+                            if (
+                                status_value == "planned"
+                                and not task_id_value
+                                and bool(item.get("is_load", False))
+                            ):
+                                item["is_load"] = False
+                                healed_stuck_tasks += 1
+                                schema_updated = True
+
                             defaults = {
                                 "time": "",
                                 "is_load": False,
@@ -190,6 +203,10 @@ class RoleTaskFileService:
                     if missing_roles:
                         logging.warning(
                             f"Role file {role_file} missing role lists {missing_roles}; auto-filled as empty lists"
+                        )
+                    if healed_stuck_tasks:
+                        logging.warning(
+                            f"Role file {role_file} healed {healed_stuck_tasks} stuck planned tasks with is_load=true"
                         )
                     if schema_updated:
                         with open(role_file, "w", encoding="utf-8") as f:
@@ -284,7 +301,11 @@ class RoleTaskFileService:
                             logging.error(f"stdout (first 500 chars): {result.stdout[:500]}")
                             continue
 
-                        data = normalize_role_tasks(parsed, min_tasks_per_role=min_tasks_per_role)
+                        data = normalize_role_tasks(
+                            parsed,
+                            min_tasks_per_role=min_tasks_per_role,
+                            roles=self.roles,
+                        )
                         valid, reason = validate_role_tasks(
                             data,
                             min_tasks_per_role=min_tasks_per_role,
