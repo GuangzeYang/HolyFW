@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -17,13 +16,70 @@ from common import (
     validate_role_tasks,
 )
 
+try:
+    from runtime_config import (
+        get_generator_config,
+        get_opencode_paths,
+        get_paths_config,
+        load_runtime_config,
+        resolve_config_relative_path,
+    )
+except ImportError:
+    from commander.runtime_config import (
+        get_generator_config,
+        get_opencode_paths,
+        get_paths_config,
+        load_runtime_config,
+        resolve_config_relative_path,
+    )
+
 
 class RoleTaskFileService:
     """Manage the daily unified role task file lifecycle."""
 
-    def __init__(self, data_dir: Path, roles: tuple[str, ...]):
+    def __init__(
+        self,
+        data_dir: Path,
+        roles: tuple[str, ...],
+        min_tasks_per_role: int | None = None,
+        min_non_five_ratio: float | None = None,
+        max_attempts: int | None = None,
+        opencode_timeout_sec: int | None = None,
+        opencode_paths: list[str] | None = None,
+        domain_resource_file: Path | None = None,
+    ):
+        if (
+            min_tasks_per_role is None
+            or min_non_five_ratio is None
+            or max_attempts is None
+            or opencode_timeout_sec is None
+            or opencode_paths is None
+            or domain_resource_file is None
+        ):
+            runtime_config = load_runtime_config()
+            generator_config = get_generator_config(runtime_config)
+            paths_config = get_paths_config(runtime_config)
+            if min_tasks_per_role is None:
+                min_tasks_per_role = generator_config["min_tasks_per_role"]
+            if min_non_five_ratio is None:
+                min_non_five_ratio = generator_config["min_non_five_ratio"]
+            if max_attempts is None:
+                max_attempts = generator_config["max_attempts"]
+            if opencode_timeout_sec is None:
+                opencode_timeout_sec = generator_config["opencode_timeout_seconds"]
+            if opencode_paths is None:
+                opencode_paths = get_opencode_paths(runtime_config)
+            if domain_resource_file is None:
+                domain_resource_file = resolve_config_relative_path(paths_config["domain_resource_file"])
+
         self.data_dir = data_dir
         self.roles = roles
+        self.min_tasks_per_role = min_tasks_per_role
+        self.min_non_five_ratio = min_non_five_ratio
+        self.max_attempts = max_attempts
+        self.opencode_timeout_sec = opencode_timeout_sec
+        self.opencode_paths = opencode_paths
+        self.domain_resource_file = domain_resource_file
 
     def get_today_role_task_file(self) -> Path:
         today = date.today().isoformat()
@@ -110,16 +166,16 @@ class RoleTaskFileService:
 
                 valid, reason = validate_role_tasks(
                     data,
-                    min_tasks_per_role=18,
-                    min_non_five_ratio=0.8,
+                    min_tasks_per_role=self.min_tasks_per_role,
+                    min_non_five_ratio=self.min_non_five_ratio,
                 )
                 if not valid:
                     logging.warning(f"Role file {role_file} quality check failed: {reason}")
-                    normalized = normalize_role_tasks(data, min_tasks_per_role=18)
+                    normalized = normalize_role_tasks(data, min_tasks_per_role=self.min_tasks_per_role)
                     valid_after_fix, reason_after_fix = validate_role_tasks(
                         normalized,
-                        min_tasks_per_role=18,
-                        min_non_five_ratio=0.8,
+                        min_tasks_per_role=self.min_tasks_per_role,
+                        min_non_five_ratio=self.min_non_five_ratio,
                     )
                     if not valid_after_fix:
                         logging.warning(
@@ -140,10 +196,9 @@ class RoleTaskFileService:
     def generate_role_tasks(self, role_file: Path) -> bool:
         """Generate role tasks using opencode CLI."""
         try:
-            import platform
             import subprocess
 
-            domain_resource_path = Path(__file__).resolve().parent.parent / "domain_resource.md"
+            domain_resource_path = self.domain_resource_file
             domain_context = ""
             if domain_resource_path.exists():
                 with open(domain_resource_path, encoding="utf-8") as f:
@@ -152,31 +207,11 @@ class RoleTaskFileService:
             else:
                 logging.warning(f"Domain resource not found: {domain_resource_path}")
 
-            min_tasks_per_role = 18
-            max_attempts = 3
-            opencode_timeout_sec = 180
+            min_tasks_per_role = self.min_tasks_per_role
+            max_attempts = self.max_attempts
+            opencode_timeout_sec = self.opencode_timeout_sec
             prompt = build_role_task_prompt(domain_context, min_tasks_per_role=min_tasks_per_role)
-
-            opencode_paths = ["opencode"]
-            system = platform.system()
-            if system == "Windows":
-                opencode_paths.extend(
-                    [
-                        "C:\\Users\\21276\\AppData\\Roaming\\npm\\opencode",
-                        "C:\\Users\\21276\\AppData\\Roaming\\npm\\opencode.cmd",
-                        os.path.expanduser("~\\AppData\\Roaming\\npm\\opencode"),
-                        os.path.expanduser("~\\AppData\\Roaming\\npm\\opencode.cmd"),
-                    ]
-                )
-            elif system == "Linux":
-                opencode_paths.extend(
-                    [
-                        "/usr/local/bin/opencode",
-                        "/usr/bin/opencode",
-                        os.path.expanduser("~/.npm/bin/opencode"),
-                        os.path.expanduser("~/.local/bin/opencode"),
-                    ]
-                )
+            opencode_paths = list(self.opencode_paths)
 
             saw_timeout = False
             saw_nonzero_exit = False
@@ -209,7 +244,7 @@ class RoleTaskFileService:
                         valid, reason = validate_role_tasks(
                             data,
                             min_tasks_per_role=min_tasks_per_role,
-                            min_non_five_ratio=0.8,
+                            min_non_five_ratio=self.min_non_five_ratio,
                         )
                         if not valid:
                             logging.warning(f"Generated role tasks failed quality checks: {reason}")
@@ -247,7 +282,7 @@ class RoleTaskFileService:
             valid, reason = validate_role_tasks(
                 fallback_data,
                 min_tasks_per_role=min_tasks_per_role,
-                min_non_five_ratio=0.8,
+                min_non_five_ratio=self.min_non_five_ratio,
             )
             if not valid:
                 logging.error(f"Fallback task generation failed validation: {reason}")

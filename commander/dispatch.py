@@ -20,7 +20,28 @@ import logging
 from common import validate_task_id
 from logging_setup import configure_daily_logging
 from repository import DailyTaskRepository
-from target_config import default_config_path, load_target_config
+from target_config import load_target_config
+
+try:
+    from runtime_config import (
+        get_dispatch_config,
+        get_logging_config,
+        get_paths_config,
+        get_scanner_config,
+        get_storage_config,
+        load_runtime_config,
+        resolve_config_relative_path,
+    )
+except ImportError:
+    from commander.runtime_config import (
+        get_dispatch_config,
+        get_logging_config,
+        get_paths_config,
+        get_scanner_config,
+        get_storage_config,
+        load_runtime_config,
+        resolve_config_relative_path,
+    )
 
 
 def has_waiting_tasks(repository: DailyTaskRepository, date_str: str, role: str) -> bool:
@@ -54,8 +75,11 @@ def send_to_soldier(
     command: str,
     task_date: str,
     planned_time: str | None = None,
-    timeout: float = 120.0,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
+    if timeout is None:
+        raise ValueError("send_to_soldier timeout must be provided")
+
     payload = {
         "task_ref": task_ref,
         "command": command,
@@ -79,8 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=Path(__file__).resolve().parent / "role_task",
-        help="tasks_MM-DD.json directory (default: role_task/ under script directory)",
+        default=None,
+        help="tasks_MM-DD.json directory (default from commander/config.json)",
     )
     parser.add_argument("--date", default=None, help="task date YYYY-MM-DD, default today (local)")
     parser.add_argument(
@@ -104,8 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--timeout-minutes",
         type=int,
-        default=10,
-        help="timeout for waiting tasks in minutes (default: 10)",
+        default=None,
+        help="timeout for waiting tasks in minutes (default from commander/config.json)",
     )
     parser.add_argument(
         "--config",
@@ -119,9 +143,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+
+    runtime_config = load_runtime_config()
+    dispatch_config = get_dispatch_config(runtime_config)
+    logging_config = get_logging_config(runtime_config)
+    scanner_config = get_scanner_config(runtime_config)
+    storage_config = get_storage_config(runtime_config)
+    paths_config = get_paths_config(runtime_config)
     
     # Determine config file path
-    cfg = args.config if args.config is not None else default_config_path()
+    cfg = args.config if args.config is not None else resolve_config_relative_path(paths_config["target_ini_file"])
     
     # Load target configuration
     try:
@@ -137,13 +168,23 @@ def main() -> int:
     # Normalize target to lowercase for role name (strict matching)
     target_role = args.target.lower()
     
-    logs_dir = Path(__file__).resolve().parent / "logs"
-    log_file = configure_daily_logging(logs_dir, "dispatch")
+    logs_dir = resolve_config_relative_path(paths_config["logs_dir"])
+    log_file = configure_daily_logging(
+        logs_dir,
+        "dispatch",
+        level_name=logging_config["level"],
+        backup_count=logging_config["backup_count"],
+        rotation_interval_days=logging_config["rotation_interval_days"],
+    )
 
     logging.info(f"Dispatch starting, logs: {log_file}")
 
-    data_dir = args.data_dir.resolve()
-    repository = DailyTaskRepository(data_dir)
+    data_dir = args.data_dir.resolve() if args.data_dir is not None else resolve_config_relative_path(scanner_config["data_dir"])
+    repository = DailyTaskRepository(
+        data_dir,
+        lock_timeout=storage_config["lock_timeout_seconds"],
+        max_store_text=storage_config["max_store_text"],
+    )
     if args.date:
         try:
             d = date.fromisoformat(args.date)
@@ -167,8 +208,10 @@ def main() -> int:
         logging.error(err)
         return 1
 
+    timeout_minutes = args.timeout_minutes if args.timeout_minutes is not None else dispatch_config["timeout_minutes"]
+
     expiry_time = (
-        datetime.now(timezone.utc) + timedelta(minutes=args.timeout_minutes)
+        datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
     ).isoformat()
 
     task_file = repository.day_path(date_str)
@@ -191,6 +234,7 @@ def main() -> int:
             args.command,
             date_str,
             args.planned_time,
+            timeout=dispatch_config["soldier_timeout_seconds"],
         )
     except OSError as e:
         logging.error(f"Dispatch failed: {e}")

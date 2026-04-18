@@ -37,6 +37,7 @@ HolyFramework/
 
 Commander 详细架构图与模块依赖说明见 `commander/ARCHITECTURE.md`。
 开发者快速上手见 `commander/DEVELOPER_ONBOARDING.md`。
+配置字段与覆盖规则见 `commander/CONFIG.md`。
 
 ### 新增特性
 
@@ -114,6 +115,45 @@ python dispatch.py --target=hr --command='opencode run "使用Exchange查看邮�
 3. **任务执行**：soldier接收任务并执行 `opencode run` 命令
 4. **状态报告**：soldier向commander报告执行结果
 5. **状态跟踪**：commander在同一文件内更新任务状态
+
+## 程序执行时序图
+
+```mermaid
+sequenceDiagram
+  participant U as Operator
+  participant C as commander.py
+  participant RFS as RoleTaskFileService
+  participant Scan as TaskScanService
+  participant Policy as EarliestPendingSelectionPolicy
+  participant DC as DispatchClient
+  participant D as dispatch.py
+  participant Repo as DailyTaskRepository
+  participant S as soldier.py
+
+  U->>C: 启动 commander
+  C->>RFS: ensure_role_file(今日任务文件)
+  alt 文件不存在或结构不合法
+    RFS->>RFS: generate_role_tasks / normalize
+  end
+
+  loop 每 60 秒
+    C->>RFS: load_role_tasks()
+    C->>Scan: process_roles(tasks_by_role, pointers)
+    Scan->>Policy: find_next_pending_index()
+    Scan->>Repo: has_active_waiting_task(role)
+
+    alt 角色可下发
+      Scan->>DC: dispatch(role, task, planned_time)
+      DC->>D: subprocess 调用 dispatch.py
+      D->>Repo: bind_dispatched_task(..., status=waiting)
+      D->>S: TCP 发送命令
+      S-->>C: 回报 task_ref + successed/failed
+      C->>Repo: update_task_report(...)
+    else 角色不可下发
+      Scan-->>C: 保持指针，等待下一轮
+    end
+  end
+```
 
 ## 任务文件格式
 

@@ -14,6 +14,29 @@ def default_config_path() -> Path:
     return Path(__file__).resolve().parent / DEFAULT_CONFIG_NAME
 
 
+def load_all_roles(config_path: Path) -> tuple[str, ...]:
+    """Load all INI section names as roles."""
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    cp = configparser.ConfigParser()
+    cp.read(config_path, encoding="utf-8")
+
+    roles: list[str] = []
+    seen: set[str] = set()
+    for section in cp.sections():
+        role = section.strip().lower()
+        if not role or role in seen:
+            continue
+        seen.add(role)
+        roles.append(role)
+
+    if not roles:
+        raise ValueError(f"No role sections found in config file {config_path}")
+
+    return tuple(roles)
+
+
 def load_target_config(config_path: Path, target: str) -> tuple[str, int]:
     """Load host and port for a role target from INI config file."""
     if not config_path.is_file():

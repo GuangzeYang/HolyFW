@@ -9,11 +9,20 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    from runtime_config import get_dispatch_config, load_runtime_config
+except ImportError:
+    from commander.runtime_config import get_dispatch_config, load_runtime_config
+
 
 class DispatchClient:
     """Subprocess-based dispatch adapter."""
 
-    def __init__(self, dispatch_script: Path, timeout_seconds: int = 30):
+    def __init__(self, dispatch_script: Path, timeout_seconds: int | None = None):
+        if timeout_seconds is None:
+            runtime_config = load_runtime_config()
+            dispatch_config = get_dispatch_config(runtime_config)
+            timeout_seconds = dispatch_config["client_timeout_seconds"]
         self.dispatch_script = dispatch_script
         self.timeout_seconds = timeout_seconds
 

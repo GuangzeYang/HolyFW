@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Runtime configuration loader for commander modules."""
+
+from __future__ import annotations
+
+import json
+import os
+import platform
+from pathlib import Path
+from typing import Any
+
+CONFIG_FILE_NAME = "config.json"
+
+
+def default_runtime_config_path() -> Path:
+    """Return the default config.json path under commander/."""
+    return Path(__file__).resolve().parent / CONFIG_FILE_NAME
+
+
+def resolve_config_relative_path(raw_path: str) -> Path:
+    """Resolve a config path string against commander/ when it is relative."""
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError("Path value must be a non-empty string")
+    expanded = Path(os.path.expanduser(raw_path.strip()))
+    if expanded.is_absolute():
+        return expanded.resolve()
+    return (Path(__file__).resolve().parent / expanded).resolve()
+
+
+def _dot_get(data: dict[str, Any], dot_path: str) -> Any:
+    current: Any = data
+    for segment in dot_path.split("."):
+        if not isinstance(current, dict) or segment not in current:
+            raise ValueError(f"Missing required config key: {dot_path}")
+        current = current[segment]
+    return current
+
+
+def _read_required(data: dict[str, Any], dot_path: str, expected_type: type | tuple[type, ...]) -> Any:
+    value = _dot_get(data, dot_path)
+    if not isinstance(value, expected_type):
+        type_name = (
+            ", ".join(t.__name__ for t in expected_type)
+            if isinstance(expected_type, tuple)
+            else expected_type.__name__
+        )
+        raise ValueError(f"Config key {dot_path} must be {type_name}, got {type(value).__name__}")
+    return value
+
+
+def _validate_comment_pairs(node: dict[str, Any], path: str = "") -> None:
+    for key, value in node.items():
+        if key.startswith("_comment"):
+            if not isinstance(value, str) or not value.strip():
+                where = path or "root"
+                raise ValueError(f"Comment key {where}.{key} must be a non-empty string")
+            continue
+
+        comment_key = f"_comment_{key}"
+        comment_value = node.get(comment_key)
+        where = f"{path}.{key}" if path else key
+        if not isinstance(comment_value, str) or not comment_value.strip():
+            raise ValueError(f"Missing non-empty comment key {comment_key} for config key {where}")
+
+        if isinstance(value, dict):
+            _validate_comment_pairs(value, where)
+
+
+def _validate_string_list(data: dict[str, Any], dot_path: str) -> list[str]:
+    values = _read_required(data, dot_path, list)
+    if not values:
+        raise ValueError(f"Config key {dot_path} cannot be empty")
+    for index, value in enumerate(values):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Config key {dot_path}[{index}] must be a non-empty string")
+    return values
+
+
+def _validate_positive_int(data: dict[str, Any], dot_path: str) -> int:
+    value = _read_required(data, dot_path, int)
+    if value <= 0:
+        raise ValueError(f"Config key {dot_path} must be > 0")
+    return value
+
+
+def _validate_schema(data: dict[str, Any]) -> None:
+    _read_required(data, "server.host", str)
+    _validate_positive_int(data, "server.port")
+    _validate_positive_int(data, "server.max_line_bytes")
+    _validate_positive_int(data, "server.recv_chunk_bytes")
+    _validate_positive_int(data, "server.socket_timeout_seconds")
+    _validate_positive_int(data, "server.listen_backlog")
+
+    _read_required(data, "scanner.data_dir", str)
+    _validate_positive_int(data, "scanner.scan_interval_seconds")
+
+    _validate_positive_int(data, "storage.lock_timeout_seconds")
+    _validate_positive_int(data, "storage.max_store_text")
+
+    soldier_timeout = _read_required(data, "dispatch.soldier_timeout_seconds", (int, float))
+    if soldier_timeout <= 0:
+        raise ValueError("Config key dispatch.soldier_timeout_seconds must be > 0")
+    _validate_positive_int(data, "dispatch.client_timeout_seconds")
+    _validate_positive_int(data, "dispatch.timeout_minutes")
+
+    _validate_positive_int(data, "generator.min_tasks_per_role")
+    ratio = _read_required(data, "generator.min_non_five_ratio", (int, float))
+    if ratio <= 0 or ratio > 1:
+        raise ValueError("Config key generator.min_non_five_ratio must be in (0, 1]")
+    _validate_positive_int(data, "generator.max_attempts")
+    _validate_positive_int(data, "generator.opencode_timeout_seconds")
+    _validate_string_list(data, "generator.opencode_paths_common")
+    _validate_string_list(data, "generator.opencode_paths_windows")
+    _validate_string_list(data, "generator.opencode_paths_linux")
+    _validate_string_list(data, "generator.opencode_paths_macos")
+
+    _read_required(data, "paths.logs_dir", str)
+    _read_required(data, "paths.target_ini_file", str)
+    _read_required(data, "paths.dispatch_script", str)
+    _read_required(data, "paths.domain_resource_file", str)
+
+    _read_required(data, "logging.level", str)
+    _validate_positive_int(data, "logging.backup_count")
+    _validate_positive_int(data, "logging.rotation_interval_days")
+
+
+def load_runtime_config(config_path: Path | None = None) -> dict[str, Any]:
+    """Load and validate runtime config from JSON."""
+    resolved = (config_path or default_runtime_config_path()).resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Runtime config not found: {resolved}")
+
+    try:
+        with open(resolved, encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in runtime config {resolved}: {e}")
+
+    if not isinstance(data, dict):
+        raise ValueError("Runtime config root must be a JSON object")
+
+    _validate_comment_pairs(data)
+    _validate_schema(data)
+    return data
+
+
+def get_server_config(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "host": _read_required(data, "server.host", str),
+        "port": _read_required(data, "server.port", int),
+        "max_line_bytes": _read_required(data, "server.max_line_bytes", int),
+        "recv_chunk_bytes": _read_required(data, "server.recv_chunk_bytes", int),
+        "socket_timeout_seconds": _read_required(data, "server.socket_timeout_seconds", int),
+        "listen_backlog": _read_required(data, "server.listen_backlog", int),
+    }
+
+
+def get_scanner_config(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "data_dir": _read_required(data, "scanner.data_dir", str),
+        "scan_interval_seconds": _read_required(data, "scanner.scan_interval_seconds", int),
+    }
+
+
+def get_storage_config(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "lock_timeout_seconds": _read_required(data, "storage.lock_timeout_seconds", int),
+        "max_store_text": _read_required(data, "storage.max_store_text", int),
+    }
+
+
+def get_dispatch_config(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "soldier_timeout_seconds": float(_read_required(data, "dispatch.soldier_timeout_seconds", (int, float))),
+        "client_timeout_seconds": _read_required(data, "dispatch.client_timeout_seconds", int),
+        "timeout_minutes": _read_required(data, "dispatch.timeout_minutes", int),
+    }
+
+
+def get_generator_config(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "min_tasks_per_role": _read_required(data, "generator.min_tasks_per_role", int),
+        "min_non_five_ratio": float(_read_required(data, "generator.min_non_five_ratio", (int, float))),
+        "max_attempts": _read_required(data, "generator.max_attempts", int),
+        "opencode_timeout_seconds": _read_required(data, "generator.opencode_timeout_seconds", int),
+        "opencode_paths_common": _validate_string_list(data, "generator.opencode_paths_common"),
+        "opencode_paths_windows": _validate_string_list(data, "generator.opencode_paths_windows"),
+        "opencode_paths_linux": _validate_string_list(data, "generator.opencode_paths_linux"),
+        "opencode_paths_macos": _validate_string_list(data, "generator.opencode_paths_macos"),
+    }
+
+
+def get_paths_config(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "logs_dir": _read_required(data, "paths.logs_dir", str),
+        "target_ini_file": _read_required(data, "paths.target_ini_file", str),
+        "dispatch_script": _read_required(data, "paths.dispatch_script", str),
+        "domain_resource_file": _read_required(data, "paths.domain_resource_file", str),
+    }
+
+
+def get_logging_config(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "level": _read_required(data, "logging.level", str),
+        "backup_count": _read_required(data, "logging.backup_count", int),
+        "rotation_interval_days": _read_required(data, "logging.rotation_interval_days", int),
+    }
+
+
+def get_opencode_paths(data: dict[str, Any]) -> list[str]:
+    """Return merged opencode command candidates for current platform."""
+    generator_config = get_generator_config(data)
+    paths = list(generator_config["opencode_paths_common"])
+
+    system = platform.system()
+    if system == "Windows":
+        paths.extend(generator_config["opencode_paths_windows"])
+    elif system == "Linux":
+        paths.extend(generator_config["opencode_paths_linux"])
+    elif system == "Darwin":
+        paths.extend(generator_config["opencode_paths_macos"])
+
+    expanded: list[str] = []
+    for path in paths:
+        expanded.append(os.path.expanduser(path))
+    if not expanded:
+        raise ValueError("No opencode command paths resolved from runtime config")
+    return expanded

@@ -12,6 +12,11 @@ from filelock import FileLock
 from common import load_json_file, parse_task_ref, save_json_atomic, tasks_path
 
 try:
+    from runtime_config import get_storage_config, load_runtime_config
+except ImportError:
+    from commander.runtime_config import get_storage_config, load_runtime_config
+
+try:
     from domain import apply_report_transition, move_to_waiting
 except ImportError:
     from commander.domain import apply_report_transition, move_to_waiting
@@ -20,7 +25,20 @@ except ImportError:
 class DailyTaskRepository:
     """Repository for daily task file reads/writes with file locking."""
 
-    def __init__(self, data_dir: Path, lock_timeout: int = 60, max_store_text: int = 65536):
+    def __init__(
+        self,
+        data_dir: Path,
+        lock_timeout: int | None = None,
+        max_store_text: int | None = None,
+    ):
+        if lock_timeout is None or max_store_text is None:
+            runtime_config = load_runtime_config()
+            storage_config = get_storage_config(runtime_config)
+            if lock_timeout is None:
+                lock_timeout = storage_config["lock_timeout_seconds"]
+            if max_store_text is None:
+                max_store_text = storage_config["max_store_text"]
+
         self.data_dir = data_dir.resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.lock_timeout = lock_timeout

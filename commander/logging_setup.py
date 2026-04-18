@@ -12,12 +12,17 @@ from pathlib import Path
 def configure_daily_logging(
     logs_dir: Path,
     log_prefix: str,
-    level: int = logging.INFO,
-    backup_count: int = 7,
+    level_name: str,
+    backup_count: int,
+    rotation_interval_days: int,
 ) -> Path:
     """Configure root logger with console + daily rotating file handlers."""
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_file = logs_dir / f"{log_prefix}_{date.today().isoformat()}.log"
+
+    level = getattr(logging, level_name.upper(), None)
+    if not isinstance(level, int):
+        raise ValueError(f"Invalid logging level: {level_name}")
 
     logger = logging.getLogger()
     logger.setLevel(level)
@@ -35,7 +40,7 @@ def configure_daily_logging(
     file_handler = logging.handlers.TimedRotatingFileHandler(
         log_file,
         when="midnight",
-        interval=1,
+        interval=rotation_interval_days,
         backupCount=backup_count,
         encoding="utf-8",
     )

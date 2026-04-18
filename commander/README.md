@@ -9,6 +9,8 @@ Commander 负责统一任务文件生命周期、定时扫描分发、接收 sol
 
 开发者上手清单请见：`DEVELOPER_ONBOARDING.md`
 
+运行参数与字段说明请见：`CONFIG.md`
+
 - `commander.py`：入口层（参数解析、服务启动、TCP 接收）
 - `repository.py`：任务文件仓储（锁、读写、状态回写）
 - `role_file_service.py`：每日任务文件确保/修复/生成
@@ -52,6 +54,8 @@ Commander 负责统一任务文件生命周期、定时扫描分发、接收 sol
 - `status` 合法流转由 `domain.py` 统一约束。
 
 ## 启动与使用
+
+默认运行参数来自 `config.json`，CLI 参数可覆盖对应字段。
 
 ### 启动 commander
 
