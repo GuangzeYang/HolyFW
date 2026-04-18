@@ -187,7 +187,7 @@ class TaskScanner:
             dispatch_script,
             timeout_seconds=dispatch_timeout_seconds,
         )
-        self.role_pointers = {}  # {"hr": 0, "finance": 0, ...}
+        self.role_pointers = {}  # {"hr": 0, "accountancy": 0, "manager": 0, "programmer": 0, ...}
         self.last_date = None
         self.roles = roles
         self.scan_interval_seconds = scan_interval_seconds

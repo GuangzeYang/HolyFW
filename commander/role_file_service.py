@@ -37,6 +37,13 @@ except ImportError:
 class RoleTaskFileService:
     """Manage the daily unified role task file lifecycle."""
 
+    LEGACY_ROLE_KEY_MAP = {
+        "finance": "accountancy",
+        "ceo": "manager",
+        "developer": "programmer",
+        "it": "programmer",
+    }
+
     def __init__(
         self,
         data_dir: Path,
@@ -81,6 +88,25 @@ class RoleTaskFileService:
         self.opencode_paths = opencode_paths
         self.domain_resource_file = domain_resource_file
 
+    def _migrate_legacy_role_keys(self, data: dict[str, Any]) -> list[str]:
+        migrated: list[str] = []
+        for old_role, new_role in self.LEGACY_ROLE_KEY_MAP.items():
+            old_tasks = data.get(old_role)
+            if not isinstance(old_tasks, list):
+                continue
+
+            new_tasks = data.get(new_role)
+            if not isinstance(new_tasks, list):
+                new_tasks = []
+                data[new_role] = new_tasks
+
+            moved_count = len(old_tasks)
+            if moved_count:
+                new_tasks.extend(old_tasks)
+            del data[old_role]
+            migrated.append(f"{old_role}->{new_role} ({moved_count})")
+        return migrated
+
     def get_today_role_task_file(self) -> Path:
         today = date.today().isoformat()
         month_day = today[5:]
@@ -95,6 +121,14 @@ class RoleTaskFileService:
                 if not isinstance(data, dict):
                     logging.warning(f"Role file {role_file} is not a dict")
                     return False
+
+                migrated_roles = self._migrate_legacy_role_keys(data)
+                if migrated_roles:
+                    with open(role_file, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                    logging.info(
+                        f"Role file {role_file} migrated legacy role keys: {', '.join(migrated_roles)}"
+                    )
 
                 has_runtime_fields = False
                 for tasks in data.values():
@@ -168,14 +202,20 @@ class RoleTaskFileService:
                     data,
                     min_tasks_per_role=self.min_tasks_per_role,
                     min_non_five_ratio=self.min_non_five_ratio,
+                    roles=self.roles,
                 )
                 if not valid:
                     logging.warning(f"Role file {role_file} quality check failed: {reason}")
-                    normalized = normalize_role_tasks(data, min_tasks_per_role=self.min_tasks_per_role)
+                    normalized = normalize_role_tasks(
+                        data,
+                        min_tasks_per_role=self.min_tasks_per_role,
+                        roles=self.roles,
+                    )
                     valid_after_fix, reason_after_fix = validate_role_tasks(
                         normalized,
                         min_tasks_per_role=self.min_tasks_per_role,
                         min_non_five_ratio=self.min_non_five_ratio,
+                        roles=self.roles,
                     )
                     if not valid_after_fix:
                         logging.warning(
@@ -210,7 +250,11 @@ class RoleTaskFileService:
             min_tasks_per_role = self.min_tasks_per_role
             max_attempts = self.max_attempts
             opencode_timeout_sec = self.opencode_timeout_sec
-            prompt = build_role_task_prompt(domain_context, min_tasks_per_role=min_tasks_per_role)
+            prompt = build_role_task_prompt(
+                domain_context,
+                min_tasks_per_role=min_tasks_per_role,
+                roles=self.roles,
+            )
             opencode_paths = list(self.opencode_paths)
 
             saw_timeout = False
@@ -245,6 +289,7 @@ class RoleTaskFileService:
                             data,
                             min_tasks_per_role=min_tasks_per_role,
                             min_non_five_ratio=self.min_non_five_ratio,
+                            roles=self.roles,
                         )
                         if not valid:
                             logging.warning(f"Generated role tasks failed quality checks: {reason}")
@@ -278,11 +323,16 @@ class RoleTaskFileService:
             else:
                 logging.error(f"Could not execute opencode. Tried paths: {opencode_paths}")
 
-            fallback_data = normalize_role_tasks({}, min_tasks_per_role=min_tasks_per_role)
+            fallback_data = normalize_role_tasks(
+                {},
+                min_tasks_per_role=min_tasks_per_role,
+                roles=self.roles,
+            )
             valid, reason = validate_role_tasks(
                 fallback_data,
                 min_tasks_per_role=min_tasks_per_role,
                 min_non_five_ratio=self.min_non_five_ratio,
+                roles=self.roles,
             )
             if not valid:
                 logging.error(f"Fallback task generation failed validation: {reason}")

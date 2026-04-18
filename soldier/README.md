@@ -32,7 +32,7 @@ python soldier.py listen --bind 0.0.0.0 --listen-port 38472 --commander-host 127
 python soldier.py report --task-ref "2026-04-01_hr_a1b2c3d4e5f67890" --status successed --exit-code 0
 
 # 报告失败任务
-python soldier.py report --task-ref "04-01_finance_b3c4d5e6f7890123" --status failed --exit-code 1 --stderr "错误信息"
+python soldier.py report --task-ref "04-01_accountancy_b3c4d5e6f7890123" --status failed --exit-code 1 --stderr "错误信息"
 ```
 
 ---
@@ -142,7 +142,7 @@ YYYY-MM-DD_role_taskId
 ### 角色名称
 - 必须不包含下划线
 - 建议小写字母
-- 示例：`hr`, `finance`, `ceo`, `developer`
+- 示例：`hr`, `accountancy`, `manager`, `programmer`
 
 ### 任务 ID
 - UUID 十六进制格式 (无连字符)
@@ -181,7 +181,7 @@ received_task_MM-DD.jsonl
 内容示例：
 ```
 {"task_id":"a1b2c3d4e5f67890","received_at":"2026-04-12T09:10:00+00:00","content":{"task_ref":"2026-04-12_hr_a1b2c3d4e5f67890","command":"opencode run ..."}}
-{"task_id":"b3c4d5e6f7890123","received_at":"2026-04-12T09:40:00+00:00","content":{"task_ref":"2026-04-12_finance_b3c4d5e6f7890123","command":"opencode run ..."}}
+{"task_id":"b3c4d5e6f7890123","received_at":"2026-04-12T09:40:00+00:00","content":{"task_ref":"2026-04-12_accountancy_b3c4d5e6f7890123","command":"opencode run ..."}}
 ```
 
 ### 日志文件
@@ -227,7 +227,7 @@ python soldier.py report \
 
 # 报告失败任务
 python soldier.py report \
-  --task-ref "04-01_finance_b3c4d5e6f7890123" \
+  --task-ref "04-01_accountancy_b3c4d5e6f7890123" \
   --status failed \
   --exit-code 1 \
   --stderr "文件未找到: /path/to/file.txt"

@@ -53,15 +53,15 @@ Commander 详细架构图与模块依赖说明见 `commander/ARCHITECTURE.md`。
 host = 127.0.0.1
 port = 38472
 
-[finance]
+[accountancy]
 host = 127.0.0.1
 port = 38472
 
-[ceo]        # 新增：总经理
+[manager]      # 新增：总经理
 host = 127.0.0.1
 port = 38472
 
-[developer]  # 新增：程序员
+[programmer]   # it 与 developer 合并后角色
 host = 127.0.0.1
 port = 38472
 ```
@@ -174,9 +174,9 @@ sequenceDiagram
       "stderr": "标准错误"
     }
   ],
-  "finance": [...],
-  "ceo": [...],
-  "developer": [...]
+  "accountancy": [...],
+  "manager": [...],
+  "programmer": [...]
 }
 ```
 

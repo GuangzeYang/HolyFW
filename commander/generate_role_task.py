@@ -18,6 +18,7 @@ from common import (
     normalize_role_tasks,
     validate_role_tasks,
 )
+from target_config import load_all_roles
 
 try:
     from runtime_config import (
@@ -44,6 +45,8 @@ def main() -> int:
     scanner_config = get_scanner_config(runtime_config)
     generator_config = get_generator_config(runtime_config)
     paths_config = get_paths_config(runtime_config)
+    target_ini_path = resolve_config_relative_path(paths_config["target_ini_file"])
+    roles = load_all_roles(target_ini_path)
 
     min_tasks_per_role = generator_config["min_tasks_per_role"]
     max_generate_attempts = generator_config["max_attempts"]
@@ -70,7 +73,11 @@ def main() -> int:
     else:
         print(f"Warning: domain resource not found at {domain_resource_path}")
 
-    prompt = build_role_task_prompt(domain_context, min_tasks_per_role=min_tasks_per_role)
+    prompt = build_role_task_prompt(
+        domain_context,
+        min_tasks_per_role=min_tasks_per_role,
+        roles=roles,
+    )
     opencode_paths = get_opencode_paths(runtime_config)
 
     saw_timeout = False
@@ -102,11 +109,16 @@ def main() -> int:
                     print(f"stdout: {result.stdout[:500]}")
                     continue
 
-                data = normalize_role_tasks(parsed, min_tasks_per_role=min_tasks_per_role)
+                data = normalize_role_tasks(
+                    parsed,
+                    min_tasks_per_role=min_tasks_per_role,
+                    roles=roles,
+                )
                 valid, reason = validate_role_tasks(
                     data,
                     min_tasks_per_role=min_tasks_per_role,
                     min_non_five_ratio=quality_ratio,
+                    roles=roles,
                 )
                 if not valid:
                     print(f"Generated tasks failed quality checks: {reason}")
@@ -139,11 +151,16 @@ def main() -> int:
     else:
         print(f"Could not generate qualified role tasks. Tried paths: {opencode_paths}")
 
-    fallback_data = normalize_role_tasks({}, min_tasks_per_role=min_tasks_per_role)
+    fallback_data = normalize_role_tasks(
+        {},
+        min_tasks_per_role=min_tasks_per_role,
+        roles=roles,
+    )
     valid, reason = validate_role_tasks(
         fallback_data,
         min_tasks_per_role=min_tasks_per_role,
         min_non_five_ratio=quality_ratio,
+        roles=roles,
     )
     if not valid:
         print(f"Fallback task generation validation failed: {reason}")

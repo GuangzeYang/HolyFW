@@ -14,12 +14,13 @@ DATE_FULL = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DATE_MD = re.compile(r"^\d{2}-\d{2}$")
 UUID_HEX_NO_HYPHEN = re.compile(r"^[0-9a-fA-F]{8,32}$")
 
-ROLE_NAMES = ("hr", "finance", "ceo", "developer")
+ROLE_NAMES = ("hr", "accountancy", "manager", "programmer", "local")
 ROLE_ALIASES = {
     "hr": ("hr", "HR", "人事"),
-    "finance": ("finance", "财务"),
-    "ceo": ("ceo", "总经理"),
-    "developer": ("developer", "程序员"),
+    "accountancy": ("accountancy", "finance", "财务"),
+    "manager": ("manager", "ceo", "总经理"),
+    "programmer": ("programmer", "developer", "it", "程序员"),
+    "local": ("local", "本地"),
 }
 WORK_WINDOWS = ((9 * 60, 12 * 60), (13 * 60 + 30, 18 * 60))
 
@@ -31,26 +32,33 @@ ROLE_FALLBACK_TASKS = {
         "访问共享目录\\\\resource\\HR，归档当日人事文档",
         "核对新员工入职材料完整性并发送补件提醒",
     ],
-    "finance": [
+    "accountancy": [
         "查收银行通知邮件并核对到账信息",
         "登录OA系统复核报销审批状态并记录差异",
         "访问共享目录\\\\resource\\Finance，更新付款计划表",
         "发送邮件给业务部门确认发票与合同匹配情况",
         "核对本日应收应付变动并整理汇总邮件",
     ],
-    "ceo": [
+    "manager": [
         "查收管理层汇报邮件并标记优先处理事项",
         "登录OA系统查看关键审批与风险提醒",
         "发送邮件给部门负责人确认当日重点任务进展",
         "访问共享目录\\\\resource\\Executive，查看经营数据看板",
         "回复跨部门协调邮件并明确执行时间点",
     ],
-    "developer": [
+    "programmer": [
         "查收团队邮件并更新当日开发任务优先级",
         "访问共享目录\\\\resource\\Developer，拉取开发文档与脚本",
         "登录代码平台查看待处理Merge Request与评论",
         "查收测试反馈邮件并补充缺陷复现记录",
         "登录OA系统更新研发工作记录与进展说明",
+    ],
+    "local": [
+        "查收本地环境任务邮件并更新执行清单",
+        "登录本地系统控制台核对服务状态",
+        "执行本地目录巡检并记录异常文件",
+        "同步本地测试结果到项目日报",
+        "复核本地自动化任务日志并标记待处理项",
     ],
 }
 
@@ -140,14 +148,45 @@ def save_json_atomic(path: Path, data: dict[str, Any]) -> None:
     clean_old_files(path.parent, "tasks_*.json", days=20)
 
 
-def build_role_task_prompt(domain_context: str, min_tasks_per_role: int = 18) -> str:
+def _normalize_roles(roles: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
+    if roles is None:
+        return ROLE_NAMES
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for role in roles:
+        if not isinstance(role, str):
+            continue
+        role_name = role.strip().lower()
+        if not role_name or role_name in seen:
+            continue
+        seen.add(role_name)
+        normalized.append(role_name)
+    return tuple(normalized) if normalized else ROLE_NAMES
+
+
+def _role_display_name(role: str) -> str:
+    aliases = ROLE_ALIASES.get(role)
+    if aliases and len(aliases) >= 2:
+        return aliases[-1]
+    return role
+
+
+def build_role_task_prompt(
+    domain_context: str,
+    min_tasks_per_role: int = 18,
+    roles: tuple[str, ...] | list[str] | None = None,
+) -> str:
     """Build a constrained prompt for role task generation."""
+    role_names = _normalize_roles(roles)
+    role_display = "、".join(_role_display_name(role) for role in role_names)
+    output_format = ", ".join(f'"{role}": [任务列表]' for role in role_names)
+
     return f'''基于以下企业环境描述，为每个角色生成一天的任务序列：
 
 {domain_context}
 
 硬性要求（必须全部满足）：
-1. 角色必须完整：HR、财务、总经理、程序员。
+1. 角色必须完整：{role_display}。
 2. 每个角色至少生成 {min_tasks_per_role} 条任务。
 3. 仅输出一个 JSON 对象，禁止输出解释、Markdown、代码块、前后缀。
 4. 禁止调用任何工具；禁止输出类似 [TOOL_CALL]、[/TOOL_CALL]、todowrite 等内容。
@@ -159,7 +198,7 @@ def build_role_task_prompt(domain_context: str, min_tasks_per_role: int = 18) ->
    - 至少 80% 的任务分钟值不能是 5 的倍数；
    - 相邻任务间隔避免固定步长，建议 12~35 分钟随机波动。
 10. 任务要符合角色职责，并尽量涉及 Exchange、OA、SMB、FTP、浏览器等可观测网络行为。
-11. 输出格式：{{"hr": [任务列表], "finance": [...], "ceo": [...], "developer": [...]}}'''
+11. 输出格式：{{{output_format}}}'''
 
 
 def extract_json_object(text: str) -> dict[str, Any] | None:
@@ -267,11 +306,16 @@ def _get_role_items(data: dict[str, Any], role: str) -> list:
     return []
 
 
-def normalize_role_tasks(data: dict[str, Any], min_tasks_per_role: int = 18) -> dict[str, Any]:
+def normalize_role_tasks(
+    data: dict[str, Any],
+    min_tasks_per_role: int = 18,
+    roles: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, Any]:
     """Normalize role tasks with deterministic structure, count floor, and jittered times."""
+    role_names = _normalize_roles(roles)
     normalized: dict[str, Any] = {}
 
-    for role in ROLE_NAMES:
+    for role in role_names:
         items = _get_role_items(data, role)
 
         descriptions: list[str] = []
@@ -328,8 +372,10 @@ def validate_role_tasks(
     data: dict[str, Any],
     min_tasks_per_role: int = 18,
     min_non_five_ratio: float = 0.8,
+    roles: tuple[str, ...] | list[str] | None = None,
 ) -> tuple[bool, str | None]:
     """Validate role tasks against structure and quality constraints."""
+    role_names = _normalize_roles(roles)
     required_task_fields = {
         "time",
         "is_load",
@@ -348,11 +394,11 @@ def validate_role_tasks(
     if not isinstance(data, dict):
         return False, "Generated JSON must be a dictionary"
 
-    missing = set(ROLE_NAMES) - set(data.keys())
+    missing = set(role_names) - set(data.keys())
     if missing:
         return False, f"Missing roles: {sorted(missing)}"
 
-    for role in ROLE_NAMES:
+    for role in role_names:
         tasks = data.get(role)
         if not isinstance(tasks, list):
             return False, f"Role '{role}' data is not a list"
