@@ -93,7 +93,7 @@ timeout = 3600      # 命令超时时间 (秒)
 ### 4. 保存记录
 任务接收记录保存到本地文件：
 - **位置**：`received_task_MM-DD.jsonl`（位于 soldier.py 同级目录）
-- **格式**：每行一个 JSON，包含 `task_id`、`content`、`received_at`
+- **格式**：每行一个 JSON，包含 `task_id`、`content`、`received_at`、`stdout`、`stderr`
 - **清理**：自动清理 20 天前的记录
 
 ### 5. 落盘命令输出

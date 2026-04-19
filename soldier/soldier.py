@@ -57,7 +57,14 @@ LOG_BACKUP_COUNT = 7
 
 
 
-def save_task_record(task_id: str, date_str: str, content: dict, received_at: str) -> None:
+def save_task_record(
+    task_id: str,
+    date_str: str,
+    content: dict,
+    received_at: str,
+    stdout: str,
+    stderr: str,
+) -> None:
     """Append received task details to daily JSONL under soldier script directory."""
     script_dir = Path(__file__).resolve().parent
     
@@ -69,6 +76,8 @@ def save_task_record(task_id: str, date_str: str, content: dict, received_at: st
         "task_id": task_id,
         "received_at": received_at,
         "content": content,
+        "stdout": stdout,
+        "stderr": stderr,
     }
     
     with open(file_path, "a", encoding="utf-8") as f:
@@ -383,8 +392,6 @@ def handle_dispatch_connection(
             "command": command,
             "payload": payload,
         }
-        save_task_record(task_id, date_str, received_content, received_at)
-
         try:
             proc = subprocess.run(
                 command,
@@ -430,6 +437,18 @@ def handle_dispatch_connection(
             exit_code = -1
             status = "failed"
             msg = f"Execution failed: {e}"
+
+        try:
+            save_task_record(
+                task_id,
+                date_str,
+                received_content,
+                received_at,
+                out,
+                err_out,
+            )
+        except OSError as e:
+            logging.error(f"Failed to save received task record for task {full_ref}: {e}")
 
         report = {
             "task_ref": full_ref,

@@ -121,7 +121,7 @@ class TaskScanService:
                     if not task.get("task_id"):
                         task["task_id"] = "__dispatched__"
                     if not task.get("issued_at"):
-                        task["issued_at"] = datetime.now().isoformat(timespec="seconds")
+                        task["issued_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
                     logging.info(f"Successfully dispatched task for {role_key}[{pointer}]")
                     pointer = self._move_pointer_after_success(role_key, tasks, pointer, role_pointers)
                     continue

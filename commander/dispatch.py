@@ -11,7 +11,7 @@ import argparse
 import json
 import socket
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -211,7 +211,7 @@ def main() -> int:
     timeout_minutes = args.timeout_minutes if args.timeout_minutes is not None else dispatch_config["timeout_minutes"]
 
     expiry_time = (
-        datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
+        datetime.now().astimezone() + timedelta(minutes=timeout_minutes)
     ).isoformat()
 
     task_file = repository.day_path(date_str)

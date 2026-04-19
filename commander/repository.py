@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -70,7 +70,7 @@ class DailyTaskRepository:
         if not isinstance(tasks, list):
             return False
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now().astimezone()
         for item in tasks:
             if not isinstance(item, dict) or item.get("status") != "waiting":
                 continue
@@ -139,7 +139,7 @@ class DailyTaskRepository:
                 }
                 tasks.append(matched)
 
-            issued = datetime.now(timezone.utc).isoformat()
+            issued = datetime.now().astimezone().isoformat()
             matched["task_id"] = task_id
             if task_text:
                 matched["task"] = task_text
@@ -248,7 +248,7 @@ class DailyTaskRepository:
                             ),
                         }
                     item["status"] = next_status
-                    item["completed_at"] = datetime.now(timezone.utc).isoformat()
+                    item["completed_at"] = datetime.now().astimezone().isoformat()
                     if message is not None:
                         item["report_message"] = message
                     if exit_code is not None:

@@ -16,55 +16,55 @@ UUID_HEX_NO_HYPHEN = re.compile(r"^[0-9a-fA-F]{8,32}$")
 
 ROLE_NAMES = ("hr", "accountancy", "manager", "programmer", "local")
 ROLE_ALIASES = {
-    "hr": ("hr", "HR", "人事"),
-    "accountancy": ("accountancy", "finance", "财务"),
-    "manager": ("manager", "ceo", "总经理"),
-    "programmer": ("programmer", "developer", "it", "程序员"),
-    "local": ("local", "本地"),
+    "hr": ("hr", "HR", "human resources", "Human Resources"),
+    "accountancy": ("accountancy", "finance", "accounting", "Accountancy"),
+    "manager": ("manager", "ceo", "general manager", "Manager"),
+    "programmer": ("programmer", "developer", "it", "Programmer"),
+    "local": ("local", "local operations", "Local"),
 }
 WORK_WINDOWS = ((9 * 60, 12 * 60), (13 * 60 + 30, 18 * 60))
 
 ROLE_FALLBACK_TASKS = {
     "hr": [
-        "查收并分类员工咨询邮件，整理成待处理清单",
-        "登录OA系统核对当日人事审批流状态",
-        "发送邮件给相关部门，确认招聘流程节点进度",
-        "访问共享目录\\\\resource\\HR，归档当日人事文档",
-        "核对新员工入职材料完整性并发送补件提醒",
+        "Review and categorize employee inquiry emails, then prepare an action list.",
+        "Check today's HR approval workflow status in the OA system.",
+        "Send follow-up emails to departments to confirm recruitment pipeline progress.",
+        "Access \\resource\\HR and archive today's HR documents.",
+        "Verify onboarding document completeness and send missing-item reminders.",
     ],
     "accountancy": [
-        "查收银行通知邮件并核对到账信息",
-        "登录OA系统复核报销审批状态并记录差异",
-        "访问共享目录\\\\resource\\Finance，更新付款计划表",
-        "发送邮件给业务部门确认发票与合同匹配情况",
-        "核对本日应收应付变动并整理汇总邮件",
+        "Review bank notification emails and reconcile incoming payments.",
+        "Recheck reimbursement approvals in OA and log discrepancies.",
+        "Access \\resource\\Finance and update the payment schedule.",
+        "Email business teams to confirm invoice and contract matching.",
+        "Review daily AR/AP changes and prepare a summary email.",
     ],
     "manager": [
-        "查收管理层汇报邮件并标记优先处理事项",
-        "登录OA系统查看关键审批与风险提醒",
-        "发送邮件给部门负责人确认当日重点任务进展",
-        "访问共享目录\\\\resource\\Executive，查看经营数据看板",
-        "回复跨部门协调邮件并明确执行时间点",
+        "Review leadership update emails and mark high-priority items.",
+        "Check key approvals and risk alerts in the OA system.",
+        "Email department leads to confirm progress on key tasks for today.",
+        "Access \\resource\\Executive and review the business dashboard.",
+        "Reply to cross-team coordination emails and define execution timelines.",
     ],
     "programmer": [
-        "查收团队邮件并更新当日开发任务优先级",
-        "访问共享目录\\\\resource\\Developer，拉取开发文档与脚本",
-        "登录代码平台查看待处理Merge Request与评论",
-        "查收测试反馈邮件并补充缺陷复现记录",
-        "登录OA系统更新研发工作记录与进展说明",
+        "Review team emails and update development task priorities.",
+        "Access \\resource\\Developer to pull docs and scripts.",
+        "Check pending merge requests and comments on the code platform.",
+        "Review test feedback emails and enrich bug reproduction notes.",
+        "Update R&D work logs and progress notes in OA.",
     ],
     "local": [
-        "查收本地环境任务邮件并更新执行清单",
-        "登录本地系统控制台核对服务状态",
-        "执行本地目录巡检并记录异常文件",
-        "同步本地测试结果到项目日报",
-        "复核本地自动化任务日志并标记待处理项",
+        "Review local environment task emails and update the execution checklist.",
+        "Sign in to the local system console and verify service status.",
+        "Run local directory inspection and record abnormal files.",
+        "Sync local test results into the project daily report.",
+        "Review local automation logs and mark pending items.",
     ],
 }
 
 
 def clean_old_files(dir_path: Path, pattern: str, days: int = 20) -> None:
-    """删除超过指定天数的匹配文件（基于文件修改时间）。"""
+    """Delete matched files older than the configured retention days."""
     if not dir_path.exists():
         return
     cutoff_time = time.time() - days * 86400
@@ -100,7 +100,7 @@ def expand_date_segment(seg: str) -> tuple[str | None, str | None]:
 
 
 def parse_task_ref(task_ref: str) -> tuple[tuple[str, str, str] | None, str | None]:
-    """Parse ``(YYYY-MM-DD|MM-DD)_role_taskId``。"""
+    """Parse ``(YYYY-MM-DD|MM-DD)_role_taskId``."""
     if not task_ref or not isinstance(task_ref, str):
         return None, "task_ref is empty or invalid"
     parts = task_ref.split("_")
@@ -178,27 +178,28 @@ def build_role_task_prompt(
 ) -> str:
     """Build a constrained prompt for role task generation."""
     role_names = _normalize_roles(roles)
-    role_display = "、".join(_role_display_name(role) for role in role_names)
-    output_format = ", ".join(f'"{role}": [任务列表]' for role in role_names)
+    role_display = ", ".join(_role_display_name(role) for role in role_names)
+    output_format = ", ".join(f'"{role}": [tasks]' for role in role_names)
 
-    return f'''基于以下企业环境描述，为每个角色生成一天的任务序列：
+    return f'''Generate one full-day task sequence for each role using the following enterprise context:
 
 {domain_context}
 
-硬性要求（必须全部满足）：
-1. 角色必须完整：{role_display}。
-2. 每个角色至少生成 {min_tasks_per_role} 条任务。
-3. 仅输出一个 JSON 对象，禁止输出解释、Markdown、代码块、前后缀。
-4. 禁止调用任何工具；禁止输出类似 [TOOL_CALL]、[/TOOL_CALL]、todowrite 等内容。
-5. 输出前自行检查可被标准 JSON 解析器直接解析。
-6. 每个任务元素格式：{{"time":"09:15","is_load":false,"task":"..."}}。
-7. 时间必须在工作时段：09:00~12:00, 13:30~18:00。
-8. 同角色任务时间严格递增。
-9. 时间必须有随机扰动：
-   - 至少 80% 的任务分钟值不能是 5 的倍数；
-   - 相邻任务间隔避免固定步长，建议 12~35 分钟随机波动。
-10. 任务要符合角色职责，并尽量涉及 Exchange、OA、SMB、FTP、浏览器等可观测网络行为。
-11. 输出格式：{{{output_format}}}'''
+Hard requirements (all must be satisfied):
+1. Include all roles exactly: {role_display}.
+2. Generate at least {min_tasks_per_role} tasks for each role.
+3. Output only a single JSON object. No explanations, no Markdown, no code fences, no prefixes/suffixes.
+4. Do not call any tools. Do not output tokens like [TOOL_CALL], [/TOOL_CALL], or todowrite.
+5. Ensure the output is directly parseable by a standard JSON parser.
+6. Each task item must use this format: {{"time":"09:15","is_load":false,"task":"..."}}.
+7. Task times must be within work windows: 09:00-12:00 and 13:30-18:00.
+8. Within each role, task times must be strictly increasing.
+9. Add realistic randomization to task timing:
+   - At least 80% of task minutes must not be multiples of 5.
+   - Avoid fixed adjacent intervals; use varied gaps (recommended range: 12-35 minutes).
+10. Tasks must match role responsibilities and should include observable network behaviors when appropriate (Exchange, OA, SMB, FTP, browser interactions).
+11. Output format must be: {{{output_format}}}.
+12. All task descriptions must be in English.'''
 
 
 def extract_json_object(text: str) -> dict[str, Any] | None:
@@ -330,7 +331,7 @@ def normalize_role_tasks(
             load_flags.append(bool(item.get("is_load", False)))
 
         target_count = max(min_tasks_per_role, len(descriptions))
-        fallbacks = ROLE_FALLBACK_TASKS.get(role, ["处理当日业务任务并同步结果"])
+        fallbacks = ROLE_FALLBACK_TASKS.get(role, ["Handle daily operational work and sync outcomes."])
         idx = 0
         while len(descriptions) < target_count:
             template = fallbacks[idx % len(fallbacks)]
