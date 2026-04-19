@@ -153,6 +153,59 @@ class DailyTaskRepository:
             matched["expiry_time"] = expiry_time
             save_json_atomic(path, data)
 
+    def get_task_by_index(self, date_str: str, role: str, index: int) -> dict[str, Any] | None:
+        """Read one task by role/index under lock."""
+        path = self.day_path(date_str)
+        lock_path = str(path) + ".lock"
+        with FileLock(lock_path, timeout=self.lock_timeout):
+            data = load_json_file(path)
+            tasks = data.get(role)
+            if not isinstance(tasks, list):
+                return None
+            if index < 0 or index >= len(tasks):
+                return None
+            item = tasks[index]
+            if not isinstance(item, dict):
+                return None
+            return dict(item)
+
+    def update_task_fields_by_index(
+        self,
+        date_str: str,
+        role: str,
+        index: int,
+        fields: dict[str, Any],
+        *,
+        only_if_no_task_id: bool = False,
+    ) -> bool:
+        """Atomically update one task by role/index and save when changed."""
+        path = self.day_path(date_str)
+        lock_path = str(path) + ".lock"
+        with FileLock(lock_path, timeout=self.lock_timeout):
+            data = load_json_file(path)
+            tasks = data.get(role)
+            if not isinstance(tasks, list):
+                return False
+            if index < 0 or index >= len(tasks):
+                return False
+            item = tasks[index]
+            if not isinstance(item, dict):
+                return False
+            if only_if_no_task_id and item.get("task_id"):
+                return False
+
+            changed = False
+            for key, value in fields.items():
+                if item.get(key) != value:
+                    item[key] = value
+                    changed = True
+
+            if not changed:
+                return False
+
+            save_json_atomic(path, data)
+            return True
+
     def update_task_report(
         self,
         task_ref: str,

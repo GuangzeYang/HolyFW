@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import datetime
 from typing import Any, Callable
 
 try:
@@ -33,7 +33,7 @@ class TaskScanService:
         tasks_by_role: dict[str, Any],
         roles: tuple[str, ...],
         role_pointers: dict[str, int],
-        save_role_tasks: Callable[[dict[str, Any]], None],
+        date_str: str,
     ) -> None:
         """Process one scan cycle over all roles with pointer-based scheduling."""
         for role_key in roles:
@@ -52,7 +52,7 @@ class TaskScanService:
                 if pointer >= len(tasks):
                     break
 
-                if self.repository.has_active_waiting_task(role_key, date.today().isoformat()):
+                if self.repository.has_active_waiting_task(role_key, date_str):
                     logging.debug(f"Role {role_key} has waiting task, pausing pointer at index {pointer}")
                     break
 
@@ -73,7 +73,13 @@ class TaskScanService:
                 if task_time is None:
                     logging.warning(f"Invalid task time for {role_key}[{pointer}], skipping")
                     task["is_load"] = True
-                    save_role_tasks(tasks_by_role)
+                    self.repository.update_task_fields_by_index(
+                        date_str,
+                        role_key,
+                        pointer,
+                        {"is_load": True},
+                        only_if_no_task_id=True,
+                    )
                     pointer += 1
                     role_pointers[role_key] = pointer
                     continue
@@ -89,16 +95,33 @@ class TaskScanService:
                 # Reading task marks is_load=True before dispatch.
                 marked_loaded = False
                 if not task.get("is_load", False):
-                    task["is_load"] = True
-                    marked_loaded = True
-                    save_role_tasks(tasks_by_role)
-                    logging.info(
-                        f"Marked task loaded for {role_key}[{pointer}]: {task.get('time')} - {truncated}"
+                    marked_loaded = self.repository.update_task_fields_by_index(
+                        date_str,
+                        role_key,
+                        pointer,
+                        {"is_load": True},
+                        only_if_no_task_id=True,
                     )
+                    latest = self.repository.get_task_by_index(date_str, role_key, pointer)
+                    if latest is not None:
+                        task.update(latest)
+                    if marked_loaded:
+                        logging.info(
+                            f"Marked task loaded for {role_key}[{pointer}]: {task.get('time')} - {truncated}"
+                        )
+                    elif not task_needs_dispatch(task):
+                        pointer = self._move_pointer_after_success(role_key, tasks, pointer, role_pointers)
+                        continue
 
                 logging.info(f"Dispatching task for {role_key}[{pointer}]: {task.get('time')} - {truncated}")
                 success = self.dispatch_task(role_key, task_text, task.get("time"))
                 if success:
+                    # Prevent stale in-memory snapshot from selecting this task again.
+                    task["status"] = "waiting"
+                    if not task.get("task_id"):
+                        task["task_id"] = "__dispatched__"
+                    if not task.get("issued_at"):
+                        task["issued_at"] = datetime.now().isoformat(timespec="seconds")
                     logging.info(f"Successfully dispatched task for {role_key}[{pointer}]")
                     pointer = self._move_pointer_after_success(role_key, tasks, pointer, role_pointers)
                     continue
@@ -106,10 +129,20 @@ class TaskScanService:
                 # On dispatch failure, keep pointer unchanged for retry.
                 if marked_loaded:
                     task["is_load"] = False
-                task["report_message"] = (
-                    f"Dispatch failed at {datetime.now().isoformat(timespec='seconds')}"
+                failure_message = f"Dispatch failed at {datetime.now().isoformat(timespec='seconds')}"
+                task["report_message"] = failure_message
+                update_fields: dict[str, Any] = {
+                    "report_message": failure_message,
+                }
+                if marked_loaded:
+                    update_fields["is_load"] = False
+                self.repository.update_task_fields_by_index(
+                    date_str,
+                    role_key,
+                    pointer,
+                    update_fields,
+                    only_if_no_task_id=True,
                 )
-                save_role_tasks(tasks_by_role)
                 logging.error(f"Failed to dispatch task for {role_key}[{pointer}], pointer unchanged")
                 break
 

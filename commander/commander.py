@@ -251,7 +251,7 @@ class TaskScanner:
             tasks_by_role=tasks_by_role,
             roles=self.roles,
             role_pointers=self.role_pointers,
-            save_role_tasks=lambda data: self._save_role_tasks(role_file, data),
+            date_str=current_date,
         )
     
     def start(self):

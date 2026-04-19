@@ -103,6 +103,43 @@ class RepositoryTests(unittest.TestCase):
         )
         self.assertTrue(self.repo.has_active_waiting_task("hr", self.today))
 
+    def test_atomic_index_update_applies_to_unissued_task(self) -> None:
+        changed = self.repo.update_task_fields_by_index(
+            date_str=self.today,
+            role="hr",
+            index=0,
+            fields={"is_load": True, "report_message": "queued"},
+            only_if_no_task_id=True,
+        )
+        self.assertTrue(changed)
+        item = self.repo.load_day(self.today)["hr"][0]
+        self.assertTrue(item["is_load"])
+        self.assertEqual(item["report_message"], "queued")
+
+    def test_atomic_index_update_does_not_overwrite_issued_task(self) -> None:
+        expiry = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        self.repo.bind_dispatched_task(
+            date_str=self.today,
+            role="hr",
+            task_id="abc12345",
+            task_text="t1",
+            expiry_time=expiry,
+            planned_time="09:01",
+        )
+
+        changed = self.repo.update_task_fields_by_index(
+            date_str=self.today,
+            role="hr",
+            index=0,
+            fields={"is_load": False, "status": STATUS_PLANNED, "task_id": ""},
+            only_if_no_task_id=True,
+        )
+        self.assertFalse(changed)
+
+        item = self.repo.load_day(self.today)["hr"][0]
+        self.assertEqual(item["task_id"], "abc12345")
+        self.assertEqual(item["status"], STATUS_WAITING)
+
 
 if __name__ == "__main__":
     unittest.main()
