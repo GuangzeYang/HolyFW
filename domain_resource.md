@@ -51,6 +51,7 @@
 
 - github
 - playwright
+- excel
 
 ## skill
 
@@ -87,7 +88,32 @@
 
 ## SMB共享文件夹
 
-- 使用`smb-access` skill，访问共享目录xxx，复制该目录下的xxx文件到xxx路径。如访问共享目录\\\resource\\Programmer，复制该目录下的PythonInstaller.exe到桌面
+使用 smb-access skill，访问SMB共享目录，使用<操作类型>，<具体操作>[，参数]
+
+示例：
+
+- 使用 smb-access skill，连接SMB共享目录，使用创建，创建文件，{路径: /share/test.txt, 内容: hello world}
+- 使用 smb-access skill，连接SMB共享目录，使用复制，复制文件，{源路径: /share/a.txt, 目标路径: /backup/a.txt}
+- 使用 smb-access skill，连接SMB共享目录，使用删除，删除文件，{路径: /share/old.txt}
+
+
+
+SMB共享文件操作分为几个操作类型，每个类型又包含若干具体操作，具体如下：
+
+1. 创建：创建文件夹、创建文件、写入内容
+   - 参数为路径和内容信息，是一个类json格式(没有引号)，包含的"键"有{路径，内容}，如：{路径：/share/test.txt，内容：hello world}
+
+2. 复制：复制文件夹、复制文件
+   - 参数为源路径和目标路径，是一个类json格式(没有引号)，包含的"键"有{源路径，目标路径}，如：{源路径：/share/a.txt，目标路径：/backup/a.txt}
+
+3. 移动：移动文件夹、移动文件
+   - 参数为源路径和目标路径，是一个类json格式(没有引号)，包含的"键"有{源路径，目标路径}，如：{源路径：/share/a.txt，目标路径：/backup/a.txt}
+
+4. 删除：删除文件夹、删除文件
+   - 参数为路径，是一个类json格式(没有引号)，包含的"键"有{路径}，如：{路径：/share/old.txt}
+
+5. 查看：查看文件夹内容、查看文件内容
+   - 参数为路径，是一个类json格式(没有引号)，包含的"键"有{路径}，如：{路径：/share/}
 
 ## odoo系统
 

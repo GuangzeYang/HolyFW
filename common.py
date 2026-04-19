@@ -188,34 +188,61 @@ def build_role_task_prompt(
 Hard requirements (all must be satisfied):
 1. Include all roles exactly: {role_display}.
 2. Generate at least {min_tasks_per_role} tasks for each role.
-3. Output only a single JSON object. No explanations, no Markdown, no code fences, no prefixes/suffixes.
-4. Do not call any tools. Do not output tokens like [TOOL_CALL], [/TOOL_CALL], or todowrite.
-5. Ensure the output is directly parseable by a standard JSON parser.
-6. Each task item must use this format: {{"time":"09:15","is_load":false,"task":"..."}}.
-7. Task times must be within work windows: 09:00-12:00 and 13:30-18:00.
-8. Within each role, task times must be strictly increasing.
-9. Add realistic randomization to task timing:
+3. Output must be wrapped exactly with these boundary lines:
+    JSON_START
+    <single JSON object>
+    JSON_END
+4. Do not output anything before JSON_START or after JSON_END.
+5. No explanations, no Markdown, no code fences, no prefixes/suffixes.
+6. Do not call any tools. Do not output tokens like [TOOL_CALL], [/TOOL_CALL], or todowrite.
+7. Ensure the JSON object is directly parseable by a standard JSON parser.
+8. Each task item must use this format: {{"time":"09:15","is_load":false,"task":"..."}}.
+9. Task times must be within work windows: 09:00-12:00 and 13:30-18:00.
+10. Within each role, task times must be strictly increasing.
+11. Add realistic randomization to task timing:
    - At least 80% of task minutes must not be multiples of 5.
    - Avoid fixed adjacent intervals; use varied gaps (recommended range: 12-35 minutes).
-10. Tasks must match role responsibilities and should include observable network behaviors when appropriate (Exchange, OA, SMB, FTP, browser interactions).
-11. Output format must be: {{{output_format}}}.
-12. All task descriptions must be in English.'''
+12. Tasks must match role responsibilities and should include observable network behaviors when appropriate (Exchange, OA, SMB, FTP, browser interactions).
+13. Output format must be: {{{output_format}}}.
+14. All task descriptions must be in English.
+15. Task strings must not contain raw double quotes or unescaped backslashes that can break JSON parsing.'''
 
 
 def extract_json_object(text: str) -> dict[str, Any] | None:
-    """Extract the first JSON object from model output text."""
+    """Extract the first valid JSON object from model output text."""
     if not text:
         return None
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group())
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    return data
+
+    start_marker = "JSON_START"
+    end_marker = "JSON_END"
+
+    # Preferred path: parse content between explicit boundary markers.
+    start_idx = text.find(start_marker)
+    if start_idx != -1:
+        start_idx += len(start_marker)
+        end_idx = text.find(end_marker, start_idx)
+        if end_idx != -1:
+            candidate = text[start_idx:end_idx].strip()
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, dict):
+                    return data
+            except json.JSONDecodeError:
+                pass
+
+    # Fallback: scan for the first decodable JSON object to tolerate noisy wrappers.
+    decoder = json.JSONDecoder()
+    for idx, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            data, _ = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+
+    return None
 
 
 def parse_hhmm_to_minute(value: str) -> int | None:

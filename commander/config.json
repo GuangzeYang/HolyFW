@@ -44,9 +44,9 @@
     "_comment_min_non_five_ratio": "Minimum ratio of tasks whose minute is not 00/05/.../55.",
     "min_non_five_ratio": 0.8,
     "_comment_max_attempts": "Maximum generation attempts per run.",
-    "max_attempts": 3,
+    "max_attempts": 5,
     "_comment_opencode_timeout_seconds": "Timeout for each opencode invocation in seconds.",
-    "opencode_timeout_seconds": 180,
+    "opencode_timeout_seconds": 300,
     "_comment_opencode_paths_common": "Command candidates tried on all systems before OS-specific paths.",
     "opencode_paths_common": [
       "opencode"
