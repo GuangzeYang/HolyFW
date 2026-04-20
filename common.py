@@ -204,19 +204,40 @@ def build_role_task_prompt(
 
 
 def extract_json_object(text: str) -> dict[str, Any] | None:
-    """Extract the first JSON object from model output text."""
+    """Extract the first valid JSON object from model output text."""
     if not text:
         return None
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group())
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    return data
+
+    start_marker = "JSON_START"
+    end_marker = "JSON_END"
+
+    # Preferred path: parse content between explicit boundary markers.
+    start_idx = text.find(start_marker)
+    if start_idx != -1:
+        start_idx += len(start_marker)
+        end_idx = text.find(end_marker, start_idx)
+        if end_idx != -1:
+            candidate = text[start_idx:end_idx].strip()
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, dict):
+                    return data
+            except json.JSONDecodeError:
+                pass
+
+    # Fallback: scan for the first decodable JSON object to tolerate noisy wrappers.
+    decoder = json.JSONDecoder()
+    for idx, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            data, _ = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+
+    return None
 
 
 def parse_hhmm_to_minute(value: str) -> int | None:
