@@ -11,6 +11,7 @@ from pathlib import Path
 from commander.domain import STATUS_PLANNED, STATUS_WAITING
 from commander.policies import EarliestPendingSelectionPolicy, task_needs_dispatch
 from commander.repository import DailyTaskRepository
+from common import build_role_task_prompt
 
 
 class PolicyTests(unittest.TestCase):
@@ -140,6 +141,19 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(item["task_id"], "abc12345")
         self.assertEqual(item["status"], STATUS_WAITING)
 
+
+class PromptTests(unittest.TestCase):
+    def test_build_role_task_prompt_prefers_chinese_and_domain_templates(self) -> None:
+        domain_context = "# \u4efb\u52a1\u5185\u5bb9\u6a21\u677f\n\u4f7f\u7528`smb-access` skill\uff0c\u8bbf\u95ee\u5171\u4eab\u76ee\u5f55xxx\u3002"
+        prompt = build_role_task_prompt(domain_context, min_tasks_per_role=2, roles=("hr", "accountancy"))
+        expected_template_hint = "\u5fc5\u987b\u4f18\u5148\u9075\u5faa\u4e0a\u65b9\"\u4efb\u52a1\u5185\u5bb9\u6a21\u677f\""
+
+        self.assertIn("task \u5b57\u6bb5\u53ef\u4ee5\u4f7f\u7528\u4e2d\u6587", prompt)
+        self.assertIn("\u4efb\u52a1\u5185\u5bb9\u6a21\u677f", prompt)
+        self.assertIn(expected_template_hint, prompt)
+        self.assertNotIn("All task descriptions must be in English", prompt)
+        self.assertIn("\"hr\": [\u4efb\u52a1\u5217\u8868]", prompt)
+        self.assertIn("\"accountancy\": [\u4efb\u52a1\u5217\u8868]", prompt)
 
 if __name__ == "__main__":
     unittest.main()
