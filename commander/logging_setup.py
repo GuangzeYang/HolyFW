@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import logging.handlers
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 try:
     import colorlog
@@ -32,7 +34,6 @@ def configure_daily_logging(
     logger = logging.getLogger()
     logger.setLevel(level)
 
-    # Reset handlers to avoid duplicates when configuration is invoked multiple times.
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
         try:
@@ -70,4 +71,106 @@ def configure_daily_logging(
 
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)
+    return log_file
+
+
+def _normalize_log_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _safe_log_name(value: str) -> str:
+    cleaned = []
+    for char in value:
+        if char.isalnum() or char in {"-", "_"}:
+            cleaned.append(char)
+        else:
+            cleaned.append("_")
+    return "".join(cleaned).strip("_") or "log"
+
+
+def write_deepseek_response_log(
+    logs_dir: Path,
+    source: str,
+    attempt: int,
+    note: str,
+    *,
+    prompt_text: str | bytes | None = None,
+    model: str | None = None,
+    status_code: int | None = None,
+    response_text: str | bytes | None = None,
+    raw_response_text: str | bytes | None = None,
+    error_text: str | bytes | None = None,
+) -> Path:
+    """Write one DeepSeek response/error payload into its own UTF-8 log file."""
+    response_logs_dir = logs_dir / f"deepseek_responses_{date.today().isoformat()}"
+    response_logs_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().astimezone().strftime("%H%M%S_%f")
+    safe_source = _safe_log_name(source)
+    safe_note = _safe_log_name(note)
+    log_file = response_logs_dir / f"{safe_source}_attempt{attempt}_{timestamp}_{safe_note}.log"
+
+    normalized_prompt = _normalize_log_text(prompt_text)
+    normalized_response = _normalize_log_text(response_text)
+    normalized_raw_response = _normalize_log_text(raw_response_text)
+    normalized_error = _normalize_log_text(error_text)
+    lines = [
+        f"timestamp: {datetime.now().astimezone().isoformat()}",
+        f"source: {source}",
+        f"attempt: {attempt}",
+        f"note: {note}",
+        f"model: {model or ''}",
+        f"status_code: {'' if status_code is None else status_code}",
+        "--- PROMPT_TEXT ---",
+        normalized_prompt,
+        "--- RAW_RESPONSE ---",
+        normalized_raw_response,
+        "--- RESPONSE_TEXT ---",
+        normalized_response,
+        "--- ERROR_TEXT ---",
+        normalized_error,
+        "",
+    ]
+    with open(log_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return log_file
+
+
+def append_agent_output_log(
+    logs_dir: Path,
+    source: str,
+    attempt: int,
+    prompt: str,
+    note: str,
+    *,
+    model: str | None = None,
+    response_text: str | bytes | None = None,
+    error_text: str | bytes | None = None,
+    status_code: int | None = None,
+    **extra_fields: Any,
+) -> Path:
+    """Append one model interaction record to the daily agent output log."""
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = logs_dir / f"agent_output_{date.today().isoformat()}.log"
+    normalized_response = _normalize_log_text(response_text)
+    normalized_error = _normalize_log_text(error_text)
+    payload = {
+        "timestamp": datetime.now().astimezone().isoformat(),
+        "source": source,
+        "attempt": attempt,
+        "model": model,
+        "prompt_length": len(prompt),
+        "prompt_preview": prompt[:500],
+        "note": note,
+        "status_code": status_code,
+        "response_preview": normalized_response[:500],
+        "response_text": normalized_response,
+        "error_text": normalized_error,
+    }
+    payload.update(extra_fields)
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
     return log_file

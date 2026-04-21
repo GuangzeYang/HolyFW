@@ -37,39 +37,24 @@
     "_comment_timeout_minutes": "Expiry timeout in minutes written into dispatched waiting tasks.",
     "timeout_minutes": 10
   },
-  "_comment_generator": "Role task generation quality and retry settings.",
+  "_comment_generator": "Role task generation quality, retry settings, and DeepSeek API configuration.",
   "generator": {
     "_comment_min_tasks_per_role": "Minimum number of tasks required per role.",
-    "min_tasks_per_role": 18,
+    "min_tasks_per_role": 5,
+    "_comment_max_tasks_per_role": "Maximum number of tasks allowed per role.",
+    "max_tasks_per_role": 18,
     "_comment_min_non_five_ratio": "Minimum ratio of tasks whose minute is not 00/05/.../55.",
     "min_non_five_ratio": 0.8,
     "_comment_max_attempts": "Maximum generation attempts per run.",
     "max_attempts": 5,
-    "_comment_opencode_timeout_seconds": "Timeout for each opencode invocation in seconds.",
-    "opencode_timeout_seconds": 300,
-    "_comment_opencode_paths_common": "Command candidates tried on all systems before OS-specific paths.",
-    "opencode_paths_common": [
-      "opencode"
-    ],
-    "_comment_opencode_paths_windows": "Additional opencode candidate paths for Windows.",
-    "opencode_paths_windows": [
-      "~\\AppData\\Roaming\\npm\\opencode",
-      "~\\AppData\\Roaming\\npm\\opencode.cmd"
-    ],
-    "_comment_opencode_paths_linux": "Additional opencode candidate paths for Linux.",
-    "opencode_paths_linux": [
-      "/usr/local/bin/opencode",
-      "/usr/bin/opencode",
-      "~/.npm/bin/opencode",
-      "~/.local/bin/opencode"
-    ],
-    "_comment_opencode_paths_macos": "Additional opencode candidate paths for macOS.",
-    "opencode_paths_macos": [
-      "/usr/local/bin/opencode",
-      "/opt/homebrew/bin/opencode",
-      "~/.npm/bin/opencode",
-      "~/.local/bin/opencode"
-    ]
+    "_comment_api_base_url": "DeepSeek API base URL. '/chat/completions' will be appended automatically when needed.",
+    "api_base_url": "https://api.deepseek.com",
+    "_comment_api_key": "DeepSeek API key used for task generation.",
+    "api_key": "sk-49a648a1723842dabf042e4a602162db",
+    "_comment_model": "DeepSeek model used for task generation.",
+    "model": "deepseek-chat",
+    "_comment_request_timeout_seconds": "Timeout for each DeepSeek API request in seconds.",
+    "request_timeout_seconds": 300
   },
   "_comment_paths": "Project-relative paths resolved against commander/ directory.",
   "paths": {

@@ -25,6 +25,10 @@ from logging_setup import configure_daily_logging
 from policies import EarliestPendingSelectionPolicy
 from repository import DailyTaskRepository
 from role_file_service import RoleTaskFileService
+try:
+    from deepseek_client import build_deepseek_config
+except ImportError:
+    from commander.deepseek_client import build_deepseek_config
 from scanner_service import TaskScanService
 from target_config import load_all_roles
 
@@ -33,7 +37,6 @@ try:
         get_dispatch_config,
         get_generator_config,
         get_logging_config,
-        get_opencode_paths,
         get_paths_config,
         get_scanner_config,
         get_server_config,
@@ -46,7 +49,6 @@ except ImportError:
         get_dispatch_config,
         get_generator_config,
         get_logging_config,
-        get_opencode_paths,
         get_paths_config,
         get_scanner_config,
         get_server_config,
@@ -195,10 +197,10 @@ class TaskScanner:
             self.data_dir,
             self.roles,
             min_tasks_per_role=generator_config["min_tasks_per_role"],
+            max_tasks_per_role=generator_config["max_tasks_per_role"],
             min_non_five_ratio=generator_config["min_non_five_ratio"],
             max_attempts=generator_config["max_attempts"],
-            opencode_timeout_sec=generator_config["opencode_timeout_seconds"],
-            opencode_paths=generator_config["opencode_paths"],
+            deepseek_config=build_deepseek_config(generator_config),
             domain_resource_file=domain_resource_file,
         )
         self.selection_policy = EarliestPendingSelectionPolicy()
@@ -217,7 +219,7 @@ class TaskScanner:
         return self.role_file_service.ensure_role_file(role_file)
     
     def _generate_role_tasks(self, role_file: Path) -> bool:
-        """Generate role tasks using opencode CLI."""
+        """Generate role tasks using the DeepSeek API."""
         return self.role_file_service.generate_role_tasks(role_file)
     
     def _load_role_tasks(self, role_file: Path) -> dict:
@@ -374,9 +376,6 @@ def main() -> None:
     target_ini_path = resolve_config_relative_path(paths_config["target_ini_file"])
     dispatch_script = resolve_config_relative_path(paths_config["dispatch_script"])
     domain_resource_file = resolve_config_relative_path(paths_config["domain_resource_file"])
-
-    generator_config = dict(generator_config)
-    generator_config["opencode_paths"] = get_opencode_paths(runtime_config)
 
     logging.info(f"Starting commander, logs: {log_file}")
 

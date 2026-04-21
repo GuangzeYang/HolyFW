@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import os
-import platform
 from pathlib import Path
 from typing import Any
 
@@ -66,16 +65,6 @@ def _validate_comment_pairs(node: dict[str, Any], path: str = "") -> None:
             _validate_comment_pairs(value, where)
 
 
-def _validate_string_list(data: dict[str, Any], dot_path: str) -> list[str]:
-    values = _read_required(data, dot_path, list)
-    if not values:
-        raise ValueError(f"Config key {dot_path} cannot be empty")
-    for index, value in enumerate(values):
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"Config key {dot_path}[{index}] must be a non-empty string")
-    return values
-
-
 def _validate_positive_int(data: dict[str, Any], dot_path: str) -> int:
     value = _read_required(data, dot_path, int)
     if value <= 0:
@@ -103,16 +92,18 @@ def _validate_schema(data: dict[str, Any]) -> None:
     _validate_positive_int(data, "dispatch.client_timeout_seconds")
     _validate_positive_int(data, "dispatch.timeout_minutes")
 
-    _validate_positive_int(data, "generator.min_tasks_per_role")
+    min_tasks_per_role = _validate_positive_int(data, "generator.min_tasks_per_role")
+    max_tasks_per_role = _validate_positive_int(data, "generator.max_tasks_per_role")
+    if max_tasks_per_role < min_tasks_per_role:
+        raise ValueError("Config key generator.max_tasks_per_role must be >= generator.min_tasks_per_role")
     ratio = _read_required(data, "generator.min_non_five_ratio", (int, float))
     if ratio <= 0 or ratio > 1:
         raise ValueError("Config key generator.min_non_five_ratio must be in (0, 1]")
     _validate_positive_int(data, "generator.max_attempts")
-    _validate_positive_int(data, "generator.opencode_timeout_seconds")
-    _validate_string_list(data, "generator.opencode_paths_common")
-    _validate_string_list(data, "generator.opencode_paths_windows")
-    _validate_string_list(data, "generator.opencode_paths_linux")
-    _validate_string_list(data, "generator.opencode_paths_macos")
+    _read_required(data, "generator.api_base_url", str)
+    _read_required(data, "generator.api_key", str)
+    _read_required(data, "generator.model", str)
+    _validate_positive_int(data, "generator.request_timeout_seconds")
 
     _read_required(data, "paths.logs_dir", str)
     _read_required(data, "paths.target_ini_file", str)
@@ -180,13 +171,13 @@ def get_dispatch_config(data: dict[str, Any]) -> dict[str, Any]:
 def get_generator_config(data: dict[str, Any]) -> dict[str, Any]:
     return {
         "min_tasks_per_role": _read_required(data, "generator.min_tasks_per_role", int),
+        "max_tasks_per_role": _read_required(data, "generator.max_tasks_per_role", int),
         "min_non_five_ratio": float(_read_required(data, "generator.min_non_five_ratio", (int, float))),
         "max_attempts": _read_required(data, "generator.max_attempts", int),
-        "opencode_timeout_seconds": _read_required(data, "generator.opencode_timeout_seconds", int),
-        "opencode_paths_common": _validate_string_list(data, "generator.opencode_paths_common"),
-        "opencode_paths_windows": _validate_string_list(data, "generator.opencode_paths_windows"),
-        "opencode_paths_linux": _validate_string_list(data, "generator.opencode_paths_linux"),
-        "opencode_paths_macos": _validate_string_list(data, "generator.opencode_paths_macos"),
+        "api_base_url": _read_required(data, "generator.api_base_url", str),
+        "api_key": _read_required(data, "generator.api_key", str),
+        "model": _read_required(data, "generator.model", str),
+        "request_timeout_seconds": _read_required(data, "generator.request_timeout_seconds", int),
     }
 
 
@@ -205,24 +196,3 @@ def get_logging_config(data: dict[str, Any]) -> dict[str, Any]:
         "backup_count": _read_required(data, "logging.backup_count", int),
         "rotation_interval_days": _read_required(data, "logging.rotation_interval_days", int),
     }
-
-
-def get_opencode_paths(data: dict[str, Any]) -> list[str]:
-    """Return merged opencode command candidates for current platform."""
-    generator_config = get_generator_config(data)
-    paths = list(generator_config["opencode_paths_common"])
-
-    system = platform.system()
-    if system == "Windows":
-        paths.extend(generator_config["opencode_paths_windows"])
-    elif system == "Linux":
-        paths.extend(generator_config["opencode_paths_linux"])
-    elif system == "Darwin":
-        paths.extend(generator_config["opencode_paths_macos"])
-
-    expanded: list[str] = []
-    for path in paths:
-        expanded.append(os.path.expanduser(path))
-    if not expanded:
-        raise ValueError("No opencode command paths resolved from runtime config")
-    return expanded

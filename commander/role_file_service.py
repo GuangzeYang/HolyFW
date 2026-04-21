@@ -9,17 +9,23 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+try:
+    from deepseek_client import DeepSeekConfig, build_deepseek_config
+    from role_task_generation import generate_role_tasks_via_deepseek
+except ImportError:
+    from commander.deepseek_client import DeepSeekConfig, build_deepseek_config
+    from commander.role_task_generation import generate_role_tasks_via_deepseek
+
 from common import (
-    build_role_task_prompt,
-    extract_json_object,
+    candidate_task_path,
     normalize_role_tasks,
     validate_role_tasks,
 )
 
+
 try:
     from runtime_config import (
         get_generator_config,
-        get_opencode_paths,
         get_paths_config,
         load_runtime_config,
         resolve_config_relative_path,
@@ -27,7 +33,6 @@ try:
 except ImportError:
     from commander.runtime_config import (
         get_generator_config,
-        get_opencode_paths,
         get_paths_config,
         load_runtime_config,
         resolve_config_relative_path,
@@ -49,44 +54,49 @@ class RoleTaskFileService:
         data_dir: Path,
         roles: tuple[str, ...],
         min_tasks_per_role: int | None = None,
+        max_tasks_per_role: int | None = None,
         min_non_five_ratio: float | None = None,
         max_attempts: int | None = None,
-        opencode_timeout_sec: int | None = None,
-        opencode_paths: list[str] | None = None,
+        deepseek_config: DeepSeekConfig | None = None,
         domain_resource_file: Path | None = None,
+        logs_dir: Path | None = None,
     ):
         if (
             min_tasks_per_role is None
+            or max_tasks_per_role is None
             or min_non_five_ratio is None
             or max_attempts is None
-            or opencode_timeout_sec is None
-            or opencode_paths is None
+            or deepseek_config is None
             or domain_resource_file is None
+            or logs_dir is None
         ):
             runtime_config = load_runtime_config()
             generator_config = get_generator_config(runtime_config)
             paths_config = get_paths_config(runtime_config)
             if min_tasks_per_role is None:
                 min_tasks_per_role = generator_config["min_tasks_per_role"]
+            if max_tasks_per_role is None:
+                max_tasks_per_role = generator_config["max_tasks_per_role"]
             if min_non_five_ratio is None:
                 min_non_five_ratio = generator_config["min_non_five_ratio"]
             if max_attempts is None:
                 max_attempts = generator_config["max_attempts"]
-            if opencode_timeout_sec is None:
-                opencode_timeout_sec = generator_config["opencode_timeout_seconds"]
-            if opencode_paths is None:
-                opencode_paths = get_opencode_paths(runtime_config)
+            if deepseek_config is None:
+                deepseek_config = build_deepseek_config(generator_config)
             if domain_resource_file is None:
                 domain_resource_file = resolve_config_relative_path(paths_config["domain_resource_file"])
+            if logs_dir is None:
+                logs_dir = resolve_config_relative_path(paths_config["logs_dir"])
 
         self.data_dir = data_dir
         self.roles = roles
         self.min_tasks_per_role = min_tasks_per_role
+        self.max_tasks_per_role = max_tasks_per_role
         self.min_non_five_ratio = min_non_five_ratio
         self.max_attempts = max_attempts
-        self.opencode_timeout_sec = opencode_timeout_sec
-        self.opencode_paths = opencode_paths
+        self.deepseek_config = deepseek_config
         self.domain_resource_file = domain_resource_file
+        self.logs_dir = logs_dir
 
     def _migrate_legacy_role_keys(self, data: dict[str, Any]) -> list[str]:
         migrated: list[str] = []
@@ -218,6 +228,7 @@ class RoleTaskFileService:
                 valid, reason = validate_role_tasks(
                     data,
                     min_tasks_per_role=self.min_tasks_per_role,
+                    max_tasks_per_role=self.max_tasks_per_role,
                     min_non_five_ratio=self.min_non_five_ratio,
                     roles=self.roles,
                 )
@@ -231,6 +242,7 @@ class RoleTaskFileService:
                     valid_after_fix, reason_after_fix = validate_role_tasks(
                         normalized,
                         min_tasks_per_role=self.min_tasks_per_role,
+                        max_tasks_per_role=self.max_tasks_per_role,
                         min_non_five_ratio=self.min_non_five_ratio,
                         roles=self.roles,
                     )
@@ -251,120 +263,37 @@ class RoleTaskFileService:
         return self.generate_role_tasks(role_file)
 
     def generate_role_tasks(self, role_file: Path) -> bool:
-        """Generate role tasks using opencode CLI."""
+        """Generate role tasks using the DeepSeek API."""
         try:
-            import subprocess
-
-            domain_resource_path = self.domain_resource_file
-            domain_context = ""
-            if domain_resource_path.exists():
-                with open(domain_resource_path, encoding="utf-8") as f:
-                    domain_context = f.read()
-                logging.info(f"Read domain resource from {domain_resource_path}")
-            else:
-                logging.warning(f"Domain resource not found: {domain_resource_path}")
-
-            min_tasks_per_role = self.min_tasks_per_role
-            max_attempts = self.max_attempts
-            opencode_timeout_sec = self.opencode_timeout_sec
-            prompt = build_role_task_prompt(
-                domain_context,
-                min_tasks_per_role=min_tasks_per_role,
+            result = generate_role_tasks_via_deepseek(
+                source="role_file_service",
+                final_file=role_file,
+                logs_dir=self.logs_dir,
+                domain_resource_path=self.domain_resource_file,
                 roles=self.roles,
-            )
-            opencode_paths = list(self.opencode_paths)
-
-            saw_timeout = False
-            saw_nonzero_exit = False
-            saw_missing_binary = False
-
-            for attempt in range(1, max_attempts + 1):
-                logging.info(f"Role task generation attempt {attempt}/{max_attempts}")
-                for cmd in opencode_paths:
-                    try:
-                        logging.info(f"Trying opencode at: {cmd}")
-                        result = subprocess.run(
-                            [cmd, "run", prompt],
-                            capture_output=True,
-                            text=True,
-                            timeout=opencode_timeout_sec,
-                            shell=False,
-                        )
-                        if result.returncode != 0:
-                            saw_nonzero_exit = True
-                            logging.warning(f"opencode at {cmd} failed with exit code {result.returncode}")
-                            continue
-
-                        parsed = extract_json_object(result.stdout)
-                        if parsed is None:
-                            logging.error(f"No JSON found in opencode response from {cmd}")
-                            logging.error(f"stdout (first 500 chars): {result.stdout[:500]}")
-                            continue
-
-                        data = normalize_role_tasks(
-                            parsed,
-                            min_tasks_per_role=min_tasks_per_role,
-                            roles=self.roles,
-                        )
-                        valid, reason = validate_role_tasks(
-                            data,
-                            min_tasks_per_role=min_tasks_per_role,
-                            min_non_five_ratio=self.min_non_five_ratio,
-                            roles=self.roles,
-                        )
-                        if not valid:
-                            logging.warning(f"Generated role tasks failed quality checks: {reason}")
-                            continue
-
-                        with open(role_file, "w", encoding="utf-8") as f:
-                            json.dump(data, f, ensure_ascii=False, indent=2)
-                        logging.info(f"Successfully generated role tasks file: {role_file} using {cmd}")
-                        return True
-                    except subprocess.TimeoutExpired:
-                        saw_timeout = True
-                        logging.warning(f"opencode at {cmd} timed out after {opencode_timeout_sec}s")
-                        continue
-                    except FileNotFoundError:
-                        saw_missing_binary = True
-                        logging.debug(f"opencode not found at: {cmd}")
-                        continue
-                    except Exception as e:
-                        logging.warning(f"Error running opencode at {cmd}: {e}")
-                        continue
-
-            if saw_timeout:
-                logging.error(
-                    f"opencode execution timed out after {opencode_timeout_sec}s. "
-                    "Consider increasing timeout or reducing prompt complexity."
-                )
-            elif saw_nonzero_exit:
-                logging.error("opencode returned non-zero exit code for all attempts")
-            elif saw_missing_binary:
-                logging.error(f"Could not find opencode binary. Tried paths: {opencode_paths}")
-            else:
-                logging.error(f"Could not execute opencode. Tried paths: {opencode_paths}")
-
-            fallback_data = normalize_role_tasks(
-                {},
-                min_tasks_per_role=min_tasks_per_role,
-                roles=self.roles,
-            )
-            valid, reason = validate_role_tasks(
-                fallback_data,
-                min_tasks_per_role=min_tasks_per_role,
+                min_tasks_per_role=self.min_tasks_per_role,
+                max_tasks_per_role=self.max_tasks_per_role,
                 min_non_five_ratio=self.min_non_five_ratio,
-                roles=self.roles,
+                max_attempts=self.max_attempts,
+                deepseek_config=self.deepseek_config,
+                emit_status=logging.info,
             )
-            if not valid:
-                logging.error(f"Fallback task generation failed validation: {reason}")
-                return False
-            with open(role_file, "w", encoding="utf-8") as f:
-                json.dump(fallback_data, f, ensure_ascii=False, indent=2)
-            logging.warning("Generated fallback unified tasks because opencode output was unusable")
-            return True
+            if result.success:
+                return True
+
+            logging.error(
+                "Failed to generate valid role tasks after maximum attempts: "
+                + ", ".join(f"{key}={value}" for key, value in result.stats.items())
+            )
+            if result.failure_reason:
+                logging.error(f"Last validation failure reason: {result.failure_reason}")
+            logging.error("Stopping commander because role task generation did not meet requirements.")
+            import os
+            os._exit(1)
         except Exception as e:
             logging.error(f"Exception in generate_role_tasks: {e}")
             return False
+
 
     def load_role_tasks(self, role_file: Path) -> dict[str, Any]:
         try:

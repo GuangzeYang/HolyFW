@@ -24,44 +24,6 @@ ROLE_ALIASES = {
 }
 WORK_WINDOWS = ((9 * 60, 12 * 60), (13 * 60 + 30, 18 * 60))
 
-ROLE_FALLBACK_TASKS = {
-    "hr": [
-        "查收并分类员工咨询邮件，整理成待处理清单",
-        "登录OA系统核对当日人事审批流状态",
-        "发送邮件给相关部门，确认招聘流程节点进度",
-        "访问共享目录\\\\resource\\HR，归档当日人事文档",
-        "核对新员工入职材料完整性并发送补件提醒",
-    ],
-    "accountancy": [
-        "查收银行通知邮件并核对到账信息",
-        "登录OA系统复核报销审批状态并记录差异",
-        "访问共享目录\\\\resource\\Finance，更新付款计划表",
-        "发送邮件给业务部门确认发票与合同匹配情况",
-        "核对本日应收应付变动并整理汇总邮件",
-    ],
-    "manager": [
-        "查收管理层汇报邮件并标记优先处理事项",
-        "登录OA系统查看关键审批与风险提醒",
-        "发送邮件给部门负责人确认当日重点任务进展",
-        "访问共享目录\\\\resource\\Executive，查看经营数据看板",
-        "回复跨部门协调邮件并明确执行时间点",
-    ],
-    "programmer": [
-        "查收团队邮件并更新当日开发任务优先级",
-        "访问共享目录\\\\resource\\Developer，拉取开发文档与脚本",
-        "登录代码平台查看待处理Merge Request与评论",
-        "查收测试反馈邮件并补充缺陷复现记录",
-        "登录OA系统更新研发工作记录与进展说明",
-    ],
-    "local": [
-        "查收本地环境任务邮件并更新执行清单",
-        "登录本地系统控制台核对服务状态",
-        "执行本地目录巡检并记录异常文件",
-        "同步本地测试结果到项目日报",
-        "复核本地自动化任务日志并标记待处理项",
-    ],
-}
-
 
 def clean_old_files(dir_path: Path, pattern: str, days: int = 20) -> None:
     """Delete matched files older than the configured retention days."""
@@ -148,6 +110,79 @@ def save_json_atomic(path: Path, data: dict[str, Any]) -> None:
     clean_old_files(path.parent, "tasks_*.json", days=20)
 
 
+def build_controlled_task_file_paths(
+    data_dir: Path,
+    target_date: date | None = None,
+) -> tuple[Path, Path]:
+    """Return candidate + final paths for a day's generated role tasks."""
+    day = target_date or date.today()
+    stem = f"tasks_{day.month:02d}-{day.day:02d}"
+    candidate = data_dir / f"{stem}.candidate.json"
+    final = data_dir / f"{stem}.json"
+    return candidate, final
+
+
+def candidate_task_path(final_path: Path) -> Path:
+    """Return the controlled candidate path for a final tasks file path."""
+    if final_path.suffix == ".json":
+        return final_path.with_name(f"{final_path.stem}.candidate.json")
+    return final_path.with_name(f"{final_path.name}.candidate.json")
+
+
+
+
+def validate_generated_task_file(
+    file_path: Path,
+    min_tasks_per_role: int,
+    max_tasks_per_role: int,
+    min_non_five_ratio: float,
+    roles: tuple[str, ...] | list[str] | None = None,
+) -> tuple[str | None, str | None, dict[str, Any] | None, int]:
+    """Load, normalize and validate a generated candidate task file."""
+    try:
+        file_size = file_path.stat().st_size
+    except OSError:
+        return "file_missing", f"Candidate task file not found: {file_path}", None, 0
+
+    try:
+        with open(file_path, encoding="utf-8") as f:
+            parsed = json.load(f)
+    except json.JSONDecodeError as exc:
+        return "parse_fail", f"{exc.__class__.__name__}: {exc}", None, file_size
+    except OSError as exc:
+        return "parse_fail", f"{exc.__class__.__name__}: {exc}", None, file_size
+
+    if not isinstance(parsed, dict):
+        return "schema_fail", "Generated JSON must be a dictionary", None, file_size
+
+    normalized = normalize_role_tasks(
+        parsed,
+        min_tasks_per_role=min_tasks_per_role,
+        roles=roles,
+    )
+    valid, reason = validate_role_tasks(
+        normalized,
+        min_tasks_per_role=min_tasks_per_role,
+        max_tasks_per_role=max_tasks_per_role,
+        min_non_five_ratio=min_non_five_ratio,
+        roles=roles,
+    )
+    if not valid:
+        failure_type = classify_validation_failure(reason)
+        return failure_type, reason, None, file_size
+    return None, None, normalized, file_size
+
+
+def promote_candidate_task_file(candidate_file: Path, final_file: Path, data: dict[str, Any]) -> None:
+    """Persist normalized tasks to the final path and remove the candidate file."""
+    save_json_atomic(final_file, data)
+    if candidate_file.exists():
+        try:
+            candidate_file.unlink()
+        except OSError:
+            pass
+
+
 def _normalize_roles(roles: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
     if roles is None:
         return ROLE_NAMES
@@ -174,33 +209,56 @@ def _role_display_name(role: str) -> str:
 def build_role_task_prompt(
     domain_context: str,
     min_tasks_per_role: int = 18,
+    max_tasks_per_role: int = 18,
     roles: tuple[str, ...] | list[str] | None = None,
 ) -> str:
-    """Build a constrained prompt for role task generation."""
+    """Build a constrained prompt for DeepSeek role task generation."""
     role_names = _normalize_roles(roles)
-    role_display = "、".join(_role_display_name(role) for role in role_names)
-    output_format = ", ".join(f'"{role}": [任务列表]' for role in role_names)
+    role_display = ", ".join(_role_display_name(role) for role in role_names)
+    output_format = ", ".join(f'"{role}": [tasks]' for role in role_names)
 
-    return f'''基于以下企业环境描述，为每个角色生成一天的任务序列：
+    lines = [
+        "请基于下面提供的领域上下文，为每个角色生成一整天的工作任务序列。",
+        "所需的完整上下文已经提供，不要再询问更多背景信息，也不要请求澄清。",
+        "只返回一个 JSON 对象，不要输出任何额外内容，也不要使用 Markdown 代码块包裹。",
+        "",
+        domain_context,
+        "",
+        "硬性要求（必须全部满足）：",
+        f"1. 角色必须完整覆盖：{role_display}。",
+        f"2. 每个角色生成的任务数不得少于 {min_tasks_per_role} 条，且不得多于 {max_tasks_per_role} 条。",
+        f"3. 顶层 JSON 对象必须使用如下格式：{{{output_format}}}。",
+        '4. 每条任务项必须使用如下格式：{"time":"09:15","is_load":false,"task":"..."}。',
+        "5. 任务时间必须落在 09:00-12:00 和 13:30-18:00 之间。",
+        "6. 同一角色下的任务时间必须严格递增。",
+        "7. 至少 80% 的任务分钟数不能是 5 的倍数，相邻任务之间的时间间隔应在大约 12 到 35 分钟之间随机变化。",
+        "8. 任务内容必须符合对应角色职责，并尽量体现可被观测的网络行为，例如 Exchange、OA、SMB、FTP 或浏览器访问。",
+        "9. 编写任务描述时，必须遵循领域上下文中的任务内容模板和约束。",
+        "10. 不要向用户提问，也不要请求用户确认。",
+        "11. 不要输出解释、Markdown、代码块、执行说明或重试建议。",
+        "12. 最终只返回 JSON 对象本身。",
+    ]
+    return "\n".join(lines)
 
-{domain_context}
 
-硬性要求（必须全部满足）：
-1. 角色必须完整：{role_display}。
-2. 每个角色至少生成 {min_tasks_per_role} 条任务。
-3. 仅输出一个 JSON 对象，禁止输出解释、Markdown、代码块、前后缀。
-4. 禁止调用任何工具；禁止输出类似 [TOOL_CALL]、[/TOOL_CALL]、todowrite 等内容。
-5. 输出前自行检查可被标准 JSON 解析器直接解析。
-6. 每个任务元素格式：{{"time":"09:15","is_load":false,"task":"..."}}。
-7. 时间必须在工作时段：09:00~12:00, 13:30~18:00。
-8. 同角色任务时间严格递增。
-9. 时间必须有随机扰动：
-   - 至少 80% 的任务分钟值不能是 5 的倍数；
-   - 相邻任务间隔避免固定步长，建议 12~35 分钟随机波动。
-10. 任务要符合角色职责，并尽量涉及 Exchange、OA、SMB、FTP、浏览器等可观测网络行为。
-11. 输出格式：{{{output_format}}}。
-12. 任务内容必须遵循"任务内容模板"的句式与约束来编写。
-13. 仅输出任务数据，不要复述企业环境描述中的章节标题、说明文字或模板解释。'''
+
+def classify_validation_failure(reason: str | None) -> str:
+    """Classify validation failures into schema vs quality buckets."""
+    if not reason:
+        return "schema_fail"
+    schema_markers = (
+        "Generated JSON must be a dictionary",
+        "Missing roles:",
+        "data is not a list",
+        "is not an object",
+        "missing fields:",
+        "has empty task",
+    )
+    if any(marker in reason for marker in schema_markers):
+        return "schema_fail"
+    return "quality_fail"
+
+
 
 
 def extract_json_object(text: str) -> dict[str, Any] | None:
@@ -208,24 +266,6 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
     if not text:
         return None
 
-    start_marker = "JSON_START"
-    end_marker = "JSON_END"
-
-    # Preferred path: parse content between explicit boundary markers.
-    start_idx = text.find(start_marker)
-    if start_idx != -1:
-        start_idx += len(start_marker)
-        end_idx = text.find(end_marker, start_idx)
-        if end_idx != -1:
-            candidate = text[start_idx:end_idx].strip()
-            try:
-                data = json.loads(candidate)
-                if isinstance(data, dict):
-                    return data
-            except json.JSONDecodeError:
-                pass
-
-    # Fallback: scan for the first decodable JSON object to tolerate noisy wrappers.
     decoder = json.JSONDecoder()
     for idx, char in enumerate(text):
         if char != "{":
@@ -236,7 +276,6 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
             continue
         if isinstance(data, dict):
             return data
-
     return None
 
 
@@ -352,14 +391,7 @@ def normalize_role_tasks(
             descriptions.append(desc.strip())
             load_flags.append(bool(item.get("is_load", False)))
 
-        target_count = max(min_tasks_per_role, len(descriptions))
-        fallbacks = ROLE_FALLBACK_TASKS.get(role, ["处理当日业务任务并同步结果"])
-        idx = 0
-        while len(descriptions) < target_count:
-            template = fallbacks[idx % len(fallbacks)]
-            descriptions.append(template)
-            load_flags.append(False)
-            idx += 1
+        target_count = len(descriptions)
 
         schedule = _build_schedule(target_count)
         if len(schedule) < target_count:
@@ -394,6 +426,7 @@ def normalize_role_tasks(
 def validate_role_tasks(
     data: dict[str, Any],
     min_tasks_per_role: int = 18,
+    max_tasks_per_role: int = 18,
     min_non_five_ratio: float = 0.8,
     roles: tuple[str, ...] | list[str] | None = None,
 ) -> tuple[bool, str | None]:
@@ -427,6 +460,8 @@ def validate_role_tasks(
             return False, f"Role '{role}' data is not a list"
         if len(tasks) < min_tasks_per_role:
             return False, f"Role '{role}' has too few tasks: {len(tasks)} < {min_tasks_per_role}"
+        if len(tasks) > max_tasks_per_role:
+            return False, f"Role '{role}' has too many tasks: {len(tasks)} > {max_tasks_per_role}"
 
         non_five = 0
         prev_minute: int | None = None
