@@ -92,21 +92,22 @@ def _safe_log_name(value: str) -> str:
     return "".join(cleaned).strip("_") or "log"
 
 
-def write_deepseek_response_log(
+def write_agent_response_log(
     logs_dir: Path,
     source: str,
     attempt: int,
     note: str,
     *,
     prompt_text: str | bytes | None = None,
+    provider: str | None = None,
     model: str | None = None,
     status_code: int | None = None,
     response_text: str | bytes | None = None,
     raw_response_text: str | bytes | None = None,
     error_text: str | bytes | None = None,
 ) -> Path:
-    """Write one DeepSeek response/error payload into its own UTF-8 log file."""
-    response_logs_dir = logs_dir / f"deepseek_responses_{date.today().isoformat()}"
+    """Write one model response/error payload into its own UTF-8 log file."""
+    response_logs_dir = logs_dir / f"agent_responses_{date.today().isoformat()}"
     response_logs_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().astimezone().strftime("%H%M%S_%f")
     safe_source = _safe_log_name(source)
@@ -122,6 +123,7 @@ def write_deepseek_response_log(
         f"source: {source}",
         f"attempt: {attempt}",
         f"note: {note}",
+        f"provider: {provider or ''}",
         f"model: {model or ''}",
         f"status_code: {'' if status_code is None else status_code}",
         "--- PROMPT_TEXT ---",

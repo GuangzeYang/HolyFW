@@ -72,7 +72,29 @@
 
 ## Exchange邮箱
 
-- 使用`exchange-use`和`playwright-browser`两个skill，发送邮件
+使用 exchange-use skill，进入exchange邮箱，<操作>[，参数]
+
+示例：
+
+- 使用 exchange-use skill，进入exchange邮箱，发送邮件，{收件人：admin@example.com，抄送：boss@example.com，主题：项目汇报，内容：请查收最新的项目进度。}
+- 使用 exchange-use skill，进入exchange邮箱，查看邮件，{目标：第一封邮件}
+- 使用 exchange-use skill，进入exchange邮箱，答复邮件，{抄送：team@example.com，内容：收到，稍后处理。}
+
+
+
+exchange邮箱共有以下三种核心操作：
+
+1. 发送邮件
+   - 参数为收件人、抄送人、主题和邮件内容信息，是一个类json格式(没有引号)，包含的"键"有{收件人，抄送，主题，内容}，如：{收件人：admin@example.com，抄送：boss@example.com，主题：项目汇报，内容：请查收进度}
+   - **注意**：**收件人**和**抄送**必须严格按照[收件人地址处理规则]将用户输入转换为合法的完整邮箱地址后再填入。
+
+2. 查看邮件
+   - 参数为需要查看的目标邮件标识，是一个类json格式(没有引号)，包含的"键"有{目标}，如：{目标：第一封邮件}
+
+3. 答复邮件
+   - 参数为抄送人(如提示词有要求)和答复内容，是一个类json格式(没有引号)，包含的"键"有{抄送，内容}，如：{抄送：team@example.com，内容：收到，谢谢}
+   - 注意：抄送同样需要严格按照[收件人地址处理规则]处理抄送人地址并填入。通常答复邮件是不会删除原邮件的内容的。
+
 
 ## chrome浏览器
 

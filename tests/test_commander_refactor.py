@@ -13,14 +13,10 @@ from unittest import mock
 
 import commander.deepseek_client as deepseek_client
 import commander.role_task_generation as role_task_generation
-from commander.deepseek_client import (
-    DeepSeekAPIError,
-    DeepSeekConfig,
-    DeepSeekResponse,
-    DeepSeekTimeoutError,
-)
+from commander.agent_request_abc import AgentRequestABC, AgentRequestError, AgentResponse, AgentTimeoutError
+from commander.deepseek_client import DeepSeekAgentClient, DeepSeekConfig
 from commander.domain import STATUS_PLANNED, STATUS_WAITING
-from commander.logging_setup import append_agent_output_log, write_deepseek_response_log
+from commander.logging_setup import append_agent_output_log, write_agent_response_log
 from commander.policies import EarliestPendingSelectionPolicy, task_needs_dispatch
 
 try:
@@ -198,13 +194,14 @@ class LoggingSetupTests(unittest.TestCase):
             self.assertEqual(payload["failure_stage"], "response_parse")
             self.assertEqual(payload["expected_output_file"], "commander/role_task/tasks_04-21.candidate.json")
 
-    def test_write_deepseek_response_log_writes_separate_file(self) -> None:
+    def test_write_agent_response_log_writes_separate_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            log_file = write_deepseek_response_log(
+            log_file = write_agent_response_log(
                 Path(tmp),
                 source="generate_role_task",
                 attempt=3,
                 note="api_response",
+                provider="deepseek",
                 model="deepseek-chat",
                 status_code=200,
                 prompt_text="\u53d1\u9001\u7ed9 deepseek \u7684\u63d0\u793a\u8bcd",
@@ -258,7 +255,7 @@ class DeepSeekClientTests(unittest.TestCase):
             "urlopen",
             return_value=FakeHTTPResponse(payload),
         ) as mocked:
-            response = deepseek_client.request_deepseek_completion("hello", self.config)
+            response = DeepSeekAgentClient(self.config).request_completion("hello")
 
         self.assertEqual(response.model, "deepseek-chat")
         self.assertEqual(response.response_text, '{"hr": []}')
@@ -279,7 +276,7 @@ class DeepSeekClientTests(unittest.TestCase):
             "urlopen",
             return_value=FakeHTTPResponse(payload),
         ):
-            response = deepseek_client.request_deepseek_completion("hello", self.config)
+            response = DeepSeekAgentClient(self.config).request_completion("hello")
         self.assertEqual(response.response_text, '{"hr": []}')
 
     def test_request_deepseek_completion_raises_api_error_on_http_error(self) -> None:
@@ -293,8 +290,8 @@ class DeepSeekClientTests(unittest.TestCase):
         )
         http_error.read = lambda: error_body
         with mock.patch.object(deepseek_client.urllib.request, "urlopen", side_effect=http_error):
-            with self.assertRaises(DeepSeekAPIError) as ctx:
-                deepseek_client.request_deepseek_completion("hello", self.config)
+            with self.assertRaises(AgentRequestError) as ctx:
+                DeepSeekAgentClient(self.config).request_completion("hello")
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("bad request", ctx.exception.response_text)
 
@@ -304,8 +301,8 @@ class DeepSeekClientTests(unittest.TestCase):
             "urlopen",
             side_effect=urllib.error.URLError("timed out"),
         ):
-            with self.assertRaises(DeepSeekTimeoutError):
-                deepseek_client.request_deepseek_completion("hello", self.config)
+            with self.assertRaises(AgentTimeoutError):
+                DeepSeekAgentClient(self.config).request_completion("hello")
 
 
 class ExtractorTests(unittest.TestCase):
@@ -428,13 +425,37 @@ class PromptTests(unittest.TestCase):
         self.assertNotIn("All task descriptions must be in English", prompt)
 
 
+class FakeAgentClient(AgentRequestABC):
+    def __init__(self, *, response: AgentResponse | None = None, side_effect: Exception | None = None) -> None:
+        self._response = response
+        self._side_effect = side_effect
+
+    @property
+    def provider_name(self) -> str:
+        return "fake"
+
+    @property
+    def model(self) -> str:
+        return "fake-model"
+
+    @property
+    def request_timeout_seconds(self) -> int:
+        return 60
+
+    def request_completion(self, prompt: str) -> AgentResponse:
+        if self._side_effect is not None:
+            raise self._side_effect
+        assert self._response is not None
+        return self._response
+
+
 class RoleTaskGenerationTests(unittest.TestCase):
-    def _valid_response(self) -> DeepSeekResponse:
+    def _valid_response(self) -> AgentResponse:
         response_text = json.dumps(
-            {"hr": [{"time": "09:01", "is_load": False, "task": "处理入职审批"}]},
+            {"hr": [{"time": "09:01", "is_load": False, "task": "approve onboarding"}]},
             ensure_ascii=False,
         )
-        return DeepSeekResponse(
+        return AgentResponse(
             model="deepseek-chat",
             response_text=response_text,
             status_code=200,
@@ -442,140 +463,114 @@ class RoleTaskGenerationTests(unittest.TestCase):
             raw_response_text=response_text,
         )
 
-    def test_generate_role_tasks_via_deepseek_promotes_final_file(self) -> None:
+    def test_generate_role_tasks_promotes_final_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             logs_dir = root / "logs"
             final_file = root / "role_task" / "tasks_04-21.json"
             domain_resource_path = root / "domain_resource.md"
-            domain_resource_path.write_text("# 模板\n按角色生成任务", encoding="utf-8")
+            domain_resource_path.write_text("# template\nrole tasks", encoding="utf-8")
             statuses: list[str] = []
 
-            with mock.patch.object(
-                role_task_generation,
-                "request_deepseek_completion",
-                return_value=self._valid_response(),
-            ):
-                result = role_task_generation.generate_role_tasks_via_deepseek(
-                    source="generate_role_task",
-                    final_file=final_file,
-                    logs_dir=logs_dir,
-                    domain_resource_path=domain_resource_path,
-                    roles=("hr",),
-                    min_tasks_per_role=1,
-                    max_tasks_per_role=3,
-                    min_non_five_ratio=0.8,
-                    max_attempts=1,
-                    deepseek_config=DeepSeekConfig(
-                        api_base_url="https://api.deepseek.com",
-                        api_key="key",
-                        model="deepseek-chat",
-                        request_timeout_seconds=60,
-                    ),
-                    emit_status=statuses.append,
-                )
+            result = role_task_generation.generate_role_tasks(
+                source="generate_role_task",
+                final_file=final_file,
+                logs_dir=logs_dir,
+                domain_resource_path=domain_resource_path,
+                roles=("hr",),
+                min_tasks_per_role=1,
+                max_tasks_per_role=3,
+                min_non_five_ratio=0.8,
+                max_attempts=1,
+                agent_client=FakeAgentClient(response=self._valid_response()),
+                emit_status=statuses.append,
+            )
 
             self.assertTrue(result.success)
             self.assertEqual(result.output_file, final_file)
             self.assertTrue(final_file.exists())
             self.assertFalse(final_file.with_name("tasks_04-21.candidate.json").exists())
             saved = json.loads(final_file.read_text(encoding="utf-8"))
-            self.assertEqual(saved["hr"][0]["task"], "处理入职审批")
+            self.assertEqual(saved["hr"][0]["task"], "approve onboarding")
             log_file = next(logs_dir.glob("agent_output_*.log"))
             payload = json.loads(log_file.read_text(encoding="utf-8").strip())
             self.assertEqual(payload["note"], "success")
             self.assertEqual(payload["failure_stage"], "promoted_final_file")
-            response_log = next((logs_dir / f"deepseek_responses_{date.today().isoformat()}").glob("*.log"))
+            self.assertEqual(payload["provider"], "fake")
+            response_log = next((logs_dir / f"agent_responses_{date.today().isoformat()}").glob("*.log"))
             response_log_text = response_log.read_text(encoding="utf-8")
+            self.assertIn("provider: fake", response_log_text)
             self.assertIn("--- PROMPT_TEXT ---", response_log_text)
             self.assertIn("--- RESPONSE_TEXT ---", response_log_text)
-            self.assertIn("\u4e0d\u5f97\u5c11\u4e8e", response_log_text)
-            self.assertIn(chr(34) + "hr" + chr(34), response_log_text)
+            self.assertIn('"hr": [tasks]', response_log_text)
             self.assertTrue(any("Successfully generated unified tasks" in item for item in statuses))
 
-    def test_generate_role_tasks_via_deepseek_classifies_parse_fail(self) -> None:
+    def test_generate_role_tasks_classifies_parse_fail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             logs_dir = root / "logs"
             final_file = root / "role_task" / "tasks_04-21.json"
             domain_resource_path = root / "domain_resource.md"
-            domain_resource_path.write_text("# 模板", encoding="utf-8")
+            domain_resource_path.write_text("# template", encoding="utf-8")
 
-            bad_response = DeepSeekResponse(
+            bad_response = AgentResponse(
                 model="deepseek-chat",
-                response_text="解释：这里是任务\n不是 JSON",
+                response_text="not json output",
                 status_code=200,
                 elapsed_seconds=0.8,
                 raw_response_text="{}",
             )
-            with mock.patch.object(
-                role_task_generation,
-                "request_deepseek_completion",
-                return_value=bad_response,
-            ):
-                result = role_task_generation.generate_role_tasks_via_deepseek(
-                    source="generate_role_task",
-                    final_file=final_file,
-                    logs_dir=logs_dir,
-                    domain_resource_path=domain_resource_path,
-                    roles=("hr",),
-                    min_tasks_per_role=1,
-                    max_tasks_per_role=3,
-                    min_non_five_ratio=0.8,
-                    max_attempts=1,
-                    deepseek_config=DeepSeekConfig(
-                        api_base_url="https://api.deepseek.com",
-                        api_key="key",
-                        model="deepseek-chat",
-                        request_timeout_seconds=60,
-                    ),
-                    emit_status=lambda message: None,
-                )
+            result = role_task_generation.generate_role_tasks(
+                source="generate_role_task",
+                final_file=final_file,
+                logs_dir=logs_dir,
+                domain_resource_path=domain_resource_path,
+                roles=("hr",),
+                min_tasks_per_role=1,
+                max_tasks_per_role=3,
+                min_non_five_ratio=0.8,
+                max_attempts=1,
+                agent_client=FakeAgentClient(response=bad_response),
+                emit_status=lambda message: None,
+            )
 
             self.assertFalse(result.success)
             self.assertEqual(result.stats["parse_fail"], 1)
-            self.assertEqual(result.failure_reason, "DeepSeek response did not contain a valid JSON object")
+            self.assertEqual(result.failure_reason, "Model response did not contain a valid JSON object")
             self.assertFalse(final_file.exists())
             log_file = next(logs_dir.glob("agent_output_*.log"))
             payload = json.loads(log_file.read_text(encoding="utf-8").strip())
             self.assertEqual(payload["note"], "parse_fail")
             self.assertEqual(payload["failure_stage"], "response_parse")
+            self.assertEqual(payload["provider"], "fake")
 
-    def test_generate_role_tasks_via_deepseek_classifies_api_timeout(self) -> None:
+    def test_generate_role_tasks_classifies_api_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             logs_dir = root / "logs"
             final_file = root / "role_task" / "tasks_04-21.json"
             domain_resource_path = root / "domain_resource.md"
-            domain_resource_path.write_text("# 模板", encoding="utf-8")
+            domain_resource_path.write_text("# template", encoding="utf-8")
 
-            with mock.patch.object(
-                role_task_generation,
-                "request_deepseek_completion",
-                side_effect=DeepSeekTimeoutError(
-                    "timeout",
-                    response_text="gateway timeout",
-                    elapsed_seconds=2.5,
+            result = role_task_generation.generate_role_tasks(
+                source="generate_role_task",
+                final_file=final_file,
+                logs_dir=logs_dir,
+                domain_resource_path=domain_resource_path,
+                roles=("hr",),
+                min_tasks_per_role=1,
+                max_tasks_per_role=3,
+                min_non_five_ratio=0.8,
+                max_attempts=1,
+                agent_client=FakeAgentClient(
+                    side_effect=AgentTimeoutError(
+                        "timeout",
+                        response_text="gateway timeout",
+                        elapsed_seconds=2.5,
+                    )
                 ),
-            ):
-                result = role_task_generation.generate_role_tasks_via_deepseek(
-                    source="generate_role_task",
-                    final_file=final_file,
-                    logs_dir=logs_dir,
-                    domain_resource_path=domain_resource_path,
-                    roles=("hr",),
-                    min_tasks_per_role=1,
-                    max_tasks_per_role=3,
-                    min_non_five_ratio=0.8,
-                    max_attempts=1,
-                    deepseek_config=DeepSeekConfig(
-                        api_base_url="https://api.deepseek.com",
-                        api_key="key",
-                        model="deepseek-chat",
-                        request_timeout_seconds=60,
-                    ),
-                    emit_status=lambda message: None,
-                )
+                emit_status=lambda message: None,
+            )
 
             self.assertFalse(result.success)
             self.assertEqual(result.stats["api_timeout"], 1)
@@ -585,6 +580,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertEqual(payload["note"], "api_timeout")
             self.assertEqual(payload["failure_stage"], "api_request")
             self.assertEqual(payload["error_text"], "gateway timeout")
+            self.assertEqual(payload["provider"], "fake")
 
 
 if __name__ == "__main__":

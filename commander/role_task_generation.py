@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared DeepSeek-backed role task generation workflow."""
+"""Shared model-backed role task generation workflow."""
 
 from __future__ import annotations
 
@@ -16,19 +16,14 @@ from common import (
     validate_generated_task_file,
 )
 try:
-    from logging_setup import append_agent_output_log, write_deepseek_response_log
+    from agent_request_abc import AgentRequestABC, AgentRequestError, AgentTimeoutError
 except ImportError:
-    from commander.logging_setup import append_agent_output_log, write_deepseek_response_log
+    from commander.agent_request_abc import AgentRequestABC, AgentRequestError, AgentTimeoutError
 
 try:
-    from deepseek_client import DeepSeekAPIError, DeepSeekConfig, DeepSeekTimeoutError, request_deepseek_completion
+    from logging_setup import append_agent_output_log, write_agent_response_log
 except ImportError:
-    from commander.deepseek_client import (
-        DeepSeekAPIError,
-        DeepSeekConfig,
-        DeepSeekTimeoutError,
-        request_deepseek_completion,
-    )
+    from commander.logging_setup import append_agent_output_log, write_agent_response_log
 
 
 StatusCallback = Callable[[str], None]
@@ -42,6 +37,7 @@ class RoleTaskGenerationResult:
     stats: dict[str, int]
 
 
+
 def _read_domain_context(domain_resource_path: Path) -> str:
     if not domain_resource_path.exists():
         return ""
@@ -49,7 +45,8 @@ def _read_domain_context(domain_resource_path: Path) -> str:
         return f.read()
 
 
-def generate_role_tasks_via_deepseek(
+
+def generate_role_tasks(
     *,
     source: str,
     final_file: Path,
@@ -60,7 +57,7 @@ def generate_role_tasks_via_deepseek(
     max_tasks_per_role: int,
     min_non_five_ratio: float,
     max_attempts: int,
-    deepseek_config: DeepSeekConfig,
+    agent_client: AgentRequestABC,
     emit_status: StatusCallback,
 ) -> RoleTaskGenerationResult:
     if final_file.exists():
@@ -98,13 +95,14 @@ def generate_role_tasks_via_deepseek(
                 except OSError:
                     pass
 
-            response = request_deepseek_completion(prompt, deepseek_config)
-            write_deepseek_response_log(
+            response = agent_client.request_completion(prompt)
+            write_agent_response_log(
                 logs_dir,
                 source=source,
                 attempt=attempt,
                 note="api_response",
                 prompt_text=prompt,
+                provider=agent_client.provider_name,
                 model=response.model,
                 status_code=response.status_code,
                 response_text=response.response_text,
@@ -112,17 +110,18 @@ def generate_role_tasks_via_deepseek(
             )
             if not response.response_text.strip():
                 stats["empty_response"] += 1
-                last_failure_reason = "DeepSeek returned an empty response"
+                last_failure_reason = "Model returned an empty response"
                 append_agent_output_log(
                     logs_dir,
                     source=source,
                     attempt=attempt,
                     prompt=prompt,
                     note="empty_response",
+                    provider=agent_client.provider_name,
                     model=response.model,
                     response_text=response.response_text,
                     status_code=response.status_code,
-                    request_timeout_seconds=deepseek_config.request_timeout_seconds,
+                    request_timeout_seconds=agent_client.request_timeout_seconds,
                     failure_stage="api_response",
                     elapsed_seconds=response.elapsed_seconds,
                     expected_output_file=str(candidate_file),
@@ -133,17 +132,18 @@ def generate_role_tasks_via_deepseek(
             parsed = extract_json_object(response.response_text)
             if parsed is None:
                 stats["parse_fail"] += 1
-                last_failure_reason = "DeepSeek response did not contain a valid JSON object"
+                last_failure_reason = "Model response did not contain a valid JSON object"
                 append_agent_output_log(
                     logs_dir,
                     source=source,
                     attempt=attempt,
                     prompt=prompt,
                     note="parse_fail",
+                    provider=agent_client.provider_name,
                     model=response.model,
                     response_text=response.response_text,
                     status_code=response.status_code,
-                    request_timeout_seconds=deepseek_config.request_timeout_seconds,
+                    request_timeout_seconds=agent_client.request_timeout_seconds,
                     failure_stage="response_parse",
                     elapsed_seconds=response.elapsed_seconds,
                     expected_output_file=str(candidate_file),
@@ -168,10 +168,11 @@ def generate_role_tasks_via_deepseek(
                     attempt=attempt,
                     prompt=prompt,
                     note=f"{failure_type}: {reason}",
+                    provider=agent_client.provider_name,
                     model=response.model,
                     response_text=response.response_text,
                     status_code=response.status_code,
-                    request_timeout_seconds=deepseek_config.request_timeout_seconds,
+                    request_timeout_seconds=agent_client.request_timeout_seconds,
                     failure_stage="candidate_validation",
                     elapsed_seconds=response.elapsed_seconds,
                     expected_output_file=str(candidate_file),
@@ -190,10 +191,11 @@ def generate_role_tasks_via_deepseek(
                 attempt=attempt,
                 prompt=prompt,
                 note="success",
+                provider=agent_client.provider_name,
                 model=response.model,
                 response_text=response.response_text,
                 status_code=response.status_code,
-                request_timeout_seconds=deepseek_config.request_timeout_seconds,
+                request_timeout_seconds=agent_client.request_timeout_seconds,
                 failure_stage="promoted_final_file",
                 elapsed_seconds=response.elapsed_seconds,
                 expected_output_file=str(candidate_file),
@@ -203,16 +205,17 @@ def generate_role_tasks_via_deepseek(
             )
             emit_status(f"Successfully generated unified tasks: {final_file}")
             return RoleTaskGenerationResult(True, final_file, None, stats)
-        except DeepSeekTimeoutError as exc:
+        except AgentTimeoutError as exc:
             stats["api_timeout"] += 1
             last_failure_reason = str(exc)
-            write_deepseek_response_log(
+            write_agent_response_log(
                 logs_dir,
                 source=source,
                 attempt=attempt,
                 note="api_timeout",
                 prompt_text=prompt,
-                model=deepseek_config.model,
+                provider=agent_client.provider_name,
+                model=agent_client.model,
                 status_code=exc.status_code,
                 error_text=exc.response_text or str(exc),
             )
@@ -222,26 +225,28 @@ def generate_role_tasks_via_deepseek(
                 attempt=attempt,
                 prompt=prompt,
                 note="api_timeout",
-                model=deepseek_config.model,
+                provider=agent_client.provider_name,
+                model=agent_client.model,
                 error_text=exc.response_text or str(exc),
                 status_code=exc.status_code,
-                request_timeout_seconds=deepseek_config.request_timeout_seconds,
+                request_timeout_seconds=agent_client.request_timeout_seconds,
                 failure_stage="api_request",
                 elapsed_seconds=exc.elapsed_seconds,
                 expected_output_file=str(candidate_file),
             )
-            emit_status(f"DeepSeek API timed out: {exc}")
-        except DeepSeekAPIError as exc:
+            emit_status(f"Agent request timed out: {exc}")
+        except AgentRequestError as exc:
             stats["api_error"] += 1
             last_failure_reason = str(exc)
             if exc.response_text:
-                write_deepseek_response_log(
+                write_agent_response_log(
                     logs_dir,
                     source=source,
                     attempt=attempt,
                     note="api_error",
                     prompt_text=prompt,
-                    model=deepseek_config.model,
+                    provider=agent_client.provider_name,
+                    model=agent_client.model,
                     status_code=exc.status_code,
                     raw_response_text=exc.response_text,
                     error_text=exc.response_text,
@@ -252,15 +257,16 @@ def generate_role_tasks_via_deepseek(
                 attempt=attempt,
                 prompt=prompt,
                 note="api_error",
-                model=deepseek_config.model,
+                provider=agent_client.provider_name,
+                model=agent_client.model,
                 error_text=exc.response_text or str(exc),
                 status_code=exc.status_code,
-                request_timeout_seconds=deepseek_config.request_timeout_seconds,
+                request_timeout_seconds=agent_client.request_timeout_seconds,
                 failure_stage="api_request",
                 elapsed_seconds=exc.elapsed_seconds,
                 expected_output_file=str(candidate_file),
             )
-            emit_status(f"DeepSeek API error: {exc}")
+            emit_status(f"Agent request failed: {exc}")
         except Exception as exc:
             stats["runtime_error"] += 1
             last_failure_reason = str(exc)
@@ -270,9 +276,10 @@ def generate_role_tasks_via_deepseek(
                 attempt=attempt,
                 prompt=prompt,
                 note="runtime_error",
-                model=deepseek_config.model,
+                provider=agent_client.provider_name,
+                model=agent_client.model,
                 error_text=str(exc),
-                request_timeout_seconds=deepseek_config.request_timeout_seconds,
+                request_timeout_seconds=agent_client.request_timeout_seconds,
                 failure_stage="runtime_exception",
                 expected_output_file=str(candidate_file),
             )

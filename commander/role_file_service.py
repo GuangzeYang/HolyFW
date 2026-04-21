@@ -10,11 +10,13 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from deepseek_client import DeepSeekConfig, build_deepseek_config
-    from role_task_generation import generate_role_tasks_via_deepseek
+    from agent_request_abc import AgentRequestABC
+    from deepseek_client import build_deepseek_client
+    from role_task_generation import generate_role_tasks
 except ImportError:
-    from commander.deepseek_client import DeepSeekConfig, build_deepseek_config
-    from commander.role_task_generation import generate_role_tasks_via_deepseek
+    from commander.agent_request_abc import AgentRequestABC
+    from commander.deepseek_client import build_deepseek_client
+    from commander.role_task_generation import generate_role_tasks
 
 from common import (
     candidate_task_path,
@@ -42,13 +44,6 @@ except ImportError:
 class RoleTaskFileService:
     """Manage the daily unified role task file lifecycle."""
 
-    LEGACY_ROLE_KEY_MAP = {
-        "finance": "accountancy",
-        "ceo": "manager",
-        "developer": "programmer",
-        "it": "programmer",
-    }
-
     def __init__(
         self,
         data_dir: Path,
@@ -57,7 +52,7 @@ class RoleTaskFileService:
         max_tasks_per_role: int | None = None,
         min_non_five_ratio: float | None = None,
         max_attempts: int | None = None,
-        deepseek_config: DeepSeekConfig | None = None,
+        agent_client: AgentRequestABC | None = None,
         domain_resource_file: Path | None = None,
         logs_dir: Path | None = None,
     ):
@@ -66,7 +61,7 @@ class RoleTaskFileService:
             or max_tasks_per_role is None
             or min_non_five_ratio is None
             or max_attempts is None
-            or deepseek_config is None
+            or agent_client is None
             or domain_resource_file is None
             or logs_dir is None
         ):
@@ -81,8 +76,8 @@ class RoleTaskFileService:
                 min_non_five_ratio = generator_config["min_non_five_ratio"]
             if max_attempts is None:
                 max_attempts = generator_config["max_attempts"]
-            if deepseek_config is None:
-                deepseek_config = build_deepseek_config(generator_config)
+            if agent_client is None:
+                agent_client = build_deepseek_client(generator_config)
             if domain_resource_file is None:
                 domain_resource_file = resolve_config_relative_path(paths_config["domain_resource_file"])
             if logs_dir is None:
@@ -94,29 +89,9 @@ class RoleTaskFileService:
         self.max_tasks_per_role = max_tasks_per_role
         self.min_non_five_ratio = min_non_five_ratio
         self.max_attempts = max_attempts
-        self.deepseek_config = deepseek_config
+        self.agent_client = agent_client
         self.domain_resource_file = domain_resource_file
         self.logs_dir = logs_dir
-
-    def _migrate_legacy_role_keys(self, data: dict[str, Any]) -> list[str]:
-        migrated: list[str] = []
-        for old_role, new_role in self.LEGACY_ROLE_KEY_MAP.items():
-            old_tasks = data.get(old_role)
-            if not isinstance(old_tasks, list):
-                continue
-
-            new_tasks = data.get(new_role)
-            if not isinstance(new_tasks, list):
-                new_tasks = []
-                data[new_role] = new_tasks
-
-            moved_count = len(old_tasks)
-            if moved_count:
-                new_tasks.extend(old_tasks)
-            del data[old_role]
-            migrated.append(f"{old_role}->{new_role} ({moved_count})")
-        return migrated
-
     def get_today_role_task_file(self) -> Path:
         today = date.today().isoformat()
         month_day = today[5:]
@@ -131,14 +106,6 @@ class RoleTaskFileService:
                 if not isinstance(data, dict):
                     logging.warning(f"Role file {role_file} is not a dict")
                     return False
-
-                migrated_roles = self._migrate_legacy_role_keys(data)
-                if migrated_roles:
-                    with open(role_file, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False, indent=2)
-                    logging.info(
-                        f"Role file {role_file} migrated legacy role keys: {', '.join(migrated_roles)}"
-                    )
 
                 has_runtime_fields = False
                 for tasks in data.values():
@@ -263,9 +230,9 @@ class RoleTaskFileService:
         return self.generate_role_tasks(role_file)
 
     def generate_role_tasks(self, role_file: Path) -> bool:
-        """Generate role tasks using the DeepSeek API."""
+        """Generate role tasks using the configured model client."""
         try:
-            result = generate_role_tasks_via_deepseek(
+            result = generate_role_tasks(
                 source="role_file_service",
                 final_file=role_file,
                 logs_dir=self.logs_dir,
@@ -275,7 +242,7 @@ class RoleTaskFileService:
                 max_tasks_per_role=self.max_tasks_per_role,
                 min_non_five_ratio=self.min_non_five_ratio,
                 max_attempts=self.max_attempts,
-                deepseek_config=self.deepseek_config,
+                agent_client=self.agent_client,
                 emit_status=logging.info,
             )
             if result.success:

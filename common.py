@@ -13,15 +13,6 @@ from typing import Any
 DATE_FULL = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DATE_MD = re.compile(r"^\d{2}-\d{2}$")
 UUID_HEX_NO_HYPHEN = re.compile(r"^[0-9a-fA-F]{8,32}$")
-
-ROLE_NAMES = ("hr", "accountancy", "manager", "programmer", "local")
-ROLE_ALIASES = {
-    "hr": ("hr", "HR", "human resources", "Human Resources", "人事"),
-    "accountancy": ("accountancy", "finance", "accounting", "Accountancy", "财务"),
-    "manager": ("manager", "ceo", "general manager", "Manager", "总经理"),
-    "programmer": ("programmer", "developer", "it", "Programmer", "程序员"),
-    "local": ("local", "local operations", "Local", "本地"),
-}
 WORK_WINDOWS = ((9 * 60, 12 * 60), (13 * 60 + 30, 18 * 60))
 
 
@@ -136,7 +127,7 @@ def validate_generated_task_file(
     min_tasks_per_role: int,
     max_tasks_per_role: int,
     min_non_five_ratio: float,
-    roles: tuple[str, ...] | list[str] | None = None,
+    roles: tuple[str, ...] | list[str],
 ) -> tuple[str | None, str | None, dict[str, Any] | None, int]:
     """Load, normalize and validate a generated candidate task file."""
     try:
@@ -185,7 +176,7 @@ def promote_candidate_task_file(candidate_file: Path, final_file: Path, data: di
 
 def _normalize_roles(roles: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
     if roles is None:
-        return ROLE_NAMES
+        raise ValueError("roles must be provided explicitly")
     normalized: list[str] = []
     seen: set[str] = set()
     for role in roles:
@@ -196,14 +187,9 @@ def _normalize_roles(roles: tuple[str, ...] | list[str] | None) -> tuple[str, ..
             continue
         seen.add(role_name)
         normalized.append(role_name)
-    return tuple(normalized) if normalized else ROLE_NAMES
-
-
-def _role_display_name(role: str) -> str:
-    aliases = ROLE_ALIASES.get(role)
-    if aliases and len(aliases) >= 2:
-        return aliases[-1]
-    return role
+    if not normalized:
+        raise ValueError("roles must contain at least one non-empty role name")
+    return tuple(normalized)
 
 
 def build_role_task_prompt(
@@ -212,9 +198,9 @@ def build_role_task_prompt(
     max_tasks_per_role: int = 18,
     roles: tuple[str, ...] | list[str] | None = None,
 ) -> str:
-    """Build a constrained prompt for DeepSeek role task generation."""
+    """Build a constrained prompt for role task generation."""
     role_names = _normalize_roles(roles)
-    role_display = ", ".join(_role_display_name(role) for role in role_names)
+    role_display = ", ".join(role_names)
     output_format = ", ".join(f'"{role}": [tasks]' for role in role_names)
 
     lines = [
@@ -359,15 +345,6 @@ def _build_schedule(count: int, seed: int | None = None) -> list[int]:
     return minutes[:count]
 
 
-def _get_role_items(data: dict[str, Any], role: str) -> list:
-    aliases = ROLE_ALIASES.get(role, (role,))
-    for key in aliases:
-        value = data.get(key)
-        if isinstance(value, list):
-            return value
-    return []
-
-
 def normalize_role_tasks(
     data: dict[str, Any],
     min_tasks_per_role: int = 18,
@@ -378,7 +355,9 @@ def normalize_role_tasks(
     normalized: dict[str, Any] = {}
 
     for role in role_names:
-        items = _get_role_items(data, role)
+        items = data.get(role)
+        if not isinstance(items, list):
+            items = []
 
         descriptions: list[str] = []
         load_flags: list[bool] = []

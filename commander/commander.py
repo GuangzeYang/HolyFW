@@ -26,9 +26,9 @@ from policies import EarliestPendingSelectionPolicy
 from repository import DailyTaskRepository
 from role_file_service import RoleTaskFileService
 try:
-    from deepseek_client import build_deepseek_config
+    from deepseek_client import build_deepseek_client
 except ImportError:
-    from commander.deepseek_client import build_deepseek_config
+    from commander.deepseek_client import build_deepseek_client
 from scanner_service import TaskScanService
 from target_config import load_all_roles
 
@@ -200,7 +200,7 @@ class TaskScanner:
             max_tasks_per_role=generator_config["max_tasks_per_role"],
             min_non_five_ratio=generator_config["min_non_five_ratio"],
             max_attempts=generator_config["max_attempts"],
-            deepseek_config=build_deepseek_config(generator_config),
+            agent_client=build_deepseek_client(generator_config),
             domain_resource_file=domain_resource_file,
         )
         self.selection_policy = EarliestPendingSelectionPolicy()
@@ -219,7 +219,7 @@ class TaskScanner:
         return self.role_file_service.ensure_role_file(role_file)
     
     def _generate_role_tasks(self, role_file: Path) -> bool:
-        """Generate role tasks using the DeepSeek API."""
+        """Generate role tasks using the configured model client."""
         return self.role_file_service.generate_role_tasks(role_file)
     
     def _load_role_tasks(self, role_file: Path) -> dict:
