@@ -40,9 +40,9 @@
   "_comment_generator": "Role task generation quality, retry settings, and DeepSeek API configuration.",
   "generator": {
     "_comment_min_tasks_per_role": "Minimum number of tasks required per role.",
-    "min_tasks_per_role": 5,
+    "min_tasks_per_role": 20,
     "_comment_max_tasks_per_role": "Maximum number of tasks allowed per role.",
-    "max_tasks_per_role": 18,
+    "max_tasks_per_role": 25,
     "_comment_min_non_five_ratio": "Minimum ratio of tasks whose minute is not 00/05/.../55.",
     "min_non_five_ratio": 0.8,
     "_comment_max_attempts": "Maximum generation attempts per run.",
@@ -54,7 +54,9 @@
     "_comment_model": "DeepSeek model used for task generation.",
     "model": "deepseek-chat",
     "_comment_request_timeout_seconds": "Timeout for each DeepSeek API request in seconds.",
-    "request_timeout_seconds": 300
+    "request_timeout_seconds": 3000,
+    "_comment_max_tokens": "Maximum completion tokens requested from DeepSeek for each role-generation call.",
+    "max_tokens": 8192
   },
   "_comment_paths": "Project-relative paths resolved against commander/ directory.",
   "paths": {

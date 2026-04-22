@@ -23,6 +23,7 @@ class DeepSeekConfig:
     api_key: str
     model: str
     request_timeout_seconds: int
+    max_tokens: int
 
 
 class DeepSeekAgentClient(AgentRequestABC):
@@ -49,6 +50,7 @@ class DeepSeekAgentClient(AgentRequestABC):
             "model": self.config.model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
+            "max_tokens": self.config.max_tokens,
         }
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
@@ -101,6 +103,7 @@ class DeepSeekAgentClient(AgentRequestABC):
             status_code=status_code,
             elapsed_seconds=elapsed,
             raw_response_text=raw_text,
+            finish_reason=_extract_finish_reason(payload_json),
         )
 
 
@@ -110,6 +113,7 @@ def build_deepseek_client(generator_config: dict[str, Any]) -> DeepSeekAgentClie
         api_key=str(generator_config["api_key"]),
         model=str(generator_config["model"]),
         request_timeout_seconds=int(generator_config["request_timeout_seconds"]),
+        max_tokens=int(generator_config["max_tokens"]),
     )
     return DeepSeekAgentClient(config)
 
@@ -143,3 +147,14 @@ def _extract_message_content(payload: dict[str, Any]) -> str:
                     parts.append(text)
         return "".join(parts)
     return ""
+
+
+def _extract_finish_reason(payload: dict[str, Any]) -> str | None:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None
+    finish_reason = first.get("finish_reason")
+    return finish_reason if isinstance(finish_reason, str) and finish_reason.strip() else None

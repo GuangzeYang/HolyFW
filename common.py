@@ -247,8 +247,24 @@ def classify_validation_failure(reason: str | None) -> str:
 
 
 
+def _looks_like_role_task_root(data: dict[str, Any]) -> bool:
+    """Return True when a decoded object resembles the expected role-task root."""
+    if not data:
+        return False
+
+    for key, value in data.items():
+        if not isinstance(key, str) or not key.strip():
+            return False
+        if not isinstance(value, list):
+            return False
+        for item in value:
+            if not isinstance(item, dict):
+                return False
+    return True
+
+
 def extract_json_object(text: str) -> dict[str, Any] | None:
-    """Extract the first valid JSON object from model output text."""
+    """Extract the first valid role-task JSON object from model output text."""
     if not text:
         return None
 
@@ -260,7 +276,7 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
             data, _ = decoder.raw_decode(text, idx)
         except json.JSONDecodeError:
             continue
-        if isinstance(data, dict):
+        if isinstance(data, dict) and _looks_like_role_task_root(data):
             return data
     return None
 

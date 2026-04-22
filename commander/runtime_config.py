@@ -104,6 +104,7 @@ def _validate_schema(data: dict[str, Any]) -> None:
     _read_required(data, "generator.api_key", str)
     _read_required(data, "generator.model", str)
     _validate_positive_int(data, "generator.request_timeout_seconds")
+    _validate_positive_int(data, "generator.max_tokens")
 
     _read_required(data, "paths.logs_dir", str)
     _read_required(data, "paths.target_ini_file", str)
@@ -178,6 +179,7 @@ def get_generator_config(data: dict[str, Any]) -> dict[str, Any]:
         "api_key": _read_required(data, "generator.api_key", str),
         "model": _read_required(data, "generator.model", str),
         "request_timeout_seconds": _read_required(data, "generator.request_timeout_seconds", int),
+        "max_tokens": _read_required(data, "generator.max_tokens", int),
     }
 
 

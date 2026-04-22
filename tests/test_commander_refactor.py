@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Regression tests for commander refactor modules."""
 
 from __future__ import annotations
@@ -204,7 +204,9 @@ class LoggingSetupTests(unittest.TestCase):
                 provider="deepseek",
                 model="deepseek-chat",
                 status_code=200,
-                prompt_text="\u53d1\u9001\u7ed9 deepseek \u7684\u63d0\u793a\u8bcd",
+                role="hr",
+                finish_reason="length",
+                prompt_text="发送给 deepseek 的提示词",
                 response_text="raw response body",
                 raw_response_text='{"choices":[{"message":{"content":"raw response body"}}]}',
                 error_text="",
@@ -215,8 +217,10 @@ class LoggingSetupTests(unittest.TestCase):
             self.assertIn("source: generate_role_task", content)
             self.assertIn("attempt: 3", content)
             self.assertIn("note: api_response", content)
+            self.assertIn("role: hr", content)
+            self.assertIn("finish_reason: length", content)
             self.assertIn("--- PROMPT_TEXT ---", content)
-            self.assertIn("\u53d1\u9001\u7ed9 deepseek \u7684\u63d0\u793a\u8bcd", content)
+            self.assertIn("发送给 deepseek 的提示词", content)
             self.assertIn("--- RAW_RESPONSE ---", content)
             self.assertIn("raw response body", content)
 
@@ -243,12 +247,13 @@ class DeepSeekClientTests(unittest.TestCase):
             api_key="test-key",
             model="deepseek-chat",
             request_timeout_seconds=10,
+            max_tokens=8192,
         )
 
     def test_request_deepseek_completion_returns_message_content(self) -> None:
         payload = {
             "model": "deepseek-chat",
-            "choices": [{"message": {"content": '{"hr": []}'}}],
+            "choices": [{"message": {"content": '{"hr": []}'}, "finish_reason": "stop"}],
         }
         with mock.patch.object(
             deepseek_client.urllib.request,
@@ -260,15 +265,21 @@ class DeepSeekClientTests(unittest.TestCase):
         self.assertEqual(response.model, "deepseek-chat")
         self.assertEqual(response.response_text, '{"hr": []}')
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.finish_reason, "stop")
         self.assertIn('"choices"', response.raw_response_text)
         request_obj = mocked.call_args.args[0]
         self.assertEqual(request_obj.full_url, "https://api.deepseek.com/chat/completions")
+        request_body = json.loads(request_obj.data.decode("utf-8"))
+        self.assertEqual(request_body["max_tokens"], 8192)
 
     def test_request_deepseek_completion_supports_content_part_lists(self) -> None:
         payload = {
             "model": "deepseek-chat",
             "choices": [
-                {"message": {"content": [{"text": '{"hr": '}, {"text": '[]}'}, {"type": "ignored"}]}}
+                {
+                    "message": {"content": [{"text": '{"hr": '}, {"text": '[]}'}, {"type": "ignored"}]},
+                    "finish_reason": "stop",
+                }
             ],
         }
         with mock.patch.object(
@@ -278,6 +289,20 @@ class DeepSeekClientTests(unittest.TestCase):
         ):
             response = DeepSeekAgentClient(self.config).request_completion("hello")
         self.assertEqual(response.response_text, '{"hr": []}')
+        self.assertEqual(response.finish_reason, "stop")
+
+    def test_request_deepseek_completion_extracts_finish_reason(self) -> None:
+        payload = {
+            "model": "deepseek-chat",
+            "choices": [{"message": {"content": '{"hr": []}'}, "finish_reason": "length"}],
+        }
+        with mock.patch.object(
+            deepseek_client.urllib.request,
+            "urlopen",
+            return_value=FakeHTTPResponse(payload),
+        ):
+            response = DeepSeekAgentClient(self.config).request_completion("hello")
+        self.assertEqual(response.finish_reason, "length")
 
     def test_request_deepseek_completion_raises_api_error_on_http_error(self) -> None:
         error_body = b'{"error":"bad request"}'
@@ -312,6 +337,23 @@ class ExtractorTests(unittest.TestCase):
 
     def test_extract_json_object_returns_none_for_invalid_text(self) -> None:
         self.assertIsNone(extract_json_object("not json"))
+
+    def test_extract_json_object_accepts_fenced_root_object(self) -> None:
+        text = "```json\n{\"hr\": [], \"accountancy\": []}\n```"
+        self.assertEqual(extract_json_object(text), {"hr": [], "accountancy": []})
+
+    def test_extract_json_object_rejects_truncated_outer_object(self) -> None:
+        text = (
+            "```json\n"
+            "{\n"
+            '    "hr": [\n'
+            '        {"time": "09:07", "is_load": false, "task": "查看邮件"}\n'
+            "    ],\n"
+            '    "programmer": [\n'
+            '        {"time": "09:24", "is_load": false, "task": "查看IT-Dev目录"},\n'
+            '        {"time": "09:41", "is_load": false\n'
+        )
+        self.assertIsNone(extract_json_object(text))
 
     def test_classify_validation_failure_distinguishes_schema_and_quality(self) -> None:
         self.assertEqual(classify_validation_failure("Missing roles: ['hr']"), "schema_fail")
@@ -426,9 +468,17 @@ class PromptTests(unittest.TestCase):
 
 
 class FakeAgentClient(AgentRequestABC):
-    def __init__(self, *, response: AgentResponse | None = None, side_effect: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        response: AgentResponse | None = None,
+        responses: list[AgentResponse] | None = None,
+        side_effect: Exception | None = None,
+    ) -> None:
         self._response = response
+        self._responses = list(responses) if responses is not None else None
         self._side_effect = side_effect
+        self.prompts: list[str] = []
 
     @property
     def provider_name(self) -> str:
@@ -443,16 +493,27 @@ class FakeAgentClient(AgentRequestABC):
         return 60
 
     def request_completion(self, prompt: str) -> AgentResponse:
+        self.prompts.append(prompt)
         if self._side_effect is not None:
             raise self._side_effect
+        if self._responses is not None:
+            if not self._responses:
+                raise AssertionError("No fake responses left")
+            return self._responses.pop(0)
         assert self._response is not None
         return self._response
 
 
 class RoleTaskGenerationTests(unittest.TestCase):
-    def _valid_response(self) -> AgentResponse:
+    def _valid_response(
+        self,
+        role: str = "hr",
+        task: str = "approve onboarding",
+        *,
+        finish_reason: str | None = None,
+    ) -> AgentResponse:
         response_text = json.dumps(
-            {"hr": [{"time": "09:01", "is_load": False, "task": "approve onboarding"}]},
+            {role: [{"time": "09:01", "is_load": False, "task": task}]},
             ensure_ascii=False,
         )
         return AgentResponse(
@@ -461,6 +522,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
             status_code=200,
             elapsed_seconds=1.25,
             raw_response_text=response_text,
+            finish_reason=finish_reason,
         )
 
     def test_generate_role_tasks_promotes_final_file(self) -> None:
@@ -500,10 +562,49 @@ class RoleTaskGenerationTests(unittest.TestCase):
             response_log = next((logs_dir / f"agent_responses_{date.today().isoformat()}").glob("*.log"))
             response_log_text = response_log.read_text(encoding="utf-8")
             self.assertIn("provider: fake", response_log_text)
+            self.assertIn("role: hr", response_log_text)
             self.assertIn("--- PROMPT_TEXT ---", response_log_text)
             self.assertIn("--- RESPONSE_TEXT ---", response_log_text)
             self.assertIn('"hr": [tasks]', response_log_text)
             self.assertTrue(any("Successfully generated unified tasks" in item for item in statuses))
+
+    def test_generate_role_tasks_merges_single_role_responses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            final_file = root / "role_task" / "tasks_04-21.json"
+            domain_resource_path = root / "domain_resource.md"
+            domain_resource_path.write_text("# template\nrole tasks", encoding="utf-8")
+            client = FakeAgentClient(
+                responses=[
+                    self._valid_response("hr", "approve onboarding"),
+                    self._valid_response("programmer", "review code"),
+                ]
+            )
+
+            result = role_task_generation.generate_role_tasks(
+                source="generate_role_task",
+                final_file=final_file,
+                logs_dir=logs_dir,
+                domain_resource_path=domain_resource_path,
+                roles=("hr", "programmer"),
+                min_tasks_per_role=1,
+                max_tasks_per_role=3,
+                min_non_five_ratio=0.8,
+                max_attempts=1,
+                agent_client=client,
+                emit_status=lambda message: None,
+            )
+
+            self.assertTrue(result.success)
+            saved = json.loads(final_file.read_text(encoding="utf-8"))
+            self.assertEqual(saved["hr"][0]["task"], "approve onboarding")
+            self.assertEqual(saved["programmer"][0]["task"], "review code")
+            self.assertEqual(len(client.prompts), 2)
+            self.assertIn('"hr": [tasks]', client.prompts[0])
+            self.assertNotIn('"programmer": [tasks]', client.prompts[0])
+            self.assertIn('"programmer": [tasks]', client.prompts[1])
+            self.assertNotIn('"accountancy": [tasks]', client.prompts[1])
 
     def test_generate_role_tasks_classifies_parse_fail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -536,13 +637,64 @@ class RoleTaskGenerationTests(unittest.TestCase):
 
             self.assertFalse(result.success)
             self.assertEqual(result.stats["parse_fail"], 1)
-            self.assertEqual(result.failure_reason, "Model response did not contain a valid JSON object")
+            self.assertEqual(result.failure_reason, "Model response for role 'hr' did not contain a valid JSON object")
             self.assertFalse(final_file.exists())
             log_file = next(logs_dir.glob("agent_output_*.log"))
             payload = json.loads(log_file.read_text(encoding="utf-8").strip())
             self.assertEqual(payload["note"], "parse_fail")
             self.assertEqual(payload["failure_stage"], "response_parse")
             self.assertEqual(payload["provider"], "fake")
+            self.assertEqual(payload["role"], "hr")
+
+    def test_generate_role_tasks_classifies_truncated_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            final_file = root / "role_task" / "tasks_04-21.json"
+            domain_resource_path = root / "domain_resource.md"
+            domain_resource_path.write_text("# template", encoding="utf-8")
+
+            truncated_response = AgentResponse(
+                model="deepseek-chat",
+                response_text=(
+                    "```json\n"
+                    "{\n"
+                    '    "hr": [\n'
+                    '        {"time": "09:07", "is_load": false, "task": "查看邮件"}\n'
+                ),
+                status_code=200,
+                elapsed_seconds=0.8,
+                raw_response_text="{}",
+                finish_reason="length",
+            )
+            result = role_task_generation.generate_role_tasks(
+                source="generate_role_task",
+                final_file=final_file,
+                logs_dir=logs_dir,
+                domain_resource_path=domain_resource_path,
+                roles=("hr",),
+                min_tasks_per_role=1,
+                max_tasks_per_role=3,
+                min_non_five_ratio=0.8,
+                max_attempts=1,
+                agent_client=FakeAgentClient(response=truncated_response),
+                emit_status=lambda message: None,
+            )
+
+            self.assertFalse(result.success)
+            self.assertEqual(result.stats["parse_fail"], 1)
+            self.assertEqual(
+                result.failure_reason,
+                "Model response for role 'hr' was truncated by provider (finish_reason=length)",
+            )
+            self.assertFalse(final_file.exists())
+            self.assertFalse(final_file.with_name("tasks_04-21.candidate.json").exists())
+            log_file = next(logs_dir.glob("agent_output_*.log"))
+            payload = json.loads(log_file.read_text(encoding="utf-8").strip())
+            self.assertEqual(payload["note"], "parse_fail: truncated_response")
+            self.assertEqual(payload["failure_stage"], "response_parse")
+            self.assertEqual(payload["finish_reason"], "length")
+            self.assertEqual(payload["role"], "hr")
 
     def test_generate_role_tasks_classifies_api_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -574,13 +726,14 @@ class RoleTaskGenerationTests(unittest.TestCase):
 
             self.assertFalse(result.success)
             self.assertEqual(result.stats["api_timeout"], 1)
-            self.assertEqual(result.failure_reason, "timeout")
+            self.assertEqual(result.failure_reason, "Role 'hr' request timed out: timeout")
             log_file = next(logs_dir.glob("agent_output_*.log"))
             payload = json.loads(log_file.read_text(encoding="utf-8").strip())
             self.assertEqual(payload["note"], "api_timeout")
             self.assertEqual(payload["failure_stage"], "api_request")
             self.assertEqual(payload["error_text"], "gateway timeout")
             self.assertEqual(payload["provider"], "fake")
+            self.assertEqual(payload["role"], "hr")
 
 
 if __name__ == "__main__":

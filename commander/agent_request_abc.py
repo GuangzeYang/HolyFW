@@ -14,6 +14,7 @@ class AgentResponse:
     status_code: int
     elapsed_seconds: float
     raw_response_text: str
+    finish_reason: str | None = None
 
 
 class AgentRequestError(Exception):
