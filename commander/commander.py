@@ -193,6 +193,7 @@ class TaskScanner:
         self.last_date = None
         self.roles = roles
         self.scan_interval_seconds = scan_interval_seconds
+        self.generation_retry_interval_seconds = generator_config["generation_retry_interval_seconds"]
         self.role_file_service = RoleTaskFileService(
             self.data_dir,
             self.roles,
@@ -238,13 +239,14 @@ class TaskScanner:
             self.role_pointers.clear()
             self.last_date = current_date
         
-        # Get role task file
+        # Get role task file (generation and ensure are handled by the generation retry thread
+        # on generation_retry_interval_seconds, not every scan, to match the 30-minute retry policy.)
         role_file = self._get_role_task_file()
         logging.debug(f"Checking role task file: {role_file}")
-        if not self._ensure_role_file(role_file):
-            logging.warning(f"Failed to ensure role file {role_file}")
+        if not role_file.exists():
+            logging.debug(f"Role task file not present yet, skipping scan cycle: {role_file}")
             return
-        
+
         # Load tasks
         tasks_by_role = self._load_role_tasks(role_file)
         logging.debug(f"Loaded tasks for {len(tasks_by_role)} roles")
@@ -257,8 +259,7 @@ class TaskScanner:
         )
     
     def start(self):
-        """Start scanning thread."""
-        import threading
+        """Start scanning thread and role-task generation retry thread."""
         def scan_loop():
             logging.info("Task scanner thread started")
             while True:
@@ -267,10 +268,21 @@ class TaskScanner:
                 except Exception as e:
                     logging.error(f"Exception in scan_loop: {e}", exc_info=True)
                 time.sleep(self.scan_interval_seconds)
-        
-        thread = threading.Thread(target=scan_loop, daemon=True)
-        thread.start()
+
+        def generation_retry_loop():
+            logging.info("Role task generation retry thread started")
+            while True:
+                try:
+                    role_file = self._get_role_task_file()
+                    self._ensure_role_file(role_file)
+                except Exception as e:
+                    logging.error(f"Exception in generation_retry_loop: {e}", exc_info=True)
+                time.sleep(self.generation_retry_interval_seconds)
+
+        threading.Thread(target=scan_loop, daemon=True).start()
         logging.info("Task scanner thread created")
+        threading.Thread(target=generation_retry_loop, daemon=True).start()
+        logging.info("Role task generation retry thread created")
 
 
 def serve(

@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
+
+WORKDAY_MINUTES = 7 * 60
 
 CONFIG_FILE_NAME = "config.json"
 
@@ -100,6 +103,23 @@ def _validate_schema(data: dict[str, Any]) -> None:
     if ratio <= 0 or ratio > 1:
         raise ValueError("Config key generator.min_non_five_ratio must be in (0, 1]")
     _validate_positive_int(data, "generator.max_attempts")
+    _validate_positive_int(data, "generator.generation_retry_interval_seconds")
+    min_internal = _read_required(data, "generator.min_internal", int)
+    if min_internal < 10:
+        raise ValueError("Config key generator.min_internal must be >= 10")
+    max_feasible_tasks = WORKDAY_MINUTES // min_internal
+    target_tasks = math.ceil((min_tasks_per_role + max_tasks_per_role) / 2)
+    if (
+        min_tasks_per_role > max_feasible_tasks
+        or max_tasks_per_role > max_feasible_tasks
+        or target_tasks > max_feasible_tasks
+    ):
+        raise ValueError(
+            "generator 任务数量与间隔: 按工作日 7 小时(420 分钟)、任务最小间隔 "
+            f"min_internal={min_internal} 分钟估算，每角色单日最多可安排约 {max_feasible_tasks} 条任务。"
+            f"当前 min_tasks_per_role={min_tasks_per_role}、max_tasks_per_role={max_tasks_per_role}、"
+            f"ceil((min+max)/2)={target_tasks} 已超过该上限，请调低任务数量配置或减小 generator.min_internal。"
+        )
     _read_required(data, "generator.api_base_url", str)
     _read_required(data, "generator.api_key", str)
     _read_required(data, "generator.model", str)
@@ -175,6 +195,10 @@ def get_generator_config(data: dict[str, Any]) -> dict[str, Any]:
         "max_tasks_per_role": _read_required(data, "generator.max_tasks_per_role", int),
         "min_non_five_ratio": float(_read_required(data, "generator.min_non_five_ratio", (int, float))),
         "max_attempts": _read_required(data, "generator.max_attempts", int),
+        "generation_retry_interval_seconds": _read_required(
+            data, "generator.generation_retry_interval_seconds", int
+        ),
+        "min_internal": _read_required(data, "generator.min_internal", int),
         "api_base_url": _read_required(data, "generator.api_base_url", str),
         "api_key": _read_required(data, "generator.api_key", str),
         "model": _read_required(data, "generator.model", str),

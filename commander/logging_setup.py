@@ -107,6 +107,7 @@ def write_agent_response_log(
     response_text: str | bytes | None = None,
     raw_response_text: str | bytes | None = None,
     error_text: str | bytes | None = None,
+    request_state: str | None = None,
 ) -> Path:
     """Write one model response/error payload into its own UTF-8 log file."""
     response_logs_dir = logs_dir / f"agent_responses_{date.today().isoformat()}"
@@ -130,6 +131,7 @@ def write_agent_response_log(
         f"status_code: {'' if status_code is None else status_code}",
         f"role: {role or ''}",
         f"finish_reason: {finish_reason or ''}",
+        f"request_state: {request_state or ''}",
         "--- PROMPT_TEXT ---",
         normalized_prompt,
         "--- RAW_RESPONSE ---",

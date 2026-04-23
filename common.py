@@ -2,6 +2,7 @@
 """Common utilities for HolyFramework commander and soldier components."""
 
 import json
+import math
 import os
 import re
 import random
@@ -120,6 +121,42 @@ def candidate_task_path(final_path: Path) -> Path:
     return final_path.with_name(f"{final_path.name}.candidate.json")
 
 
+def load_task_file(path: Path) -> dict[str, Any]:
+    """Load an existing task JSON file, returning {} when it does not exist."""
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            parsed = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid task JSON in {path}: {exc}") from exc
+    except OSError as exc:
+        raise ValueError(f"Failed to read task JSON {path}: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Task JSON root must be an object in {path}")
+    return parsed
+
+
+def role_tasks_are_complete(
+    data: dict[str, Any],
+    role: str,
+    *,
+    min_tasks_per_role: int,
+    max_tasks_per_role: int,
+    min_non_five_ratio: float,
+) -> bool:
+    """Return True when a role entry is already a complete, valid stored task list."""
+    tasks = data.get(role)
+    if not isinstance(tasks, list):
+        return False
+    valid, _ = validate_role_tasks(
+        {role: tasks},
+        min_tasks_per_role=min_tasks_per_role,
+        max_tasks_per_role=max_tasks_per_role,
+        min_non_five_ratio=min_non_five_ratio,
+        roles=(role,),
+    )
+    return valid
 
 
 def validate_generated_task_file(
@@ -128,6 +165,7 @@ def validate_generated_task_file(
     max_tasks_per_role: int,
     min_non_five_ratio: float,
     roles: tuple[str, ...] | list[str],
+    preserve_generated_times: bool = False,
 ) -> tuple[str | None, str | None, dict[str, Any] | None, int]:
     """Load, normalize and validate a generated candidate task file."""
     try:
@@ -150,6 +188,7 @@ def validate_generated_task_file(
         parsed,
         min_tasks_per_role=min_tasks_per_role,
         roles=roles,
+        preserve_generated_times=preserve_generated_times,
     )
     valid, reason = validate_role_tasks(
         normalized,
@@ -197,33 +236,52 @@ def build_role_task_prompt(
     min_tasks_per_role: int = 18,
     max_tasks_per_role: int = 18,
     roles: tuple[str, ...] | list[str] | None = None,
+    dependency_context: str = "",
 ) -> str:
-    """Build a constrained prompt for role task generation."""
+    """Build a constrained prompt for role task generation.
+
+    dependency_context is inserted between domain_context and the hard-requirements block.
+    When empty or whitespace-only, nothing is inserted between domain_context and 硬性要求.
+    """
     role_names = _normalize_roles(roles)
     role_display = ", ".join(role_names)
     output_format = ", ".join(f'"{role}": [tasks]' for role in role_names)
+    target_tasks = math.ceil((min_tasks_per_role + max_tasks_per_role) / 2)
+    non_five_min = max(1, (min_tasks_per_role * 4) // 5)
 
-    lines = [
+    dep = dependency_context if isinstance(dependency_context, str) else ""
+
+    lines: list[str] = [
         "请基于下面提供的领域上下文，为每个角色生成一整天的工作任务序列。",
         "所需的完整上下文已经提供，不要再询问更多背景信息，也不要请求澄清。",
         "只返回一个 JSON 对象，不要输出任何额外内容，也不要使用 Markdown 代码块包裹。",
         "",
         domain_context,
         "",
-        "硬性要求（必须全部满足）：",
-        f"1. 角色必须完整覆盖：{role_display}。",
-        f"2. 每个角色生成的任务数不得少于 {min_tasks_per_role} 条，且不得多于 {max_tasks_per_role} 条。",
-        f"3. 顶层 JSON 对象必须使用如下格式：{{{output_format}}}。",
-        '4. 每条任务项必须使用如下格式：{"time":"09:15","is_load":false,"task":"..."}。',
-        "5. 任务时间必须落在 09:00-12:00 和 13:30-18:00 之间。",
-        "6. 同一角色下的任务时间必须严格递增。",
-        "7. 至少 80% 的任务分钟数不能是 5 的倍数，相邻任务之间的时间间隔应在大约 12 到 35 分钟之间随机变化。",
-        "8. 任务内容必须符合对应角色职责，并尽量体现可被观测的网络行为，例如 Exchange、OA、SMB、FTP 或浏览器访问。",
-        "9. 编写任务描述时，必须遵循领域上下文中的任务内容模板和约束。",
-        "10. 不要向用户提问，也不要请求用户确认。",
-        "11. 不要输出解释、Markdown、代码块、执行说明或重试建议。",
-        "12. 最终只返回 JSON 对象本身。",
     ]
+    if dep.strip():
+        lines.append(dep.strip())
+        lines.append("")
+    lines.extend(
+        [
+            "硬性要求（必须全部满足）：",
+            f"1. 角色必须完整覆盖：{role_display}。",
+            f"2. 每个角色本次生成的任务条数必须恰好等于 {target_tasks} 条（由 min_tasks_per_role 与 max_tasks_per_role 按 ceil((min+max)/2) 计算）。",
+            f"3. 顶层 JSON 对象必须使用如下格式：{{{output_format}}}。",
+            '4. 每条任务项必须使用如下格式：{"time":"09:15","is_load":false,"task":"..."}。',
+            "5. 任务时间必须落在 09:00-12:00 和 13:30-18:00 之间。",
+            "6. 同一角色下的任务时间必须按 JSON 数组中的顺序严格递增，后一个任务的 time 必须严格晚于前一个任务（必须是 >，不能是 = 或更早）。",
+            "7. 至少 80% 的任务分钟数不能是 5 的倍数，相邻任务之间的时间间隔应在 12 到 35 分钟之间随机变化。",
+            f"8. 严禁把大多数任务安排在 xx:00、xx:05、xx:10、xx:15、xx:20、xx:25、xx:30、xx:35、xx:40、xx:45、xx:50 或 xx:55；"
+            f"在任务总数为 {target_tasks} 条时，至少要有 {non_five_min} 条任务的分钟数不是 5 的倍数。",
+            "9. 任务内容必须符合对应角色职责，并尽量体现可被观测的网络行为，例如 Exchange、OA、SMB、FTP 或浏览器访问。",
+            "10. 编写任务描述时，必须遵循领域上下文中的任务内容模板和约束。",
+            "11. 如果附带「关联依赖事实」，这些事实仅用于推断角色任务之间的隐式关联和前后时间，不要参照这些事实的数量、格式、措辞或时间密度。",
+            "12. 不要向用户提问，也不要请求用户确认。",
+            "13. 不要输出解释、Markdown、代码块、执行说明或重试建议。",
+            "14. 最终只返回 JSON 对象本身。",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -365,6 +423,7 @@ def normalize_role_tasks(
     data: dict[str, Any],
     min_tasks_per_role: int = 18,
     roles: tuple[str, ...] | list[str] | None = None,
+    preserve_generated_times: bool = False,
 ) -> dict[str, Any]:
     """Normalize role tasks with deterministic structure, count floor, and jittered times."""
     role_names = _normalize_roles(roles)
@@ -377,6 +436,7 @@ def normalize_role_tasks(
 
         descriptions: list[str] = []
         load_flags: list[bool] = []
+        explicit_times: list[str | None] = []
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -385,20 +445,48 @@ def normalize_role_tasks(
                 continue
             descriptions.append(desc.strip())
             load_flags.append(bool(item.get("is_load", False)))
+            raw_time = item.get("time")
+            if isinstance(raw_time, str) and parse_hhmm_to_minute(raw_time) is not None:
+                explicit_times.append(raw_time)
+            else:
+                explicit_times.append(None)
 
         target_count = len(descriptions)
+        if preserve_generated_times and target_count:
+            ordered_items: list[tuple[int, str, bool, str | None]] = []
+            can_preserve_ordered_times = True
+            for desc, is_load, raw_time in zip(descriptions, load_flags, explicit_times):
+                minute = parse_hhmm_to_minute(raw_time) if isinstance(raw_time, str) else None
+                if minute is None:
+                    can_preserve_ordered_times = False
+                    break
+                ordered_items.append((minute, desc, is_load, raw_time))
+            if can_preserve_ordered_times:
+                ordered_items.sort(key=lambda item: item[0])
+                descriptions = [item[1] for item in ordered_items]
+                load_flags = [item[2] for item in ordered_items]
+                explicit_times = [item[3] for item in ordered_items]
 
-        schedule = _build_schedule(target_count)
-        if len(schedule) < target_count:
-            target_count = len(schedule)
-            descriptions = descriptions[:target_count]
-            load_flags = load_flags[:target_count]
+        preserved_times: list[str] = []
+        if preserve_generated_times and target_count:
+            preserved_times = [value for value in explicit_times[:target_count] if isinstance(value, str)]
+            if len(preserved_times) != target_count:
+                preserved_times = []
+
+        if not preserved_times:
+            schedule = _build_schedule(target_count)
+            if len(schedule) < target_count:
+                target_count = len(schedule)
+                descriptions = descriptions[:target_count]
+                load_flags = load_flags[:target_count]
+        else:
+            schedule = []
 
         role_tasks: list[dict[str, Any]] = []
         for i in range(target_count):
             role_tasks.append(
                 {
-                    "time": minute_to_hhmm(schedule[i]),
+                    "time": preserved_times[i] if preserved_times else minute_to_hhmm(schedule[i]),
                     "is_load": bool(load_flags[i]),
                     "task": descriptions[i],
                     "task_id": "",

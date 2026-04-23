@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,9 @@ except ImportError:
 
 from common import (
     candidate_task_path,
+    load_task_file,
     normalize_role_tasks,
+    role_tasks_are_complete,
     validate_role_tasks,
 )
 
@@ -92,6 +95,8 @@ class RoleTaskFileService:
         self.agent_client = agent_client
         self.domain_resource_file = domain_resource_file
         self.logs_dir = logs_dir
+        self._generation_lock = threading.Lock()
+
     def get_today_role_task_file(self) -> Path:
         today = date.today().isoformat()
         month_day = today[5:]
@@ -192,6 +197,26 @@ class RoleTaskFileService:
                     logging.info(f"Role file {role_file} exists and contains runtime fields")
                     return True
 
+                completed_roles = [
+                    role
+                    for role in self.roles
+                    if role_tasks_are_complete(
+                        data,
+                        role,
+                        min_tasks_per_role=self.min_tasks_per_role,
+                        max_tasks_per_role=self.max_tasks_per_role,
+                        min_non_five_ratio=self.min_non_five_ratio,
+                    )
+                ]
+                if len(completed_roles) == len(self.roles):
+                    logging.info(f"Role file {role_file} exists and is valid")
+                    return True
+                if completed_roles:
+                    logging.info(
+                        f"Role file {role_file} is partially complete for roles {completed_roles}; resuming generation"
+                    )
+                    return self.generate_role_tasks(role_file)
+
                 valid, reason = validate_role_tasks(
                     data,
                     min_tasks_per_role=self.min_tasks_per_role,
@@ -215,9 +240,9 @@ class RoleTaskFileService:
                     )
                     if not valid_after_fix:
                         logging.warning(
-                            f"Failed to normalize role file {role_file}: {reason_after_fix}"
+                            f"Failed to normalize role file {role_file}: {reason_after_fix}; resuming generation"
                         )
-                        return False
+                        return self.generate_role_tasks(role_file)
                     with open(role_file, "w", encoding="utf-8") as f:
                         json.dump(normalized, f, ensure_ascii=False, indent=2)
                     logging.info(f"Role file {role_file} was normalized and repaired")
@@ -231,42 +256,44 @@ class RoleTaskFileService:
 
     def generate_role_tasks(self, role_file: Path) -> bool:
         """Generate role tasks using the configured model client."""
-        try:
-            result = generate_role_tasks(
-                source="role_file_service",
-                final_file=role_file,
-                logs_dir=self.logs_dir,
-                domain_resource_path=self.domain_resource_file,
-                roles=self.roles,
-                min_tasks_per_role=self.min_tasks_per_role,
-                max_tasks_per_role=self.max_tasks_per_role,
-                min_non_five_ratio=self.min_non_five_ratio,
-                max_attempts=self.max_attempts,
-                agent_client=self.agent_client,
-                emit_status=logging.info,
-            )
-            if result.success:
-                return True
+        with self._generation_lock:
+            try:
+                result = generate_role_tasks(
+                    source="role_file_service",
+                    final_file=role_file,
+                    logs_dir=self.logs_dir,
+                    domain_resource_path=self.domain_resource_file,
+                    roles=self.roles,
+                    min_tasks_per_role=self.min_tasks_per_role,
+                    max_tasks_per_role=self.max_tasks_per_role,
+                    min_non_five_ratio=self.min_non_five_ratio,
+                    max_attempts=self.max_attempts,
+                    agent_client=self.agent_client,
+                    emit_status=logging.info,
+                )
+                if result.success:
+                    return True
 
-            logging.error(
-                "Failed to generate valid role tasks after maximum attempts: "
-                + ", ".join(f"{key}={value}" for key, value in result.stats.items())
-            )
-            if result.failure_reason:
-                logging.error(f"Last validation failure reason: {result.failure_reason}")
-            logging.error("Stopping commander because role task generation did not meet requirements.")
-            import os
-            os._exit(1)
-        except Exception as e:
-            logging.error(f"Exception in generate_role_tasks: {e}")
-            return False
+                logging.error(
+                    "Failed to generate valid role tasks after maximum attempts: "
+                    + ", ".join(f"{key}={value}" for key, value in result.stats.items())
+                )
+                if result.failure_reason:
+                    logging.error(f"Last validation failure reason: {result.failure_reason}")
+                logging.error(
+                    "Role task generation will be retried on the configured interval; "
+                    "commander continues running."
+                )
+                return False
+            except Exception as e:
+                logging.error(f"Exception in generate_role_tasks: {e}")
+                return False
 
 
     def load_role_tasks(self, role_file: Path) -> dict[str, Any]:
         try:
-            with open(role_file, encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
+            return load_task_file(role_file)
+        except ValueError as e:
             logging.error(f"Failed to load role tasks from {role_file}: {e}")
             return {}
 

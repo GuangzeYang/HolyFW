@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from datetime import date
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -51,22 +52,37 @@ def main() -> int:
     logs_dir = resolve_config_relative_path(paths_config["logs_dir"])
     domain_resource_path = resolve_config_relative_path(paths_config["domain_resource_file"])
 
-    _, output_file = build_controlled_task_file_paths(output_dir, date.today())
+    interval = generator_config["generation_retry_interval_seconds"]
+    agent_client = build_deepseek_client(generator_config)
+    emit_status = lambda message: print(message, flush=True)
 
-    result = generate_role_tasks(
-        source="generate_role_task",
-        final_file=output_file,
-        logs_dir=logs_dir,
-        domain_resource_path=domain_resource_path,
-        roles=roles,
-        min_tasks_per_role=generator_config["min_tasks_per_role"],
-        max_tasks_per_role=generator_config["max_tasks_per_role"],
-        min_non_five_ratio=generator_config["min_non_five_ratio"],
-        max_attempts=generator_config["max_attempts"],
-        agent_client=build_deepseek_client(generator_config),
-        emit_status=lambda message: print(message, flush=True),
-    )
-    return 0 if result.success else 1
+    try:
+        while True:
+            _, output_file = build_controlled_task_file_paths(output_dir, date.today())
+            result = generate_role_tasks(
+                source="generate_role_task",
+                final_file=output_file,
+                logs_dir=logs_dir,
+                domain_resource_path=domain_resource_path,
+                roles=roles,
+                min_tasks_per_role=generator_config["min_tasks_per_role"],
+                max_tasks_per_role=generator_config["max_tasks_per_role"],
+                min_non_five_ratio=generator_config["min_non_five_ratio"],
+                max_attempts=generator_config["max_attempts"],
+                agent_client=agent_client,
+                emit_status=emit_status,
+            )
+            if result.success:
+                return 0
+            print(
+                f"Generation did not succeed; retrying in {interval} seconds. "
+                f"Reason: {result.failure_reason!r}",
+                flush=True,
+            )
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("Interrupted.", flush=True)
+        return 130
 
 
 if __name__ == "__main__":
