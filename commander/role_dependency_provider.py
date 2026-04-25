@@ -35,6 +35,37 @@ def build_dependency_context(task_data: dict[str, Any], target_role: str) -> str
 
 
 
+def _task_snippet(text: str, max_len: int = 100) -> str:
+    t = text.strip().replace("\n", " ")
+    if len(t) <= max_len:
+        return t
+    return t[: max_len - 1] + "…"
+
+
+def _format_dependency_violation(
+    *,
+    target_role: str,
+    candidate_index: int,
+    candidate_time: str,
+    candidate_task_text: str,
+    dep_role: str,
+    dep_index: int,
+    dep_time: str,
+    dep_task_text: str,
+) -> str:
+    """Human-readable dependency ordering failure for model retry prompts (Chinese)."""
+    return (
+        "跨角色时序不满足（请只调整本角色任务时间或顺序以满足依赖，勿改已落盘的其他角色任务）。\n"
+        f"依赖方：角色「{dep_role}」已生成的第 {dep_index + 1} 条任务（数组下标 {dep_index}），开始时间为 {dep_time}。"
+        f"该条任务内容摘要：{_task_snippet(dep_task_text)}。\n"
+        f"当前生成方：角色「{target_role}」本轮候选的第 {candidate_index + 1} 条任务（数组下标 {candidate_index}），"
+        f"开始时间为 {candidate_time}。该条任务内容摘要：{_task_snippet(candidate_task_text)}。\n"
+        f"错误原因：上述「{target_role}」任务的开始时间 {candidate_time} 早于或等于依赖方任务的开始时间 {dep_time}，"
+        f"不满足「须在依赖方该邮件任务完成之后」的约束。\n"
+        f"正确约束：「{target_role}」本条开始时间必须严格晚于 {dep_time}（并与其余本角色任务时间严格递增、落在允许工作时段内）。"
+    )
+
+
 def validate_dependency_order(
     task_data: dict[str, Any],
     target_role: str,
@@ -62,10 +93,18 @@ def validate_dependency_order(
             continue
 
         earliest = min(matched, key=lambda item: item["minute"])
-        return (
-            False,
-            f"Role '{target_role}' task#{index} depends on {earliest['source_role']} action at {earliest['time']} but is scheduled at {task.get('time')}",
+        dep_idx = int(earliest.get("source_task_index", -1))
+        reason = _format_dependency_violation(
+            target_role=target_role,
+            candidate_index=index,
+            candidate_time=str(task.get("time", "")),
+            candidate_task_text=task_text,
+            dep_role=str(earliest.get("source_role", "")),
+            dep_index=dep_idx,
+            dep_time=str(earliest.get("time", "")),
+            dep_task_text=str(earliest.get("task", "")),
         )
+        return (False, reason)
 
     return True, None
 
@@ -79,7 +118,7 @@ def collect_dependency_events(task_data: dict[str, Any], target_role: str) -> li
             continue
         if not isinstance(tasks, list):
             continue
-        for task in tasks:
+        for source_task_index, task in enumerate(tasks):
             if not isinstance(task, dict):
                 continue
             task_text = task.get("task")
@@ -92,6 +131,7 @@ def collect_dependency_events(task_data: dict[str, Any], target_role: str) -> li
             if event is None:
                 continue
             event["minute"] = minute
+            event["source_task_index"] = source_task_index
             events.append(event)
     events.sort(key=lambda item: item["minute"])
     return events

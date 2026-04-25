@@ -56,11 +56,11 @@
     "_comment_api_key": "DeepSeek API key used for task generation.",
     "api_key": "sk-49a648a1723842dabf042e4a602162db",
     "_comment_model": "DeepSeek model used for task generation.",
-    "model": "deepseek-chat",
+    "model": "deepseek-v4-pro",
     "_comment_request_timeout_seconds": "Timeout for each DeepSeek API request in seconds. Keep this bounded so retries fail fast instead of appearing hung for a long time.",
     "request_timeout_seconds": 300,
     "_comment_max_tokens": "Maximum completion tokens requested from DeepSeek for each role-generation call.",
-    "max_tokens": 8192
+    "max_tokens": 32776
   },
   "_comment_paths": "Project-relative paths resolved against commander/ directory.",
   "paths": {

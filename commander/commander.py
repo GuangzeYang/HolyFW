@@ -18,10 +18,10 @@ import threading
 import time
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from dispatch_client import DispatchClient
-from logging_setup import configure_daily_logging
+from logging_setup import configure_commander_root_logging, reattach_commander_dated_file_handler
 from policies import EarliestPendingSelectionPolicy
 from repository import DailyTaskRepository
 from role_file_service import RoleTaskFileService
@@ -182,9 +182,16 @@ class TaskScanner:
         scan_interval_seconds: int,
         generator_config: dict[str, Any],
         domain_resource_file: Path,
+        logs_dir: Path,
+        log_level_name: str,
+        periodic_hook: Callable[[], None] | None = None,
     ):
         self.repository = repository
         self.data_dir = repository.data_dir
+        self.logs_dir = logs_dir.resolve()
+        self.log_level_name = log_level_name
+        self._periodic_hook = periodic_hook
+        self._attached_log_date = date.today()
         self.dispatch_client = DispatchClient(
             dispatch_script,
             timeout_seconds=dispatch_timeout_seconds,
@@ -231,23 +238,39 @@ class TaskScanner:
         """Save role tasks to file."""
         self.role_file_service.save_role_tasks(role_file, data)
     
-    def _scan_one_cycle(self):
-        """One scan cycle: check and dispatch tasks."""
+    def ensure_commander_log_file_for_today(self) -> None:
+        """If the calendar date changed, attach root file logging to commander_YYYY-MM-DD.log."""
+        today = date.today()
+        if self._attached_log_date == today:
+            return
+        new_path = reattach_commander_dated_file_handler(
+            self.logs_dir,
+            self.log_level_name,
+            target_day=today,
+        )
+        self._attached_log_date = today
+        logging.info(f"Switched commander file log to {new_path}")
+
+    def sync_role_pointers_for_calendar_date(self) -> str:
+        """Clear per-role scan pointers when the local calendar date changes. Returns today ISO."""
         current_date = date.today().isoformat()
         if current_date != self.last_date:
             logging.info(f"Date changed to {current_date}, clearing role pointers")
             self.role_pointers.clear()
             self.last_date = current_date
-        
-        # Get role task file (generation and ensure are handled by the generation retry thread
-        # on generation_retry_interval_seconds, not every scan, to match the 30-minute retry policy.)
+        return current_date
+
+    def run_role_task_file_scan_pass(self, date_str: str) -> None:
+        """Load today's unified task file (if present) and run one dispatch scan pass.
+
+        Task file generation is driven by the generation retry thread, not each scan.
+        """
         role_file = self._get_role_task_file()
         logging.debug(f"Checking role task file: {role_file}")
         if not role_file.exists():
             logging.debug(f"Role task file not present yet, skipping scan cycle: {role_file}")
             return
 
-        # Load tasks
         tasks_by_role = self._load_role_tasks(role_file)
         logging.debug(f"Loaded tasks for {len(tasks_by_role)} roles")
 
@@ -255,16 +278,27 @@ class TaskScanner:
             tasks_by_role=tasks_by_role,
             roles=self.roles,
             role_pointers=self.role_pointers,
-            date_str=current_date,
+            date_str=date_str,
         )
-    
+
+    def _default_periodic_hook(self) -> None:
+        self.ensure_commander_log_file_for_today()
+        date_str = self.sync_role_pointers_for_calendar_date()
+        self.run_role_task_file_scan_pass(date_str)
+
+    def _invoke_periodic_hook(self) -> None:
+        if self._periodic_hook is not None:
+            self._periodic_hook()
+        else:
+            self._default_periodic_hook()
+
     def start(self):
         """Start scanning thread and role-task generation retry thread."""
         def scan_loop():
             logging.info("Task scanner thread started")
             while True:
                 try:
-                    self._scan_one_cycle()
+                    self._invoke_periodic_hook()
                 except Exception as e:
                     logging.error(f"Exception in scan_loop: {e}", exc_info=True)
                 time.sleep(self.scan_interval_seconds)
@@ -273,6 +307,7 @@ class TaskScanner:
             logging.info("Role task generation retry thread started")
             while True:
                 try:
+                    self.ensure_commander_log_file_for_today()
                     role_file = self._get_role_task_file()
                     self._ensure_role_file(role_file)
                 except Exception as e:
@@ -301,6 +336,8 @@ def serve(
     generator_config: dict[str, Any],
     domain_resource_file: Path,
     dispatch_script: Path,
+    logs_dir: Path,
+    log_level_name: str,
 ) -> None:
     data_dir = data_dir.resolve()
     repository = DailyTaskRepository(
@@ -319,6 +356,8 @@ def serve(
         scan_interval_seconds=scan_interval_seconds,
         generator_config=generator_config,
         domain_resource_file=domain_resource_file,
+        logs_dir=logs_dir,
+        log_level_name=log_level_name,
     )
     scanner.start()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -377,13 +416,7 @@ def main() -> None:
     data_dir = args.data_dir if args.data_dir is not None else resolve_config_relative_path(scanner_config["data_dir"])
     
     logs_dir = resolve_config_relative_path(paths_config["logs_dir"])
-    log_file = configure_daily_logging(
-        logs_dir,
-        "commander",
-        level_name=logging_config["level"],
-        backup_count=logging_config["backup_count"],
-        rotation_interval_days=logging_config["rotation_interval_days"],
-    )
+    log_file = configure_commander_root_logging(logs_dir, level_name=logging_config["level"])
 
     target_ini_path = resolve_config_relative_path(paths_config["target_ini_file"])
     dispatch_script = resolve_config_relative_path(paths_config["dispatch_script"])
@@ -407,6 +440,8 @@ def main() -> None:
         generator_config=generator_config,
         domain_resource_file=domain_resource_file,
         dispatch_script=dispatch_script,
+        logs_dir=logs_dir,
+        log_level_name=logging_config["level"],
     )
 
 

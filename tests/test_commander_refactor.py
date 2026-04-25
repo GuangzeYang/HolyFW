@@ -1128,6 +1128,62 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertIn("必须按 JSON 数组中的顺序严格递增", client.prompts[1])
             self.assertIn("不能重复、倒退或并列", client.prompts[1])
 
+    def test_generate_role_tasks_time_remediation_fixes_out_of_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            final_file = root / "role_task" / "tasks_04-21.json"
+            final_file.parent.mkdir(parents=True, exist_ok=True)
+            domain_resource_path = root / "domain_resource.md"
+            domain_resource_path.write_text("# template", encoding="utf-8")
+            bad_text = json.dumps(
+                {"hr": [{"time": "12:05", "is_load": False, "task": "do work"}]},
+                ensure_ascii=False,
+            )
+            bad_response = AgentResponse(
+                model="deepseek-chat",
+                response_text=bad_text,
+                status_code=200,
+                elapsed_seconds=1.0,
+                raw_response_text=bad_text,
+                finish_reason="stop",
+            )
+            fix_text = json.dumps(
+                {"hr": [{"time": "14:01", "is_load": False, "task": "do work"}]},
+                ensure_ascii=False,
+            )
+            fix_response = AgentResponse(
+                model="deepseek-chat",
+                response_text=fix_text,
+                status_code=200,
+                elapsed_seconds=1.0,
+                raw_response_text=fix_text,
+                finish_reason="stop",
+            )
+            client = FakeAgentClient(responses=[bad_response, fix_response])
+
+            result = role_task_generation.generate_role_tasks(
+                source="generate_role_task",
+                final_file=final_file,
+                logs_dir=logs_dir,
+                domain_resource_path=domain_resource_path,
+                roles=("hr",),
+                min_tasks_per_role=1,
+                max_tasks_per_role=1,
+                min_non_five_ratio=0.8,
+                max_attempts=2,
+                agent_client=client,
+                emit_status=lambda message: None,
+            )
+
+            self.assertTrue(result.success)
+            self.assertEqual(result.stats.get("quality_fail", 0), 0)
+            self.assertEqual(len(client.prompts), 2)
+            self.assertIn("任务排期修正助手", client.prompts[1])
+            self.assertIn("非法下标", client.prompts[1])
+            saved = json.loads(final_file.read_text(encoding="utf-8"))
+            self.assertEqual(saved["hr"][0]["time"], "14:01")
+
     def test_generate_role_tasks_classifies_parse_fail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

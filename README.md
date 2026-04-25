@@ -383,7 +383,7 @@ python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status su
 
 日志位于 `commander/logs/`，常见文件包括：
 
-- `commander_YYYY-MM-DD.log`
+- `commander_YYYY-MM-DD.log`（按自然日切换：周期钩子在日期变化时把 root 文件日志挂到当天文件；`dispatch_*.log` 仍由 `TimedRotatingFileHandler` 在午夜轮转。）
 - `dispatch_YYYY-MM-DD.log`
 - `agent_output_YYYY-MM-DD.log`
 - `agent_responses_YYYY-MM-DD/`

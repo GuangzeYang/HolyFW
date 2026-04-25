@@ -269,14 +269,16 @@ def build_role_task_prompt(
             f"2. 每个角色本次生成的任务条数必须恰好等于 {target_tasks} 条（由 min_tasks_per_role 与 max_tasks_per_role 按 ceil((min+max)/2) 计算）。",
             f"3. 顶层 JSON 对象必须使用如下格式：{{{output_format}}}。",
             '4. 每条任务项必须使用如下格式：{"time":"09:15","is_load":false,"task":"..."}。',
-            "5. 任务时间必须落在 09:00-12:00 和 13:30-18:00 之间。",
+            "5. 每条任务的 time 表示任务开始时刻，仅校验该开始时刻；合法时段为两段闭区间："
+            "09:00–12:00（含两端）与 13:30–18:00（含两端）；"
+            "12:00 与 13:30 之间除 12:00、13:30 外的时刻（如 12:01–13:29）不在合法时段内。",
             "6. 同一角色下的任务时间必须按 JSON 数组中的顺序严格递增，后一个任务的 time 必须严格晚于前一个任务（必须是 >，不能是 = 或更早）。",
-            "7. 至少 80% 的任务分钟数不能是 5 的倍数，相邻任务之间的时间间隔应在 12 到 35 分钟之间随机变化。",
+            "7. 至少 80% 的任务分钟数不能是 5 的倍数，相邻任务之间的时间间隔应在 5 到 15 分钟之间随机变化。",
             f"8. 严禁把大多数任务安排在 xx:00、xx:05、xx:10、xx:15、xx:20、xx:25、xx:30、xx:35、xx:40、xx:45、xx:50 或 xx:55；"
             f"在任务总数为 {target_tasks} 条时，至少要有 {non_five_min} 条任务的分钟数不是 5 的倍数。",
             "9. 任务内容必须符合对应角色职责，并尽量体现可被观测的网络行为，例如 Exchange、OA、SMB、FTP 或浏览器访问。",
             "10. 编写任务描述时，必须遵循领域上下文中的任务内容模板和约束。",
-            "11. 如果附带「关联依赖事实」，这些事实仅用于推断角色任务之间的隐式关联和前后时间，不要参照这些事实的数量、格式、措辞或时间密度。",
+            "11. 如果附带「关联依赖事实」，这些事实仅用于推断角色任务之间的隐式关联和时间顺序（如HR在9:00向程序员发送邮件，程序员就必须在9:00之后才能开始处理邮件，不能在9:00之前开始处理邮件），不要参照这些事实的数量、格式、措辞或时间密度。",
             "12. 不要向用户提问，也不要请求用户确认。",
             "13. 不要输出解释、Markdown、代码块、执行说明或重试建议。",
             "14. 最终只返回 JSON 对象本身。",
@@ -359,22 +361,137 @@ def minute_to_hhmm(value: int) -> str:
 
 
 def _in_work_window(value: int) -> bool:
+    """True if minute-of-day lies in any work window (closed intervals on both ends)."""
     for start, end in WORK_WINDOWS:
-        if start <= value < end:
+        if start <= value <= end:
             return True
     return False
 
 
 def _next_work_minute(value: int) -> int | None:
+    """Clamp or snap minute-of-day to the next valid work minute; None if after last window."""
     if value < WORK_WINDOWS[0][0]:
         return WORK_WINDOWS[0][0]
     for start, end in WORK_WINDOWS:
-        if start <= value < end:
+        if start <= value <= end:
             return value
     for start, _ in WORK_WINDOWS:
         if value < start:
             return start
     return None
+
+
+def collect_task_indices_outside_work_windows(tasks: list[Any]) -> list[int]:
+    """Return indices whose task start time (time field) is missing, invalid, or outside work windows."""
+    bad: list[int] = []
+    for index, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            bad.append(index)
+            continue
+        raw_time = task.get("time")
+        minute = parse_hhmm_to_minute(raw_time) if isinstance(raw_time, str) else None
+        if minute is None or not _in_work_window(minute):
+            bad.append(index)
+    return bad
+
+
+def build_role_task_time_remediation_prompt(
+    *,
+    role: str,
+    old_tasks: list[dict[str, Any]],
+    bad_indices: list[int],
+    min_tasks_per_role: int,
+    max_tasks_per_role: int,
+    validation_reason: str = "",
+    prior_feedback: str = "",
+) -> str:
+    """Prompt for LLM to fix only times (for bad indices) or delete bad rows; other rows unchanged."""
+    target_tasks = math.ceil((min_tasks_per_role + max_tasks_per_role) / 2)
+    non_five_min = max(1, (min_tasks_per_role * 4) // 5)
+    bad_set = sorted(set(bad_indices))
+    lines: list[str] = [
+        "你是任务排期修正助手。下面给出某角色一整天的任务数组（每条含数组下标、time、is_load、task）。",
+        "上一轮整表未通过自动校验，其中部分条目的「开始时间」time 不在允许的工作时段内。",
+        "",
+        "允许的工作时段为两段闭区间：09:00–12:00（含 12:00）与 13:30–18:00（含 18:00）；",
+        "12:00 与 13:30 之间除端点外的时刻无效。",
+        "",
+        f"角色名：{role}",
+        f"整改后该角色的任务条数必须恰好为 {target_tasks} 条（与 min_tasks_per_role/max_tasks_per_role 的 ceil((min+max)/2) 一致）。",
+        "尽量少删；若删除导致条数不足，本次整改视为失败，应通过改 time 为主来满足条数。",
+        "整改后的列表仍须满足：按数组顺序 time 严格递增；至少 80% 的任务其分钟数不是 5 的倍数（至少 "
+        f"{non_five_min} 条任务的分钟数不是 5 的倍数）。",
+        "",
+        "硬性约束（必须遵守）：",
+        "1. 对于「非法下标」集合中的条目：只允许「修改该条的 time」或「从数组中删除整条」。",
+        "2. 对于不在非法下标集合中的条目：time、is_load、task 必须与下面给出的原文完全一致，不得改写、不得调换顺序相对关系（删除非法条后其余条相对顺序保持从早到晚）。",
+        "3. 只允许输出一个 JSON 对象，顶层格式为 {\"<role>\": [ 任务数组 ]}，不要 Markdown、不要解释。",
+        "4. 每条任务对象须含 time、is_load、task（以及你方若补充的其它字段须与常见任务结构一致）。",
+        "",
+        f"非法下标（0-based，与下列「当前任务」数组一致）：{bad_set}",
+    ]
+    if validation_reason.strip():
+        lines.extend(["", "校验失败摘要：", validation_reason.strip()])
+    if prior_feedback.strip():
+        lines.extend(["", "上一轮整改未通过，请继续修正：", prior_feedback.strip()])
+    lines.extend(["", "当前任务（带下标，供对照）：", json.dumps(_tasks_with_indices(old_tasks), ensure_ascii=False)])
+    return "\n".join(lines)
+
+
+def _tasks_with_indices(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for i, t in enumerate(tasks):
+        row = {"_index": i, "time": t.get("time"), "is_load": t.get("is_load"), "task": t.get("task")}
+        out.append(row)
+    return out
+
+
+def verify_time_remediation_payload(
+    old_tasks: list[dict[str, Any]],
+    new_tasks: list[Any],
+    bad_indices: list[int] | set[int],
+) -> tuple[bool, str | None]:
+    """Ensure non-bad old rows appear unchanged in order; bad rows are only time-changed or omitted."""
+    if not isinstance(new_tasks, list):
+        return False, "remediated payload is not a list"
+    bad_set = set(bad_indices)
+    i, j = 0, 0
+    n_old, n_new = len(old_tasks), len(new_tasks)
+    while i < n_old:
+        old_row = old_tasks[i]
+        if not isinstance(old_row, dict):
+            return False, f"old task#{i} is not an object"
+        if i not in bad_set:
+            if j >= n_new:
+                return False, f"missing unchanged row for old index {i}"
+            new_row = new_tasks[j]
+            if not isinstance(new_row, dict):
+                return False, f"new task#{j} is not an object"
+            if (
+                new_row.get("time") != old_row.get("time")
+                or bool(new_row.get("is_load")) != bool(old_row.get("is_load"))
+                or new_row.get("task") != old_row.get("task")
+            ):
+                return False, f"unchanged row mismatch at old#{i} vs new#{j}"
+            i += 1
+            j += 1
+        else:
+            if j < n_new:
+                new_row = new_tasks[j]
+                if (
+                    isinstance(new_row, dict)
+                    and new_row.get("task") == old_row.get("task")
+                    and bool(new_row.get("is_load")) == bool(old_row.get("is_load"))
+                ):
+                    i += 1
+                    j += 1
+                else:
+                    i += 1
+            else:
+                i += 1
+    if j != n_new:
+        return False, f"extra rows in remediated output after new#{j}"
+    return True, None
 
 
 def _next_non_five_minute(value: int, prev: int | None = None) -> int | None:

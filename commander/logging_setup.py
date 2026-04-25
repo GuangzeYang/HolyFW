@@ -15,44 +15,25 @@ try:
 except ImportError:
     colorlog = None
 
+# Root FileHandler for commander main process; swapped on calendar day by periodic hook.
+COMMANDER_DATED_FILE_HANDLER_NAME = "commander_dated_file"
 
-def configure_daily_logging(
-    logs_dir: Path,
-    log_prefix: str,
-    level_name: str,
-    backup_count: int,
-    rotation_interval_days: int,
-) -> Path:
-    """Configure root logger with console + daily rotating file handlers."""
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_file = logs_dir / f"{log_prefix}_{date.today().isoformat()}.log"
 
+def _resolve_log_level(level_name: str) -> int:
     level = getattr(logging, level_name.upper(), None)
     if not isinstance(level, int):
         raise ValueError(f"Invalid logging level: {level_name}")
+    return level
 
-    logger = logging.getLogger()
-    logger.setLevel(level)
 
-    for handler in list(logger.handlers):
-        logger.removeHandler(handler)
-        try:
-            handler.close()
-        except Exception:
-            pass
+def _plain_log_formatter() -> logging.Formatter:
+    return logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
+
+def _build_console_handler(level: int) -> logging.StreamHandler:
     console_handler = logging.StreamHandler()
     console_handler.setLevel(level)
-    file_handler = logging.handlers.TimedRotatingFileHandler(
-        log_file,
-        when="midnight",
-        interval=rotation_interval_days,
-        backupCount=backup_count,
-        encoding="utf-8",
-    )
-    file_handler.setLevel(level)
-
-    plain_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    plain_formatter = _plain_log_formatter()
     if colorlog is not None:
         color_formatter = colorlog.ColoredFormatter(
             "%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -67,6 +48,112 @@ def configure_daily_logging(
         console_handler.setFormatter(color_formatter)
     else:
         console_handler.setFormatter(plain_formatter)
+    return console_handler
+
+
+def configure_commander_root_logging(logs_dir: Path, level_name: str) -> Path:
+    """Configure root logger for commander: console plus one dated file (today only).
+
+    Calendar rollover uses :func:`reattach_commander_dated_file_handler` from the
+    commander periodic hook, not ``TimedRotatingFileHandler``. Values such as
+    ``logging.backup_count`` / ``logging.rotation_interval_days`` in config apply
+    only to :func:`configure_daily_logging` (e.g. dispatch), not this path.
+    """
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    level = _resolve_log_level(level_name)
+    log_file = logs_dir / f"commander_{date.today().isoformat()}.log"
+
+    logger = logging.getLogger()
+    logger.setLevel(level)
+
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+    plain_formatter = _plain_log_formatter()
+    console_handler = _build_console_handler(level)
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setLevel(level)
+    file_handler.setFormatter(plain_formatter)
+    file_handler.name = COMMANDER_DATED_FILE_HANDLER_NAME
+
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+    return log_file
+
+
+def reattach_commander_dated_file_handler(
+    logs_dir: Path,
+    level_name: str,
+    *,
+    target_day: date | None = None,
+    logger: logging.Logger | None = None,
+    encoding: str = "utf-8",
+) -> Path:
+    """Replace the commander dated FileHandler on *logger* (default: root) for *target_day*.
+
+    Removes only the handler named :data:`COMMANDER_DATED_FILE_HANDLER_NAME`;
+    leaves other handlers (e.g. console) unchanged.
+    """
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    day = target_day or date.today()
+    level = _resolve_log_level(level_name)
+    log_file = logs_dir / f"commander_{day.isoformat()}.log"
+
+    root = logger or logging.getLogger()
+    for handler in list(root.handlers):
+        if getattr(handler, "name", None) == COMMANDER_DATED_FILE_HANDLER_NAME:
+            root.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+
+    plain_formatter = _plain_log_formatter()
+    file_handler = logging.FileHandler(log_file, encoding=encoding)
+    file_handler.setLevel(level)
+    file_handler.setFormatter(plain_formatter)
+    file_handler.name = COMMANDER_DATED_FILE_HANDLER_NAME
+    root.addHandler(file_handler)
+    return log_file
+
+
+def configure_daily_logging(
+    logs_dir: Path,
+    log_prefix: str,
+    level_name: str,
+    backup_count: int,
+    rotation_interval_days: int,
+) -> Path:
+    """Configure root logger with console + daily rotating file handlers."""
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = logs_dir / f"{log_prefix}_{date.today().isoformat()}.log"
+
+    level = _resolve_log_level(level_name)
+
+    logger = logging.getLogger()
+    logger.setLevel(level)
+
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+    plain_formatter = _plain_log_formatter()
+    console_handler = _build_console_handler(level)
+    file_handler = logging.handlers.TimedRotatingFileHandler(
+        log_file,
+        when="midnight",
+        interval=rotation_interval_days,
+        backupCount=backup_count,
+        encoding="utf-8",
+    )
+    file_handler.setLevel(level)
     file_handler.setFormatter(plain_formatter)
 
     logger.addHandler(console_handler)
