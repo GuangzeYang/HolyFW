@@ -392,7 +392,7 @@ python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status su
 
 日志位于 `soldier/logs/`，文件名通常为：
 
-- `soldier_YYYY-MM-DD.log`
+- `soldier_YYYY-MM-DD.log`（按自然日切换：长期运行时会把 root 文件日志挂到当天文件，不使用轮转后缀。）
 
 除此之外，soldier 还会生成：
 

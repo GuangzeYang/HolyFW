@@ -19,11 +19,9 @@ import socket
 import subprocess
 import sys
 import threading
-import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 import logging
-import logging.handlers
 
 try:
     import colorlog
@@ -46,9 +44,79 @@ DEFAULT_CONFIG_NAME = "soldier.ini"
 SUBPROCESS_TIMEOUT_DEFAULT = 3600
 MAX_LINE_BYTES = 65536
 OUTPUT_DIR_NAME = "output"
-LOG_BACKUP_COUNT = 7
+SOLDIER_DATED_FILE_HANDLER_NAME = "soldier_dated_file"
+LOG_DATE_CHECK_INTERVAL_SECONDS = 1.0
 
 
+def _plain_log_formatter() -> logging.Formatter:
+    return logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+
+def _build_console_handler(level: int) -> logging.StreamHandler:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
+    plain_formatter = _plain_log_formatter()
+    if colorlog is not None:
+        color_formatter = colorlog.ColoredFormatter(
+            '%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            log_colors={
+                'DEBUG': 'cyan',
+                'INFO': 'green',
+                'WARNING': 'yellow',
+                'ERROR': 'red',
+                'CRITICAL': 'bold_red',
+            },
+        )
+        console_handler.setFormatter(color_formatter)
+    else:
+        console_handler.setFormatter(plain_formatter)
+    return console_handler
+
+
+def reattach_soldier_dated_file_handler(
+    logs_dir: Path,
+    level: int = logging.INFO,
+    *,
+    target_day: date | None = None,
+    logger: logging.Logger | None = None,
+) -> Path:
+    """Replace only the soldier dated file handler with the file for target_day."""
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    day = target_day or date.today()
+    log_file = logs_dir / f"soldier_{day.isoformat()}.log"
+
+    root = logger or logging.getLogger()
+    for handler in list(root.handlers):
+        if getattr(handler, "name", None) == SOLDIER_DATED_FILE_HANDLER_NAME:
+            root.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setLevel(level)
+    file_handler.setFormatter(_plain_log_formatter())
+    file_handler.name = SOLDIER_DATED_FILE_HANDLER_NAME
+    root.addHandler(file_handler)
+    return log_file
+
+
+def configure_soldier_root_logging(logs_dir: Path, level: int = logging.INFO) -> Path:
+    """Configure soldier logging for long-running daily log files."""
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger()
+    logger.setLevel(level)
+
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+    logger.addHandler(_build_console_handler(level))
+    return reattach_soldier_dated_file_handler(logs_dir, level, logger=logger)
 
 
 
@@ -476,30 +544,10 @@ def handle_dispatch_connection(
             logging.error(f"Failed to save command output for task {full_ref}: {e}")
 
         logging.info(f"Task {full_ref} executed, status={status}, exit_code={exit_code}")
-        sresp, serr = send_report(commander_host, commander_port, report)
+        _, serr = send_report(commander_host, commander_port, report)
         if serr:
             logging.error(f"Failed to report task {full_ref} to commander: {serr}")
-            try:
-                conn.sendall(
-                    (
-                        json.dumps(
-                            {"ok": False, "error": serr, "local": "Executed but failed to report to client"},
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    ).encode("utf-8")
-                )
-            except OSError as e:
-                logging.warning(f"Failed to send error response to dispatch connection: {e}")
             return
-        try:
-            conn.sendall(
-                (
-                    json.dumps({"ok": True, "client": sresp}, ensure_ascii=False) + "\n"
-                ).encode("utf-8")
-            )
-        except OSError as e:
-            logging.warning(f"Failed to send success response to dispatch connection: {e}")
         logging.info(f"Task {full_ref} reported successfully to commander")
     finally:
         conn.close()
@@ -521,10 +569,21 @@ def run_listen(
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((b, lp))
     sock.listen(32)
+    sock.settimeout(LOG_DATE_CHECK_INTERVAL_SECONDS)
     logging.info(f"Listening for tasks on {b}:{lp}; reporting to commander {sh}:{sp}; exec timeout={timeout_sec}s")
+    logs_dir = Path(__file__).resolve().parent / "logs"
+    current_log_day = date.today()
     try:
         while True:
-            conn, addr = sock.accept()
+            new_log_day = date.today()
+            if new_log_day != current_log_day:
+                log_file = reattach_soldier_dated_file_handler(logs_dir, logging.INFO, target_day=new_log_day)
+                current_log_day = new_log_day
+                logging.info(f"Soldier log switched to {log_file}")
+            try:
+                conn, addr = sock.accept()
+            except socket.timeout:
+                continue
             t = threading.Thread(
                 target=handle_dispatch_connection,
                 args=(conn, sh, sp, timeout_sec),
@@ -599,47 +658,9 @@ Default reads {DEFAULT_CONFIG_NAME} in same directory:
     
     script_dir = Path(__file__).resolve().parent
     logs_dir = Path(__file__).resolve().parent / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
     output_dir = script_dir / OUTPUT_DIR_NAME
     output_dir.mkdir(parents=True, exist_ok=True)
-    log_file = logs_dir / f"soldier_{date.today().isoformat()}.log"
-    
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-
-    for handler in list(logger.handlers):
-        logger.removeHandler(handler)
-        try:
-            handler.close()
-        except Exception:
-            pass
-    
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    file_handler = logging.handlers.TimedRotatingFileHandler(
-        log_file, when='midnight', interval=1, backupCount=LOG_BACKUP_COUNT, encoding='utf-8'
-    )
-    file_handler.setLevel(logging.INFO)
-    
-    plain_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    if colorlog is not None:
-        color_formatter = colorlog.ColoredFormatter(
-            '%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            log_colors={
-                'DEBUG': 'cyan',
-                'INFO': 'green',
-                'WARNING': 'yellow',
-                'ERROR': 'red',
-                'CRITICAL': 'bold_red',
-            },
-        )
-        console_handler.setFormatter(color_formatter)
-    else:
-        console_handler.setFormatter(plain_formatter)
-    file_handler.setFormatter(plain_formatter)
-    
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
+    log_file = configure_soldier_root_logging(logs_dir, logging.INFO)
     
     logging.info(f"Soldier starting, logs: {log_file}")
     logging.info(f"Command output directory: {output_dir}")
