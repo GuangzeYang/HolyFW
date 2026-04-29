@@ -12,6 +12,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import socket
 import threading
@@ -210,6 +211,7 @@ class TaskScanner:
             max_attempts=generator_config["max_attempts"],
             agent_client=build_deepseek_client(generator_config),
             domain_resource_file=domain_resource_file,
+            repository=self.repository,
         )
         self.selection_policy = EarliestPendingSelectionPolicy()
         self.scan_service = TaskScanService(
@@ -338,6 +340,7 @@ def serve(
     dispatch_script: Path,
     logs_dir: Path,
     log_level_name: str,
+    worker_threads: int,
 ) -> None:
     data_dir = data_dir.resolve()
     repository = DailyTaskRepository(
@@ -364,24 +367,23 @@ def serve(
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))
     sock.listen(listen_backlog)
-    logging.info(f"Listening on {host}:{port}, data_dir={data_dir}")
+    logging.info(f"Listening on {host}:{port}, data_dir={data_dir}, worker_threads={worker_threads}")
     try:
+        executor = ThreadPoolExecutor(max_workers=worker_threads)
         while True:
             conn, addr = sock.accept()
-            t = threading.Thread(
-                target=handle_commander,
-                args=(
-                    conn,
-                    addr,
-                    repository,
-                    max_line_bytes,
-                    recv_chunk_bytes,
-                    socket_timeout_seconds,
-                ),
-                daemon=True,
+            executor.submit(
+                handle_commander,
+                conn,
+                addr,
+                repository,
+                max_line_bytes,
+                recv_chunk_bytes,
+                socket_timeout_seconds,
             )
-            t.start()
     finally:
+        if "executor" in locals():
+            executor.shutdown(wait=False, cancel_futures=True)
         sock.close()
 
 
@@ -442,6 +444,7 @@ def main() -> None:
         dispatch_script=dispatch_script,
         logs_dir=logs_dir,
         log_level_name=logging_config["level"],
+        worker_threads=server_config["worker_threads"],
     )
 
 

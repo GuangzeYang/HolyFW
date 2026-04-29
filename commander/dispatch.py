@@ -17,10 +17,16 @@ from typing import Any
 
 import logging
 
-from common import validate_task_id
-from logging_setup import configure_daily_logging
-from repository import DailyTaskRepository
-from target_config import load_target_config
+try:
+    from common import validate_task_id
+    from logging_setup import configure_daily_logging
+    from repository import DailyTaskRepository
+    from target_config import load_target_config
+except ImportError:
+    from common import validate_task_id
+    from commander.logging_setup import configure_daily_logging
+    from commander.repository import DailyTaskRepository
+    from commander.target_config import load_target_config
 
 try:
     from runtime_config import (
@@ -226,6 +232,17 @@ def main() -> int:
     if not task_text and isinstance(args.description, str):
         task_text = args.description.strip()
 
+    append_task(
+        repository,
+        date_str,
+        target_role,
+        task_id,
+        task_text,
+        expiry_time,
+        args.planned_time,
+    )
+    logging.info(f"Written to {task_file}, task_ref={task_ref}")
+
     try:
         resp = send_to_soldier(
             soldier_host,
@@ -238,22 +255,24 @@ def main() -> int:
         )
     except OSError as e:
         logging.error(f"Dispatch failed: {e}")
+        repository.rollback_dispatched_task(
+            date_str,
+            target_role,
+            task_id,
+            f"Dispatch failed before reaching soldier: {e}",
+        )
         return 1
 
     if not resp.get("ok"):
-        logging.error(f"Dispatch response indicates failure: {resp.get('error', 'unknown')}")
+        error = resp.get("error", "unknown")
+        logging.error(f"Dispatch response indicates failure: {error}")
+        repository.rollback_dispatched_task(
+            date_str,
+            target_role,
+            task_id,
+            f"Dispatch failed before reaching soldier: {error}",
+        )
         return 1
-
-    append_task(
-        repository,
-        date_str,
-        target_role,
-        task_id,
-        task_text,
-        expiry_time,
-        args.planned_time,
-    )
-    logging.info(f"Written to {task_file}, task_ref={task_ref}")
 
     print(json.dumps(resp, ensure_ascii=False))
     return 0

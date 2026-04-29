@@ -82,6 +82,7 @@ def _validate_schema(data: dict[str, Any]) -> None:
     _validate_positive_int(data, "server.recv_chunk_bytes")
     _validate_positive_int(data, "server.socket_timeout_seconds")
     _validate_positive_int(data, "server.listen_backlog")
+    _validate_positive_int(data, "server.worker_threads")
 
     _read_required(data, "scanner.data_dir", str)
     _validate_positive_int(data, "scanner.scan_interval_seconds")
@@ -92,7 +93,12 @@ def _validate_schema(data: dict[str, Any]) -> None:
     soldier_timeout = _read_required(data, "dispatch.soldier_timeout_seconds", (int, float))
     if soldier_timeout <= 0:
         raise ValueError("Config key dispatch.soldier_timeout_seconds must be > 0")
-    _validate_positive_int(data, "dispatch.client_timeout_seconds")
+    client_timeout = _validate_positive_int(data, "dispatch.client_timeout_seconds")
+    if client_timeout < soldier_timeout + 5:
+        raise ValueError(
+            "Config key dispatch.client_timeout_seconds must be at least "
+            "dispatch.soldier_timeout_seconds + 5"
+        )
     _validate_positive_int(data, "dispatch.timeout_minutes")
 
     min_tasks_per_role = _validate_positive_int(data, "generator.min_tasks_per_role")
@@ -164,6 +170,7 @@ def get_server_config(data: dict[str, Any]) -> dict[str, Any]:
         "recv_chunk_bytes": _read_required(data, "server.recv_chunk_bytes", int),
         "socket_timeout_seconds": _read_required(data, "server.socket_timeout_seconds", int),
         "listen_backlog": _read_required(data, "server.listen_backlog", int),
+        "worker_threads": _read_required(data, "server.worker_threads", int),
     }
 
 

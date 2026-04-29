@@ -354,6 +354,7 @@ def generate_role_tasks(
     max_attempts: int,
     agent_client: AgentRequestABC,
     emit_status: StatusCallback,
+    save_final_file: Callable[[Path, dict[str, Any]], None] = save_json_atomic,
 ) -> RoleTaskGenerationResult:
     candidate_file = candidate_task_path(final_file)
     _cleanup_file(candidate_file)
@@ -639,7 +640,7 @@ def generate_role_tasks(
 
                 assert data is not None
                 persisted_data[role] = data.get(role, [])
-                save_json_atomic(final_file, persisted_data)
+                save_final_file(final_file, persisted_data)
                 completed_roles.add(role)
                 _cleanup_file(role_candidate_file)
                 role_succeeded = True
@@ -775,7 +776,7 @@ def generate_role_tasks(
             return RoleTaskGenerationResult(False, None, last_failure_reason, stats)
 
         assert data is not None
-        save_json_atomic(final_file, data)
+        save_final_file(final_file, data)
         append_agent_output_log(
             logs_dir,
             source=source,

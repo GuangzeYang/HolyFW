@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -161,6 +162,69 @@ class RepositoryTests(unittest.TestCase):
         item = self.repo.load_day(self.today)["hr"][0]
         self.assertEqual(item["task_id"], "abc12345")
         self.assertEqual(item["status"], STATUS_WAITING)
+
+    def test_rollback_dispatched_task_restores_retryable_state(self) -> None:
+        expiry = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        self.repo.bind_dispatched_task(
+            date_str=self.today,
+            role="hr",
+            task_id="abc12345",
+            task_text="t1",
+            expiry_time=expiry,
+            planned_time="09:01",
+        )
+
+        rolled_back = self.repo.rollback_dispatched_task(
+            self.today,
+            "hr",
+            "abc12345",
+            "dispatch failed",
+        )
+
+        self.assertTrue(rolled_back)
+        item = self.repo.load_day(self.today)["hr"][0]
+        self.assertEqual(item["task_id"], "")
+        self.assertEqual(item["status"], STATUS_PLANNED)
+        self.assertFalse(item["is_load"])
+        self.assertEqual(item["report_message"], "dispatch failed")
+
+    def test_dispatch_binds_before_send_and_rolls_back_on_failure(self) -> None:
+        import commander.dispatch as dispatch
+
+        cfg = self.data_dir / "commander.ini"
+        cfg.write_text("[hr]\nhost = 127.0.0.1\nport = 38472\n", encoding="utf-8")
+        argv = [
+            "dispatch.py",
+            "--data-dir",
+            str(self.data_dir),
+            "--config",
+            str(cfg),
+            "--target",
+            "hr",
+            "--command",
+            "echo ok",
+            "--task",
+            "t1",
+            "--planned-time",
+            "09:01",
+        ]
+
+        def fail_after_verifying_waiting(*args, **kwargs):
+            item = self.repo.load_day(self.today)["hr"][0]
+            self.assertEqual(item["task_id"], args[2].rsplit("_", 1)[-1])
+            self.assertEqual(item["status"], STATUS_WAITING)
+            return {"ok": False, "error": "down"}
+
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch("commander.dispatch.send_to_soldier", side_effect=fail_after_verifying_waiting),
+        ):
+            rc = dispatch.main()
+
+        self.assertEqual(rc, 1)
+        item = self.repo.load_day(self.today)["hr"][0]
+        self.assertEqual(item["task_id"], "")
+        self.assertEqual(item["status"], STATUS_PLANNED)
 
 
 class LoggingSetupTests(unittest.TestCase):
@@ -578,6 +642,32 @@ class RuntimeConfigGeneratorFeasibilityTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 load_runtime_config(cfg_path)
         self.assertIn("min_internal", str(ctx.exception))
+
+    def test_load_raises_when_dispatch_client_timeout_is_too_short(self) -> None:
+        from commander.runtime_config import load_runtime_config
+
+        base_path = Path(__file__).resolve().parent.parent / "commander" / "config.json"
+        data = json.loads(base_path.read_text(encoding="utf-8"))
+        data["dispatch"]["soldier_timeout_seconds"] = 120.0
+        data["dispatch"]["client_timeout_seconds"] = 30
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.json"
+            cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                load_runtime_config(cfg_path)
+        self.assertIn("client_timeout_seconds", str(ctx.exception))
+
+    def test_load_reads_worker_threads(self) -> None:
+        from commander.runtime_config import get_server_config, load_runtime_config
+
+        base_path = Path(__file__).resolve().parent.parent / "commander" / "config.json"
+        data = json.loads(base_path.read_text(encoding="utf-8"))
+        data["server"]["worker_threads"] = 6
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.json"
+            cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            loaded = load_runtime_config(cfg_path)
+        self.assertEqual(get_server_config(loaded)["worker_threads"], 6)
 
 
 class FakeAgentClient(AgentRequestABC):

@@ -12,7 +12,9 @@
     "_comment_socket_timeout_seconds": "Per-connection socket timeout in seconds.",
     "socket_timeout_seconds": 120,
     "_comment_listen_backlog": "TCP listen backlog for commander server socket.",
-    "listen_backlog": 32
+    "listen_backlog": 32,
+    "_comment_worker_threads": "Maximum concurrent commander report handler workers.",
+    "worker_threads": 6
   },
   "_comment_scanner": "Task scanning settings for commander background loop.",
   "scanner": {
@@ -33,7 +35,7 @@
     "_comment_soldier_timeout_seconds": "TCP connect/send timeout when dispatching to soldier.",
     "soldier_timeout_seconds": 120.0,
     "_comment_client_timeout_seconds": "Subprocess timeout when commander invokes dispatch.py.",
-    "client_timeout_seconds": 30,
+    "client_timeout_seconds": 125,
     "_comment_timeout_minutes": "Expiry timeout in minutes written into dispatched waiting tasks.",
     "timeout_minutes": 10
   },

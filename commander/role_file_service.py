@@ -13,10 +13,12 @@ from typing import Any
 try:
     from agent_request_abc import AgentRequestABC
     from deepseek_client import build_deepseek_client
+    from repository import DailyTaskRepository
     from role_task_generation import generate_role_tasks
 except ImportError:
     from commander.agent_request_abc import AgentRequestABC
     from commander.deepseek_client import build_deepseek_client
+    from commander.repository import DailyTaskRepository
     from commander.role_task_generation import generate_role_tasks
 
 from common import (
@@ -58,6 +60,7 @@ class RoleTaskFileService:
         agent_client: AgentRequestABC | None = None,
         domain_resource_file: Path | None = None,
         logs_dir: Path | None = None,
+        repository: DailyTaskRepository | None = None,
     ):
         if (
             min_tasks_per_role is None
@@ -95,19 +98,17 @@ class RoleTaskFileService:
         self.agent_client = agent_client
         self.domain_resource_file = domain_resource_file
         self.logs_dir = logs_dir
+        self.repository = repository or DailyTaskRepository(self.data_dir)
         self._generation_lock = threading.Lock()
 
     def get_today_role_task_file(self) -> Path:
-        today = date.today().isoformat()
-        month_day = today[5:]
-        return self.data_dir / f"tasks_{month_day}.json"
+        return self.repository.day_path(date.today().isoformat())
 
     def ensure_role_file(self, role_file: Path) -> bool:
         """Ensure unified role task file exists, generate if missing."""
         if role_file.exists():
             try:
-                with open(role_file, encoding="utf-8") as f:
-                    data = json.load(f)
+                data = self.repository.load_path(role_file)
                 if not isinstance(data, dict):
                     logging.warning(f"Role file {role_file} is not a dict")
                     return False
@@ -191,8 +192,7 @@ class RoleTaskFileService:
                             f"Role file {role_file} healed {healed_stuck_tasks} stuck planned tasks with is_load=true"
                         )
                     if schema_updated:
-                        with open(role_file, "w", encoding="utf-8") as f:
-                            json.dump(data, f, ensure_ascii=False, indent=2)
+                        self.repository.save_path(role_file, data)
                         logging.info(f"Role file {role_file} runtime schema auto-backfilled")
                     logging.info(f"Role file {role_file} exists and contains runtime fields")
                     return True
@@ -243,8 +243,7 @@ class RoleTaskFileService:
                             f"Failed to normalize role file {role_file}: {reason_after_fix}; resuming generation"
                         )
                         return self.generate_role_tasks(role_file)
-                    with open(role_file, "w", encoding="utf-8") as f:
-                        json.dump(normalized, f, ensure_ascii=False, indent=2)
+                    self.repository.save_path(role_file, normalized)
                     logging.info(f"Role file {role_file} was normalized and repaired")
                 logging.info(f"Role file {role_file} exists and is valid")
                 return True
@@ -270,6 +269,7 @@ class RoleTaskFileService:
                     max_attempts=self.max_attempts,
                     agent_client=self.agent_client,
                     emit_status=logging.info,
+                    save_final_file=self.repository.save_path,
                 )
                 if result.success:
                     return True
@@ -292,15 +292,17 @@ class RoleTaskFileService:
 
     def load_role_tasks(self, role_file: Path) -> dict[str, Any]:
         try:
-            return load_task_file(role_file)
+            data = self.repository.load_path(role_file)
+            if not isinstance(data, dict):
+                raise ValueError(f"Task JSON root must be an object in {role_file}")
+            return data
         except ValueError as e:
             logging.error(f"Failed to load role tasks from {role_file}: {e}")
             return {}
 
     def save_role_tasks(self, role_file: Path, data: dict[str, Any]) -> None:
         try:
-            with open(role_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            self.repository.save_path(role_file, data)
             logging.debug(f"Saved role tasks to {role_file}")
         except OSError as e:
             logging.error(f"Failed to save role tasks to {role_file}: {e}")

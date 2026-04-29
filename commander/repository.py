@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import logging
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
+from collections.abc import Iterator
 from typing import Any
 
 from filelock import FileLock
@@ -47,11 +50,27 @@ class DailyTaskRepository:
     def day_path(self, date_str: str) -> Path:
         return tasks_path(self.data_dir, date_str)
 
+    def lock_for_path(self, path: Path) -> FileLock:
+        return FileLock(str(path) + ".lock", timeout=self.lock_timeout)
+
+    @contextmanager
+    def locked_path(self, path: Path) -> Iterator[None]:
+        with self.lock_for_path(path):
+            yield
+
+    def load_path(self, path: Path) -> dict[str, Any]:
+        with self.locked_path(path):
+            return load_json_file(path)
+
+    def save_path(self, path: Path, data: dict[str, Any]) -> None:
+        with self.locked_path(path):
+            save_json_atomic(path, data)
+
     def load_day(self, date_str: str) -> dict[str, Any]:
-        return load_json_file(self.day_path(date_str))
+        return self.load_path(self.day_path(date_str))
 
     def save_day(self, date_str: str, data: dict[str, Any]) -> None:
-        save_json_atomic(self.day_path(date_str), data)
+        self.save_path(self.day_path(date_str), data)
 
     def has_active_waiting_task(self, role: str, date_str: str | None = None) -> bool:
         date_key = date_str or date.today().isoformat()
@@ -59,12 +78,12 @@ class DailyTaskRepository:
         if not path.exists():
             return False
 
-        lock_path = str(path) + ".lock"
         try:
-            with FileLock(lock_path, timeout=self.lock_timeout):
+            with self.locked_path(path):
                 data = load_json_file(path)
-        except Exception:
-            return False
+        except Exception as exc:
+            logging.warning(f"Failed to check waiting tasks in {path}: {exc}")
+            return True
 
         tasks = data.get(role)
         if not isinstance(tasks, list):
@@ -265,6 +284,39 @@ class DailyTaskRepository:
             save_json_atomic(path, data)
 
         return {"ok": True}
+
+    def rollback_dispatched_task(
+        self,
+        date_str: str,
+        role: str,
+        task_id: str,
+        message: str | None = None,
+    ) -> bool:
+        """Rollback a task bound to waiting when soldier dispatch fails."""
+        path = self.day_path(date_str)
+        with self.locked_path(path):
+            data = load_json_file(path)
+            tasks = data.get(role)
+            if not isinstance(tasks, list):
+                return False
+
+            for item in tasks:
+                if not isinstance(item, dict) or item.get("task_id") != task_id:
+                    continue
+                item["task_id"] = ""
+                item["status"] = "planned"
+                item["is_load"] = False
+                item["issued_at"] = ""
+                item["expiry_time"] = ""
+                item["completed_at"] = ""
+                item["exit_code"] = None
+                item["stdout"] = ""
+                item["stderr"] = ""
+                if message is not None:
+                    item["report_message"] = message
+                save_json_atomic(path, data)
+                return True
+        return False
 
     def _truncate(self, text: str) -> str:
         if len(text) <= self.max_store_text:

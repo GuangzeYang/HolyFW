@@ -12,13 +12,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import argparse
 import configparser
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 import logging
@@ -42,10 +45,17 @@ DEFAULT_PORT = 38471
 DEFAULT_LISTEN_PORT = 38472
 DEFAULT_CONFIG_NAME = "soldier.ini"
 SUBPROCESS_TIMEOUT_DEFAULT = 3600
+DEFAULT_WORKER_THREADS = 6
 MAX_LINE_BYTES = 65536
+MAX_COMMAND_OUTPUT_BYTES = 65536
 OUTPUT_DIR_NAME = "output"
+PENDING_REPORTS_FILE_NAME = "pending_reports.jsonl"
+FAILED_REPORTS_FILE_NAME = "failed_reports.jsonl"
+REPORT_RETRY_LIMIT = 3
+REPORT_RETRY_INTERVAL_SECONDS = 60
 SOLDIER_DATED_FILE_HANDLER_NAME = "soldier_dated_file"
 LOG_DATE_CHECK_INTERVAL_SECONDS = 1.0
+_PENDING_REPORTS_LOCK = threading.Lock()
 
 
 def _plain_log_formatter() -> logging.Formatter:
@@ -201,6 +211,187 @@ def save_command_output(
     return file_path
 
 
+def pending_reports_path(base_dir: Path | None = None) -> Path:
+    root = base_dir or Path(__file__).resolve().parent
+    output_dir = root / OUTPUT_DIR_NAME
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir / PENDING_REPORTS_FILE_NAME
+
+
+def failed_reports_path(base_dir: Path | None = None) -> Path:
+    root = base_dir or Path(__file__).resolve().parent
+    output_dir = root / OUTPUT_DIR_NAME
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir / FAILED_REPORTS_FILE_NAME
+
+
+def _append_jsonl(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def enqueue_pending_report(
+    commander_host: str,
+    commander_port: int,
+    payload: dict,
+    last_error: str,
+    *,
+    base_dir: Path | None = None,
+) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    record = {
+        "commander_host": commander_host,
+        "commander_port": commander_port,
+        "payload": payload,
+        "attempts": 0,
+        "last_error": last_error,
+        "created_at": now,
+        "updated_at": now,
+    }
+    with _PENDING_REPORTS_LOCK:
+        _append_jsonl(pending_reports_path(base_dir), record)
+
+
+def _load_report_queue(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    records: list[dict] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                logging.warning(f"Skipping invalid pending report line in {path}")
+                continue
+            if isinstance(parsed, dict):
+                records.append(parsed)
+    return records
+
+
+def _write_report_queue(path: Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        for record in records:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
+
+
+def process_pending_reports_once(base_dir: Path | None = None) -> None:
+    pending_path = pending_reports_path(base_dir)
+    failed_path = failed_reports_path(base_dir)
+    with _PENDING_REPORTS_LOCK:
+        records = _load_report_queue(pending_path)
+        if not records:
+            return
+
+        keep: list[dict] = []
+        failed: list[dict] = []
+        for record in records:
+            payload = record.get("payload")
+            host = record.get("commander_host")
+            port = record.get("commander_port")
+            attempts = int(record.get("attempts") or 0)
+            if not isinstance(payload, dict) or not isinstance(host, str) or not isinstance(port, int):
+                record["last_error"] = "Invalid pending report record"
+                record["attempts"] = attempts + 1
+                failed.append(record)
+                continue
+
+            _, err = send_report(host, port, payload)
+            if err is None:
+                logging.info(f"Pending report delivered to commander: {payload.get('task_ref')}")
+                continue
+
+            attempts += 1
+            record["attempts"] = attempts
+            record["last_error"] = err
+            record["updated_at"] = datetime.now(timezone.utc).isoformat()
+            if attempts >= REPORT_RETRY_LIMIT:
+                failed.append(record)
+                logging.error(
+                    f"Pending report exceeded retry limit for {payload.get('task_ref')}: {err}"
+                )
+            else:
+                keep.append(record)
+                logging.warning(
+                    f"Pending report retry {attempts}/{REPORT_RETRY_LIMIT} failed for "
+                    f"{payload.get('task_ref')}: {err}"
+                )
+
+        _write_report_queue(pending_path, keep)
+        for record in failed:
+            _append_jsonl(failed_path, record)
+
+
+def start_report_retry_thread(base_dir: Path | None = None) -> None:
+    def retry_loop() -> None:
+        logging.info(
+            f"Soldier pending report retry thread started; limit={REPORT_RETRY_LIMIT}"
+        )
+        while True:
+            try:
+                process_pending_reports_once(base_dir)
+            except Exception as exc:
+                logging.error(f"Exception in report retry loop: {exc}", exc_info=True)
+            time.sleep(REPORT_RETRY_INTERVAL_SECONDS)
+
+    threading.Thread(target=retry_loop, daemon=True).start()
+
+
+def _read_temp_output_limited(temp_file, max_bytes: int) -> tuple[str, bool]:
+    temp_file.seek(0)
+    data = temp_file.read(max_bytes + 1)
+    truncated = len(data) > max_bytes
+    text = data[:max_bytes].decode("utf-8", errors="replace")
+    if truncated:
+        text += "\n...[truncated]"
+    return text, truncated
+
+
+def execute_command(
+    command: str,
+    timeout_sec: int,
+    max_output_bytes: int = MAX_COMMAND_OUTPUT_BYTES,
+) -> tuple[str, str, int, str, str | None]:
+    """Execute a shell command while spooling stdout/stderr to temp files."""
+    with tempfile.TemporaryFile() as stdout_tmp, tempfile.TemporaryFile() as stderr_tmp:
+        try:
+            proc = subprocess.Popen(
+                command,
+                shell=True,
+                stdout=stdout_tmp,
+                stderr=stderr_tmp,
+            )
+            try:
+                exit_code = proc.wait(timeout=timeout_sec)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                out, out_truncated = _read_temp_output_limited(stdout_tmp, max_output_bytes)
+                err_out, err_truncated = _read_temp_output_limited(stderr_tmp, max_output_bytes)
+                if not err_out:
+                    err_out = "timeout"
+                msg = f"Command timeout (>{timeout_sec}s)"
+                if out_truncated or err_truncated:
+                    msg += "; output truncated"
+                return out, err_out, -1, "failed", msg
+        except OSError as e:
+            return "", str(e), -1, "failed", f"Execution failed: {e}"
+
+        out, out_truncated = _read_temp_output_limited(stdout_tmp, max_output_bytes)
+        err_out, err_truncated = _read_temp_output_limited(stderr_tmp, max_output_bytes)
+        ok_run = exit_code == 0
+        status = "successed" if ok_run else "failed"
+        msg = None if ok_run else f"Command exit code {exit_code}"
+        if out_truncated or err_truncated:
+            msg = f"{msg}; output truncated" if msg else "output truncated"
+        return out, err_out, exit_code, status, msg
+
+
 
 
 
@@ -270,6 +461,23 @@ def load_exec_timeout(path: Path) -> int | None:
         return None
 
 
+def load_worker_threads(path: Path) -> int:
+    if not path.is_file():
+        return DEFAULT_WORKER_THREADS
+    cp = configparser.ConfigParser()
+    cp.read(path, encoding="utf-8")
+    raw = ""
+    if "listen" in cp:
+        raw = (cp["listen"].get("worker_threads") or "").strip()
+    if not raw:
+        return DEFAULT_WORKER_THREADS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_WORKER_THREADS
+    return value if value > 0 else DEFAULT_WORKER_THREADS
+
+
 def resolve_endpoint(
     args_host: str | None,
     args_port: int | None,
@@ -300,6 +508,7 @@ def send_report(
     line = json.dumps(payload, ensure_ascii=False) + "\n"
     try:
         with socket.create_connection((commander_host, commander_port), timeout=60) as sock:
+            sock.settimeout(60)
             sock.sendall(line.encode("utf-8"))
             buf = b""
             while b"\n" not in buf:
@@ -460,51 +669,7 @@ def handle_dispatch_connection(
             "command": command,
             "payload": payload,
         }
-        try:
-            proc = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                timeout=timeout_sec,
-            )
-            out = ""
-            if proc.stdout:
-                if isinstance(proc.stdout, bytes):
-                    out = proc.stdout.decode('utf-8', errors='replace')
-                else:
-                    out = str(proc.stdout)
-            err_out = ""
-            if proc.stderr:
-                if isinstance(proc.stderr, bytes):
-                    err_out = proc.stderr.decode('utf-8', errors='replace')
-                else:
-                    err_out = str(proc.stderr)
-            exit_code = proc.returncode
-            ok_run = exit_code == 0
-            status = "successed" if ok_run else "failed"
-            msg = None if ok_run else f"Command exit code {exit_code}"
-        except subprocess.TimeoutExpired as e:
-            out = ""
-            if e.stdout:
-                if isinstance(e.stdout, bytes):
-                    out = e.stdout.decode('utf-8', errors='replace')
-                else:
-                    out = str(e.stdout)
-            err_out = "timeout"
-            if e.stderr:
-                if isinstance(e.stderr, bytes):
-                    err_out = e.stderr.decode('utf-8', errors='replace')
-                else:
-                    err_out = str(e.stderr)
-            exit_code = -1
-            status = "failed"
-            msg = f"Command timeout (>{timeout_sec}s)"
-        except OSError as e:
-            out = ""
-            err_out = str(e)
-            exit_code = -1
-            status = "failed"
-            msg = f"Execution failed: {e}"
+        out, err_out, exit_code, status, msg = execute_command(command, timeout_sec)
 
         try:
             save_task_record(
@@ -547,6 +712,11 @@ def handle_dispatch_connection(
         _, serr = send_report(commander_host, commander_port, report)
         if serr:
             logging.error(f"Failed to report task {full_ref} to commander: {serr}")
+            try:
+                enqueue_pending_report(commander_host, commander_port, report, serr)
+                logging.info(f"Task {full_ref} queued for commander report retry")
+            except OSError as e:
+                logging.error(f"Failed to queue report retry for task {full_ref}: {e}")
             return
         logging.info(f"Task {full_ref} reported successfully to commander")
     finally:
@@ -564,16 +734,23 @@ def run_listen(
     sh, sp = resolve_endpoint(commander_host, commander_port, config_path)
     to = load_exec_timeout(config_path)
     timeout_sec = to if to is not None and to > 0 else SUBPROCESS_TIMEOUT_DEFAULT
+    worker_threads = load_worker_threads(config_path)
+    script_dir = Path(__file__).resolve().parent
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((b, lp))
     sock.listen(32)
     sock.settimeout(LOG_DATE_CHECK_INTERVAL_SECONDS)
-    logging.info(f"Listening for tasks on {b}:{lp}; reporting to commander {sh}:{sp}; exec timeout={timeout_sec}s")
-    logs_dir = Path(__file__).resolve().parent / "logs"
+    logging.info(
+        f"Listening for tasks on {b}:{lp}; reporting to commander {sh}:{sp}; "
+        f"exec timeout={timeout_sec}s; worker_threads={worker_threads}"
+    )
+    logs_dir = script_dir / "logs"
     current_log_day = date.today()
+    start_report_retry_thread(script_dir)
     try:
+        executor = ThreadPoolExecutor(max_workers=worker_threads)
         while True:
             new_log_day = date.today()
             if new_log_day != current_log_day:
@@ -584,13 +761,10 @@ def run_listen(
                 conn, addr = sock.accept()
             except socket.timeout:
                 continue
-            t = threading.Thread(
-                target=handle_dispatch_connection,
-                args=(conn, sh, sp, timeout_sec),
-                daemon=True,
-            )
-            t.start()
+            executor.submit(handle_dispatch_connection, conn, sh, sp, timeout_sec)
     finally:
+        if "executor" in locals():
+            executor.shutdown(wait=False, cancel_futures=True)
         sock.close()
 
 

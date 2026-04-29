@@ -247,6 +247,7 @@ python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status su
 - `recv_chunk_bytes`：每次 socket 读取的分块大小
 - `socket_timeout_seconds`：连接超时
 - `listen_backlog`：监听 backlog
+- `worker_threads`：处理 soldier 上报连接的最大 worker 数，默认 `6`
 
 ### scanner
 
@@ -267,7 +268,7 @@ python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status su
 控制任务派发：
 
 - `soldier_timeout_seconds`：`dispatch.py` 连接 soldier 的 TCP 超时
-- `client_timeout_seconds`：commander 调用 `dispatch.py` 子进程的超时
+- `client_timeout_seconds`：commander 调用 `dispatch.py` 子进程的超时，必须至少比 `soldier_timeout_seconds` 多 5 秒
 - `timeout_minutes`：下发后写入任务的等待过期时间
 
 ### generator
@@ -327,6 +328,7 @@ python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status su
 
 - `bind`
 - `port`
+- `worker_threads`：处理下发连接的最大 worker 数，默认 `6`
 
 如果是分布式部署，一般要确保 `bind` 不是只监听本机回环地址，并且端口对 commander 所在主机可达。
 
@@ -398,6 +400,8 @@ python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status su
 
 - `received_task_MM-DD.jsonl`：任务接收记录
 - `output/`：每次执行的 stdout/stderr 落盘文件
+- `output/pending_reports.jsonl`：向 commander 上报失败后的待重试队列
+- `output/failed_reports.jsonl`：重试 3 次后仍失败的上报记录
 
 ## 注意事项
 
@@ -405,15 +409,21 @@ python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status su
 - `soldier` 会执行收到的命令，建议只在受控环境中部署。
 - 分布式部署时，请重点检查 commander 与 soldier 的监听地址、回报地址和防火墙配置。
 - 任务时间基于各主机系统时间，跨主机部署时建议保持时钟同步。
+- commander 与 soldier 的 TCP 处理都使用有界线程池，默认最多 6 个并发处理 worker。
+- dispatch 会先把任务绑定为 `waiting` 再发送到 soldier；如果发送失败，会回滚为可重试状态。
+- soldier 命令输出会按上限截断后写入报告，避免大 stdout/stderr 占满内存。
+- soldier 上报 commander 失败时会落入本地队列，后台最多重试 3 次。
 - 当前生成器默认使用 DeepSeek API；修改模型配置时，请同步检查 `commander/config.json` 中的 `generator` 段。
 
 ## 开发与回归
 
-核心回归测试位于 `tests/test_commander_refactor.py`，可在仓库根目录执行：
+可在仓库根目录执行完整 unittest 发现：
 
 ```bash
-python -m unittest tests.test_commander_refactor
+python -m unittest discover -s tests -p "test*.py"
 ```
+
+测试覆盖 commander 任务仓储、生成校验、调度回滚、日志切换、soldier 输出截断与上报重试等核心路径。网络抖动、真实多机部署和系统级进程守护仍建议通过集成/运维演练验证。
 
 如果你要继续扩展项目，建议优先阅读这些代码入口：
 

@@ -7,6 +7,7 @@ import json
 import logging
 import logging.handlers
 import shutil
+import sys
 import tempfile
 import unittest
 from datetime import date, timedelta
@@ -104,10 +105,7 @@ class SoldierRuntimeTests(unittest.TestCase):
 
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
-            mock.patch(
-                "soldier.soldier.subprocess.run",
-                return_value=mock.Mock(stdout=b"ok", stderr=b"", returncode=0),
-            ),
+            mock.patch("soldier.soldier.execute_command", return_value=("ok", "", 0, "successed", None)),
             mock.patch("soldier.soldier.save_task_record"),
             mock.patch("soldier.soldier.save_command_output", return_value=Path("out.txt")),
             mock.patch("soldier.soldier.send_report", return_value=({"ok": True}, None)),
@@ -127,18 +125,53 @@ class SoldierRuntimeTests(unittest.TestCase):
 
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
-            mock.patch(
-                "soldier.soldier.subprocess.run",
-                return_value=mock.Mock(stdout=b"ok", stderr=b"", returncode=0),
-            ),
+            mock.patch("soldier.soldier.execute_command", return_value=("ok", "", 0, "successed", None)),
             mock.patch("soldier.soldier.save_task_record"),
             mock.patch("soldier.soldier.save_command_output", return_value=Path("out.txt")),
             mock.patch("soldier.soldier.send_report", return_value=(None, "boom")),
+            mock.patch("soldier.soldier.enqueue_pending_report"),
         ):
             soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)
 
         self.assertEqual(conn.sent, [])
         self.assertTrue(conn.closed)
+
+    def test_execute_command_truncates_large_output(self) -> None:
+        command = f'"{sys.executable}" -c "print(\'x\' * 40)"'
+
+        out, err, exit_code, status, msg = soldier.execute_command(
+            command,
+            timeout_sec=10,
+            max_output_bytes=10,
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(status, "successed")
+        self.assertIn("...[truncated]", out)
+        self.assertEqual(err, "")
+        self.assertEqual(msg, "output truncated")
+
+    def test_pending_report_retries_three_times_then_moves_to_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            payload = {
+                "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
+                "status": "successed",
+            }
+            soldier.enqueue_pending_report("127.0.0.1", 38471, payload, "initial", base_dir=base_dir)
+
+            with mock.patch("soldier.soldier.send_report", return_value=(None, "still down")):
+                soldier.process_pending_reports_once(base_dir)
+                soldier.process_pending_reports_once(base_dir)
+                soldier.process_pending_reports_once(base_dir)
+
+            pending = soldier.pending_reports_path(base_dir).read_text(encoding="utf-8")
+            failed_lines = soldier.failed_reports_path(base_dir).read_text(encoding="utf-8").splitlines()
+            self.assertEqual(pending, "")
+            self.assertEqual(len(failed_lines), 1)
+            failed = json.loads(failed_lines[0])
+            self.assertEqual(failed["attempts"], 3)
+            self.assertEqual(failed["last_error"], "still down")
 
 
 if __name__ == "__main__":
