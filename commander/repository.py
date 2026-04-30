@@ -20,9 +20,9 @@ except ImportError:
     from commander.runtime_config import get_storage_config, load_runtime_config
 
 try:
-    from domain import apply_report_transition, move_to_waiting
+    from domain import move_to_waiting
 except ImportError:
-    from commander.domain import apply_report_transition, move_to_waiting
+    from commander.domain import move_to_waiting
 
 
 class DailyTaskRepository:
@@ -253,20 +253,9 @@ class DailyTaskRepository:
             if not isinstance(tasks, list):
                 return {"ok": False, "error": f"Task list format error under role {role}"}
 
-            found = False
             for item in tasks:
                 if isinstance(item, dict) and item.get("task_id") == task_id:
-                    allowed, next_status = apply_report_transition(item.get("status"), status)
-                    if not allowed:
-                        current_status = item.get("status")
-                        return {
-                            "ok": False,
-                            "error": (
-                                f"Invalid status transition for task {task_id}: "
-                                f"{current_status} -> {status}"
-                            ),
-                        }
-                    item["status"] = next_status
+                    item["status"] = status
                     item["completed_at"] = datetime.now().astimezone().isoformat()
                     if message is not None:
                         item["report_message"] = message
@@ -276,12 +265,10 @@ class DailyTaskRepository:
                         item["stdout"] = self._truncate(stdout)
                     if stderr is not None:
                         item["stderr"] = self._truncate(stderr)
-                    found = True
+                    save_json_atomic(path, data)
                     break
-
-            if not found:
+            else:
                 return {"ok": False, "error": f"Task not found: {task_id}"}
-            save_json_atomic(path, data)
 
         return {"ok": True}
 

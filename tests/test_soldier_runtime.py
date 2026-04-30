@@ -105,9 +105,11 @@ class SoldierRuntimeTests(unittest.TestCase):
 
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
+            mock.patch("soldier.soldier.claim_task_execution", return_value=("claimed", {})),
             mock.patch("soldier.soldier.execute_command", return_value=("ok", "", 0, "successed", None)),
             mock.patch("soldier.soldier.save_task_record"),
             mock.patch("soldier.soldier.save_command_output", return_value=Path("out.txt")),
+            mock.patch("soldier.soldier.mark_task_completed"),
             mock.patch("soldier.soldier.send_report", return_value=({"ok": True}, None)),
         ):
             soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)
@@ -125,9 +127,11 @@ class SoldierRuntimeTests(unittest.TestCase):
 
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
+            mock.patch("soldier.soldier.claim_task_execution", return_value=("claimed", {})),
             mock.patch("soldier.soldier.execute_command", return_value=("ok", "", 0, "successed", None)),
             mock.patch("soldier.soldier.save_task_record"),
             mock.patch("soldier.soldier.save_command_output", return_value=Path("out.txt")),
+            mock.patch("soldier.soldier.mark_task_completed"),
             mock.patch("soldier.soldier.send_report", return_value=(None, "boom")),
             mock.patch("soldier.soldier.enqueue_pending_report"),
         ):
@@ -172,6 +176,129 @@ class SoldierRuntimeTests(unittest.TestCase):
             failed = json.loads(failed_lines[0])
             self.assertEqual(failed["attempts"], 3)
             self.assertEqual(failed["last_error"], "still down")
+
+    def test_claim_task_execution_blocks_running_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            first, _ = soldier.claim_task_execution(
+                "2026-04-29",
+                "c01b883dfefd4c85",
+                "2026-04-29_accountancy_c01b883dfefd4c85",
+                "echo ok",
+                "2026-04-29T01:00:00+00:00",
+                999,
+                base_dir=base_dir,
+            )
+            second, state = soldier.claim_task_execution(
+                "2026-04-29",
+                "c01b883dfefd4c85",
+                "2026-04-29_accountancy_c01b883dfefd4c85",
+                "echo ok",
+                "2026-04-29T01:00:01+00:00",
+                999,
+                base_dir=base_dir,
+            )
+
+            self.assertEqual(first, "claimed")
+            self.assertEqual(second, "running")
+            self.assertEqual(state["status"], "running")
+
+    def test_claim_task_execution_allows_stale_running(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            path = soldier.task_state_path("2026-04-29", base_dir)
+            stale = {
+                "task_id": "c01b883dfefd4c85",
+                "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
+                "status": "running",
+                "updated_at": "2000-01-01T00:00:00+00:00",
+                "command": "echo old",
+            }
+            soldier._append_jsonl(path, stale)
+
+            status, _ = soldier.claim_task_execution(
+                "2026-04-29",
+                "c01b883dfefd4c85",
+                "2026-04-29_accountancy_c01b883dfefd4c85",
+                "echo ok",
+                "2026-04-29T01:00:00+00:00",
+                1,
+                base_dir=base_dir,
+            )
+
+            self.assertEqual(status, "claimed")
+
+    def test_completed_task_replays_report_without_executing(self) -> None:
+        conn = FakeDispatchConnection()
+        payload = {
+            "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
+            "task_date": "2026-04-29",
+            "command": "echo ok",
+        }
+        report = {
+            "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
+            "status": "successed",
+            "exit_code": 0,
+            "stdout": "ok",
+            "stderr": "",
+        }
+
+        with (
+            mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
+            mock.patch("soldier.soldier.claim_task_execution", return_value=("completed", {"report": report})),
+            mock.patch("soldier.soldier.execute_command") as execute_mock,
+            mock.patch("soldier.soldier.send_report", return_value=({"ok": True}, None)) as send_mock,
+        ):
+            soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)
+
+        execute_mock.assert_not_called()
+        send_mock.assert_called_once_with("127.0.0.1", 38471, report)
+        self.assertTrue(conn.closed)
+
+    def test_running_duplicate_is_ignored_without_executing_or_reporting(self) -> None:
+        conn = FakeDispatchConnection()
+        payload = {
+            "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
+            "task_date": "2026-04-29",
+            "command": "echo ok",
+        }
+
+        with (
+            mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
+            mock.patch("soldier.soldier.claim_task_execution", return_value=("running", {"status": "running"})),
+            mock.patch("soldier.soldier.execute_command") as execute_mock,
+            mock.patch("soldier.soldier.send_report") as send_mock,
+        ):
+            soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)
+
+        execute_mock.assert_not_called()
+        send_mock.assert_not_called()
+        self.assertTrue(conn.closed)
+
+    def test_completed_replay_failure_queues_pending_report(self) -> None:
+        conn = FakeDispatchConnection()
+        payload = {
+            "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
+            "task_date": "2026-04-29",
+            "command": "echo ok",
+        }
+        report = {
+            "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
+            "status": "successed",
+            "exit_code": 0,
+            "stdout": "ok",
+            "stderr": "",
+        }
+
+        with (
+            mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
+            mock.patch("soldier.soldier.claim_task_execution", return_value=("completed", {"report": report})),
+            mock.patch("soldier.soldier.send_report", return_value=(None, "down")),
+            mock.patch("soldier.soldier.enqueue_pending_report") as enqueue_mock,
+        ):
+            soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)
+
+        enqueue_mock.assert_called_once_with("127.0.0.1", 38471, report, "down")
 
 
 if __name__ == "__main__":

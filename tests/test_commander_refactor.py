@@ -126,6 +126,84 @@ class RepositoryTests(unittest.TestCase):
         )
         self.assertTrue(self.repo.has_active_waiting_task("hr", self.today))
 
+    def test_report_overwrites_successed_with_latest_failed_result(self) -> None:
+        expiry = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        task_ref = f"{self.today}_hr_abc12345"
+        self.repo.bind_dispatched_task(
+            date_str=self.today,
+            role="hr",
+            task_id="abc12345",
+            task_text="t1",
+            expiry_time=expiry,
+            planned_time="09:01",
+        )
+
+        first = self.repo.update_task_report(
+            task_ref=task_ref,
+            status="successed",
+            message="first ok",
+            exit_code=0,
+            stdout="old stdout",
+            stderr="old stderr",
+        )
+        second = self.repo.update_task_report(
+            task_ref=task_ref,
+            status="failed",
+            message="latest failed",
+            exit_code=7,
+            stdout="new stdout",
+            stderr="new stderr",
+        )
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        item = self.repo.load_day(self.today)["hr"][0]
+        self.assertEqual(item["status"], "failed")
+        self.assertEqual(item["report_message"], "latest failed")
+        self.assertEqual(item["exit_code"], 7)
+        self.assertEqual(item["stdout"], "new stdout")
+        self.assertEqual(item["stderr"], "new stderr")
+        self.assertTrue(item["completed_at"])
+
+    def test_report_overwrites_failed_with_latest_successed_result(self) -> None:
+        expiry = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        task_ref = f"{self.today}_hr_abc12345"
+        self.repo.bind_dispatched_task(
+            date_str=self.today,
+            role="hr",
+            task_id="abc12345",
+            task_text="t1",
+            expiry_time=expiry,
+            planned_time="09:01",
+        )
+
+        first = self.repo.update_task_report(
+            task_ref=task_ref,
+            status="failed",
+            message="first failed",
+            exit_code=1,
+            stdout="old stdout",
+            stderr="old stderr",
+        )
+        second = self.repo.update_task_report(
+            task_ref=task_ref,
+            status="successed",
+            message="latest ok",
+            exit_code=0,
+            stdout="new stdout",
+            stderr="",
+        )
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        item = self.repo.load_day(self.today)["hr"][0]
+        self.assertEqual(item["status"], "successed")
+        self.assertEqual(item["report_message"], "latest ok")
+        self.assertEqual(item["exit_code"], 0)
+        self.assertEqual(item["stdout"], "new stdout")
+        self.assertEqual(item["stderr"], "")
+        self.assertTrue(item["completed_at"])
+
     def test_atomic_index_update_applies_to_unissued_task(self) -> None:
         changed = self.repo.update_task_fields_by_index(
             date_str=self.today,

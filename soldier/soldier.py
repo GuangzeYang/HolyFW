@@ -49,6 +49,7 @@ DEFAULT_WORKER_THREADS = 6
 MAX_LINE_BYTES = 65536
 MAX_COMMAND_OUTPUT_BYTES = 65536
 OUTPUT_DIR_NAME = "output"
+TASK_STATE_FILE_PREFIX = "task_state"
 PENDING_REPORTS_FILE_NAME = "pending_reports.jsonl"
 FAILED_REPORTS_FILE_NAME = "failed_reports.jsonl"
 REPORT_RETRY_LIMIT = 3
@@ -56,6 +57,7 @@ REPORT_RETRY_INTERVAL_SECONDS = 60
 SOLDIER_DATED_FILE_HANDLER_NAME = "soldier_dated_file"
 LOG_DATE_CHECK_INTERVAL_SECONDS = 1.0
 _PENDING_REPORTS_LOCK = threading.Lock()
+_TASK_STATE_LOCK = threading.Lock()
 
 
 def _plain_log_formatter() -> logging.Formatter:
@@ -209,6 +211,112 @@ def save_command_output(
 
     clean_old_files(output_dir, "*.txt", days=20)
     return file_path
+
+
+def task_state_path(date_str: str, base_dir: Path | None = None) -> Path:
+    root = base_dir or Path(__file__).resolve().parent
+    month_day = date_str[5:] if len(date_str) >= 10 else date_str
+    return root / f"{TASK_STATE_FILE_PREFIX}_{month_day}.jsonl"
+
+
+def _load_task_state_records(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    records: list[dict] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                logging.warning(f"Skipping invalid task state line in {path}")
+                continue
+            if isinstance(parsed, dict):
+                records.append(parsed)
+    return records
+
+
+def _latest_task_state(records: list[dict], task_id: str) -> dict | None:
+    for record in reversed(records):
+        if record.get("task_id") == task_id:
+            return record
+    return None
+
+
+def _is_running_state_stale(record: dict, stale_after_seconds: int) -> bool:
+    updated_at = record.get("updated_at") or record.get("received_at")
+    if not isinstance(updated_at, str):
+        return False
+    try:
+        dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - dt).total_seconds() > stale_after_seconds
+
+
+def claim_task_execution(
+    date_str: str,
+    task_id: str,
+    task_ref: str,
+    command: str,
+    received_at: str,
+    stale_after_seconds: int,
+    *,
+    base_dir: Path | None = None,
+) -> tuple[str, dict | None]:
+    """Atomically decide whether a task should execute, replay, or be ignored."""
+    path = task_state_path(date_str, base_dir)
+    now = datetime.now(timezone.utc).isoformat()
+    with _TASK_STATE_LOCK:
+        latest = _latest_task_state(_load_task_state_records(path), task_id)
+        if latest is not None:
+            status = latest.get("status")
+            if status == "completed":
+                return "completed", latest
+            if status == "running" and not _is_running_state_stale(latest, stale_after_seconds):
+                return "running", latest
+            if status == "running":
+                logging.warning(f"Task {task_ref} has stale running state; allowing re-execution")
+
+        record = {
+            "task_id": task_id,
+            "task_ref": task_ref,
+            "status": "running",
+            "received_at": received_at,
+            "updated_at": now,
+            "command": command,
+        }
+        _append_jsonl(path, record)
+        return "claimed", record
+
+
+def mark_task_completed(
+    date_str: str,
+    task_id: str,
+    task_ref: str,
+    command: str,
+    received_at: str,
+    report: dict,
+    output_file: Path | None,
+    *,
+    base_dir: Path | None = None,
+) -> None:
+    record = {
+        "task_id": task_id,
+        "task_ref": task_ref,
+        "status": "completed",
+        "received_at": received_at,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "command": command,
+        "report": report,
+        "output_file": str(output_file) if output_file is not None else "",
+    }
+    with _TASK_STATE_LOCK:
+        _append_jsonl(task_state_path(date_str, base_dir), record)
 
 
 def pending_reports_path(base_dir: Path | None = None) -> Path:
@@ -669,6 +777,32 @@ def handle_dispatch_connection(
             "command": command,
             "payload": payload,
         }
+        claim_status, previous_state = claim_task_execution(
+            date_str,
+            task_id,
+            full_ref,
+            command,
+            received_at,
+            timeout_sec + 120,
+        )
+        if claim_status == "completed":
+            previous_report = previous_state.get("report") if isinstance(previous_state, dict) else None
+            if not isinstance(previous_report, dict):
+                logging.warning(f"Duplicate task {full_ref} has completed state without report; ignoring")
+                return
+            logging.info(f"Duplicate task {full_ref} already completed; replaying saved report")
+            _, serr = send_report(commander_host, commander_port, previous_report)
+            if serr:
+                logging.error(f"Failed to replay completed task {full_ref} to commander: {serr}")
+                try:
+                    enqueue_pending_report(commander_host, commander_port, previous_report, serr)
+                except OSError as e:
+                    logging.error(f"Failed to queue replay report for task {full_ref}: {e}")
+            return
+        if claim_status == "running":
+            logging.info(f"Duplicate task {full_ref} is already running; ignoring")
+            return
+
         out, err_out, exit_code, status, msg = execute_command(command, timeout_sec)
 
         try:
@@ -693,6 +827,7 @@ def handle_dispatch_connection(
         if msg is not None:
             report["message"] = msg
 
+        output_file: Path | None = None
         try:
             output_file = save_command_output(
                 task_id=task_id,
@@ -708,6 +843,15 @@ def handle_dispatch_connection(
         except OSError as e:
             logging.error(f"Failed to save command output for task {full_ref}: {e}")
 
+        mark_task_completed(
+            date_str,
+            task_id,
+            full_ref,
+            command,
+            received_at,
+            report,
+            output_file,
+        )
         logging.info(f"Task {full_ref} executed, status={status}, exit_code={exit_code}")
         _, serr = send_report(commander_host, commander_port, report)
         if serr:
