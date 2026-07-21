@@ -95,12 +95,50 @@ def send_to_soldier(
     line = json.dumps(payload, ensure_ascii=False) + "\n"
     try:
         with socket.create_connection((soldier_host, soldier_port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
             sock.sendall(line.encode("utf-8"))
             logging.info(f"Task {task_ref} dispatched to {soldier_host}:{soldier_port}")
+            buffer = b""
+            while b"\n" not in buffer:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buffer += chunk
+                if len(buffer) > 65536:
+                    return {"ok": False, "status": "rejected", "error": "Soldier response too long"}
     except OSError as e:
         logging.error(f"Failed to dispatch task {task_ref}: {e}")
-        return {"ok": False, "error": f"Connection failed: {e}"}
-    return {"ok": True}
+        return {
+            "ok": False,
+            "status": "network_error",
+            "task_ref": task_ref,
+            "error": f"Connection failed: {e}",
+        }
+    if not buffer.strip():
+        return {
+            "ok": False,
+            "status": "rejected",
+            "task_ref": task_ref,
+            "error": "Soldier closed without an acknowledgment",
+        }
+    try:
+        response = json.loads(buffer.split(b"\n", 1)[0].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {
+            "ok": False,
+            "status": "rejected",
+            "task_ref": task_ref,
+            "error": "Soldier acknowledgment is not valid JSON",
+        }
+    if not isinstance(response, dict):
+        return {
+            "ok": False,
+            "status": "rejected",
+            "task_ref": task_ref,
+            "error": "Soldier acknowledgment must be a JSON object",
+        }
+    response.setdefault("task_ref", task_ref)
+    return response
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -221,9 +259,20 @@ def main() -> int:
     ).isoformat()
 
     task_file = repository.day_path(date_str)
+    repository.expire_waiting_tasks(date_str)
     if has_waiting_tasks(repository, date_str, target_role):
         logging.warning(
             f"Role {target_role} still has waiting tasks in {task_file}, not dispatching this time"
+        )
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "status": "busy",
+                    "error": f"Role {target_role} has an active waiting task",
+                },
+                ensure_ascii=False,
+            )
         )
         return 2
 
@@ -272,7 +321,22 @@ def main() -> int:
             task_id,
             f"Dispatch failed before reaching soldier: {error}",
         )
-        return 1
+        print(json.dumps(resp, ensure_ascii=False))
+        return 3 if resp.get("status") == "busy" else 1
+
+    execution_deadline = resp.get("execution_deadline")
+    if isinstance(execution_deadline, str) and execution_deadline:
+        if not repository.update_task_expiry(
+            date_str,
+            target_role,
+            task_id,
+            execution_deadline,
+        ):
+            logging.warning(
+                "Could not synchronize execution deadline for task %s: %s",
+                task_ref,
+                execution_deadline,
+            )
 
     print(json.dumps(resp, ensure_ascii=False))
     return 0

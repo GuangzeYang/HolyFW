@@ -15,7 +15,7 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
                 {
                     "time": "14:13",
                     "is_load": True,
-                    "task": "使用 exchange-use skill，发送邮件，{收件人：programmer@edrtest.local}",
+                    "task": "使用 exchange-use skill，发送邮件，{收件人：programmer@ndrtest.local}",
                 }
             ]
         }
@@ -23,7 +23,7 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
             {
                 "time": "09:09",
                 "is_load": False,
-                "task": "使用 exchange-use skill，查看 manager@edrtest.local 的邮件",
+                "task": "使用 exchange-use skill，查看 manager@ndrtest.local 的邮件",
             }
         ]
         ok, reason = validate_dependency_order(task_data, "programmer", candidate_tasks)

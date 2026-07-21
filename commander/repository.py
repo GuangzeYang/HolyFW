@@ -188,6 +188,73 @@ class DailyTaskRepository:
                 return None
             return dict(item)
 
+    def update_task_expiry(
+        self,
+        date_str: str,
+        role: str,
+        task_id: str,
+        expiry_time: str,
+    ) -> bool:
+        """Update the accepted task deadline while it is still waiting."""
+        path = self.day_path(date_str)
+        with self.locked_path(path):
+            data = load_json_file(path)
+            tasks = data.get(role)
+            if not isinstance(tasks, list):
+                return False
+            for item in tasks:
+                if (
+                    isinstance(item, dict)
+                    and item.get("task_id") == task_id
+                    and item.get("status") == "waiting"
+                ):
+                    item["expiry_time"] = expiry_time
+                    save_json_atomic(path, data)
+                    return True
+        return False
+
+    def expire_waiting_tasks(self, date_str: str) -> list[dict[str, str]]:
+        """Mark elapsed waiting tasks failed before the scanner selects more work."""
+        path = self.day_path(date_str)
+        if not path.exists():
+            return []
+        now = datetime.now().astimezone()
+        expired: list[dict[str, str]] = []
+        with self.locked_path(path):
+            data = load_json_file(path)
+            for role, tasks in data.items():
+                if not isinstance(tasks, list):
+                    continue
+                for item in tasks:
+                    if not isinstance(item, dict) or item.get("status") != "waiting":
+                        continue
+                    raw_expiry = item.get("expiry_time")
+                    if not isinstance(raw_expiry, str) or not raw_expiry:
+                        continue
+                    try:
+                        expiry = datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
+                    except ValueError:
+                        continue
+                    if now < expiry:
+                        continue
+                    task_id = str(item.get("task_id") or "")
+                    task_ref = f"{date_str}_{role}_{task_id}" if task_id else ""
+                    reason = f"Waiting deadline expired at {raw_expiry}"
+                    item["status"] = "failed"
+                    item["completed_at"] = now.isoformat()
+                    item["report_message"] = reason
+                    item["exit_code"] = -1
+                    expired.append(
+                        {
+                            "role": str(role),
+                            "task_ref": task_ref,
+                            "reason": reason,
+                        }
+                    )
+            if expired:
+                save_json_atomic(path, data)
+        return expired
+
     def update_task_fields_by_index(
         self,
         date_str: str,

@@ -22,7 +22,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import logging
 
@@ -44,8 +44,8 @@ from common import (
 DEFAULT_PORT = 38471
 DEFAULT_LISTEN_PORT = 38472
 DEFAULT_CONFIG_NAME = "soldier.ini"
-SUBPROCESS_TIMEOUT_DEFAULT = 3600
-DEFAULT_WORKER_THREADS = 6
+SUBPROCESS_TIMEOUT_DEFAULT = 900
+DEFAULT_WORKER_THREADS = 3
 MAX_LINE_BYTES = 65536
 MAX_COMMAND_OUTPUT_BYTES = 65536
 OUTPUT_DIR_NAME = "output"
@@ -54,10 +54,16 @@ PENDING_REPORTS_FILE_NAME = "pending_reports.jsonl"
 FAILED_REPORTS_FILE_NAME = "failed_reports.jsonl"
 REPORT_RETRY_LIMIT = 3
 REPORT_RETRY_INTERVAL_SECONDS = 60
+REPORT_SOCKET_TIMEOUT_SECONDS = 60
+RUNNING_STALE_GRACE_SECONDS = 120
+PROCESS_TREE_KILL_TIMEOUT_SECONDS = 30
 SOLDIER_DATED_FILE_HANDLER_NAME = "soldier_dated_file"
 LOG_DATE_CHECK_INTERVAL_SECONDS = 1.0
 _PENDING_REPORTS_LOCK = threading.Lock()
 _TASK_STATE_LOCK = threading.Lock()
+_ACTIVE_PROCESSES_LOCK = threading.Lock()
+_ACTIVE_PROCESSES: dict[int, subprocess.Popen] = {}
+_SHUTTING_DOWN = threading.Event()
 
 
 def _plain_log_formatter() -> logging.Formatter:
@@ -288,6 +294,9 @@ def claim_task_execution(
             "received_at": received_at,
             "updated_at": now,
             "command": command,
+            "execution_deadline": (
+                datetime.now(timezone.utc) + timedelta(seconds=stale_after_seconds)
+            ).isoformat(),
         }
         _append_jsonl(path, record)
         return "claimed", record
@@ -435,6 +444,33 @@ def process_pending_reports_once(base_dir: Path | None = None) -> None:
             _append_jsonl(failed_path, record)
 
 
+def replay_failed_reports_once(base_dir: Path | None = None) -> tuple[int, int]:
+    """Manually retry terminal failed-report records once."""
+    path = failed_reports_path(base_dir)
+    with _PENDING_REPORTS_LOCK:
+        records = _load_report_queue(path)
+        keep: list[dict] = []
+        delivered = 0
+        for record in records:
+            payload = record.get("payload")
+            host = record.get("commander_host")
+            port = record.get("commander_port")
+            if not isinstance(payload, dict) or not isinstance(host, str) or not isinstance(port, int):
+                keep.append(record)
+                continue
+            _, error = send_report(host, port, payload)
+            if error is None:
+                delivered += 1
+                logging.info("Replayed failed report: %s", payload.get("task_ref"))
+            else:
+                record["last_error"] = error
+                record["updated_at"] = datetime.now(timezone.utc).isoformat()
+                keep.append(record)
+                logging.error("Failed-report replay still failed for %s: %s", payload.get("task_ref"), error)
+        _write_report_queue(path, keep)
+        return delivered, len(keep)
+
+
 def start_report_retry_thread(base_dir: Path | None = None) -> None:
     def retry_loop() -> None:
         logging.info(
@@ -460,44 +496,124 @@ def _read_temp_output_limited(temp_file, max_bytes: int) -> tuple[str, bool]:
     return text, truncated
 
 
+def _register_active_process(proc: subprocess.Popen) -> None:
+    with _ACTIVE_PROCESSES_LOCK:
+        _ACTIVE_PROCESSES[proc.pid] = proc
+
+
+def _unregister_active_process(proc: subprocess.Popen) -> None:
+    with _ACTIVE_PROCESSES_LOCK:
+        _ACTIVE_PROCESSES.pop(proc.pid, None)
+
+
+def terminate_process_tree(proc: subprocess.Popen, reason: str) -> None:
+    """Terminate the shell and all descendants, with Windows-specific tree killing."""
+    if proc.poll() is not None:
+        return
+    logging.warning("Terminating process tree pid=%s reason=%s", proc.pid, reason)
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=PROCESS_TREE_KILL_TIMEOUT_SECONDS,
+            )
+            if result.returncode != 0 and proc.poll() is None:
+                logging.error(
+                    "taskkill failed for pid=%s code=%s stderr=%s",
+                    proc.pid,
+                    result.returncode,
+                    (result.stderr or "").strip(),
+                )
+                proc.kill()
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logging.error("taskkill exception for pid=%s: %s", proc.pid, exc)
+            if proc.poll() is None:
+                proc.kill()
+    else:
+        try:
+            os.killpg(proc.pid, 15)
+            proc.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                os.killpg(proc.pid, 9)
+            except OSError:
+                if proc.poll() is None:
+                    proc.kill()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def terminate_all_active_processes(reason: str) -> None:
+    with _ACTIVE_PROCESSES_LOCK:
+        processes = list(_ACTIVE_PROCESSES.values())
+    for proc in processes:
+        try:
+            terminate_process_tree(proc, reason)
+        except Exception as exc:
+            logging.error("Failed to terminate active pid=%s: %s", proc.pid, exc, exc_info=True)
+
+
 def execute_command(
     command: str,
     timeout_sec: int,
     max_output_bytes: int = MAX_COMMAND_OUTPUT_BYTES,
+    *,
+    task_ref: str = "",
 ) -> tuple[str, str, int, str, str | None]:
-    """Execute a shell command while spooling stdout/stderr to temp files."""
+    """Execute a command in its own process group and clean the whole tree on timeout."""
+    if _SHUTTING_DOWN.is_set():
+        return "", "soldier is shutting down", -1, "failed", "Execution cancelled during shutdown"
+    popen_options: dict = {
+        "shell": True,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+    }
+    if os.name == "nt":
+        popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_options["start_new_session"] = True
+
     with tempfile.TemporaryFile() as stdout_tmp, tempfile.TemporaryFile() as stderr_tmp:
+        popen_options["stdout"] = stdout_tmp
+        popen_options["stderr"] = stderr_tmp
         try:
-            proc = subprocess.Popen(
-                command,
-                shell=True,
-                stdout=stdout_tmp,
-                stderr=stderr_tmp,
-            )
+            proc = subprocess.Popen(command, **popen_options)
+        except OSError as exc:
+            return "", str(exc), -1, "failed", f"Execution failed: {exc}"
+
+        _register_active_process(proc)
+        try:
+            if _SHUTTING_DOWN.is_set():
+                terminate_process_tree(proc, "soldier shutdown race")
+                return "", "soldier is shutting down", -1, "failed", "Execution cancelled during shutdown"
             try:
                 exit_code = proc.wait(timeout=timeout_sec)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+                terminate_process_tree(proc, f"task timeout: {task_ref or command[:80]}")
                 out, out_truncated = _read_temp_output_limited(stdout_tmp, max_output_bytes)
                 err_out, err_truncated = _read_temp_output_limited(stderr_tmp, max_output_bytes)
                 if not err_out:
                     err_out = "timeout"
-                msg = f"Command timeout (>{timeout_sec}s)"
+                msg = f"Command timeout (>{timeout_sec}s); process tree terminated"
                 if out_truncated or err_truncated:
                     msg += "; output truncated"
                 return out, err_out, -1, "failed", msg
-        except OSError as e:
-            return "", str(e), -1, "failed", f"Execution failed: {e}"
 
-        out, out_truncated = _read_temp_output_limited(stdout_tmp, max_output_bytes)
-        err_out, err_truncated = _read_temp_output_limited(stderr_tmp, max_output_bytes)
-        ok_run = exit_code == 0
-        status = "successed" if ok_run else "failed"
-        msg = None if ok_run else f"Command exit code {exit_code}"
-        if out_truncated or err_truncated:
-            msg = f"{msg}; output truncated" if msg else "output truncated"
-        return out, err_out, exit_code, status, msg
+            out, out_truncated = _read_temp_output_limited(stdout_tmp, max_output_bytes)
+            err_out, err_truncated = _read_temp_output_limited(stderr_tmp, max_output_bytes)
+            ok_run = exit_code == 0
+            status = "successed" if ok_run else "failed"
+            msg = None if ok_run else f"Command exit code {exit_code}"
+            if out_truncated or err_truncated:
+                msg = f"{msg}; output truncated" if msg else "output truncated"
+            return out, err_out, exit_code, status, msg
+        finally:
+            _unregister_active_process(proc)
 
 
 
@@ -615,8 +731,11 @@ def send_report(
 ) -> tuple[dict | None, str | None]:
     line = json.dumps(payload, ensure_ascii=False) + "\n"
     try:
-        with socket.create_connection((commander_host, commander_port), timeout=60) as sock:
-            sock.settimeout(60)
+        with socket.create_connection(
+            (commander_host, commander_port),
+            timeout=REPORT_SOCKET_TIMEOUT_SECONDS,
+        ) as sock:
+            sock.settimeout(REPORT_SOCKET_TIMEOUT_SECONDS)
             sock.sendall(line.encode("utf-8"))
             buf = b""
             while b"\n" not in buf:
@@ -657,6 +776,15 @@ def recv_one_line(conn: socket.socket) -> bytes:
     return line
 
 
+def send_dispatch_response(conn: socket.socket, payload: dict) -> bool:
+    try:
+        conn.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+        return True
+    except OSError as exc:
+        logging.warning("Failed to send dispatch acknowledgment: %s", exc)
+        return False
+
+
 def handle_dispatch_connection(
     conn: socket.socket,
     commander_host: str,
@@ -665,7 +793,7 @@ def handle_dispatch_connection(
 ) -> None:
     logging.info("Dispatch connection accepted")
     try:
-        conn.settimeout(timeout_sec + 120)
+        conn.settimeout(timeout_sec + RUNNING_STALE_GRACE_SECONDS)
         try:
             raw = recv_one_line(conn)
         except ValueError as e:
@@ -783,13 +911,31 @@ def handle_dispatch_connection(
             full_ref,
             command,
             received_at,
-            timeout_sec + 120,
+            timeout_sec + RUNNING_STALE_GRACE_SECONDS,
         )
         if claim_status == "completed":
             previous_report = previous_state.get("report") if isinstance(previous_state, dict) else None
             if not isinstance(previous_report, dict):
                 logging.warning(f"Duplicate task {full_ref} has completed state without report; ignoring")
+                send_dispatch_response(
+                    conn,
+                    {
+                        "ok": False,
+                        "status": "rejected",
+                        "task_ref": full_ref,
+                        "error": "Completed state has no saved report",
+                    },
+                )
                 return
+            send_dispatch_response(
+                conn,
+                {
+                    "ok": True,
+                    "status": "completed",
+                    "task_ref": full_ref,
+                    "execution_deadline": str(previous_state.get("execution_deadline") or ""),
+                },
+            )
             logging.info(f"Duplicate task {full_ref} already completed; replaying saved report")
             _, serr = send_report(commander_host, commander_port, previous_report)
             if serr:
@@ -801,9 +947,38 @@ def handle_dispatch_connection(
             return
         if claim_status == "running":
             logging.info(f"Duplicate task {full_ref} is already running; ignoring")
+            send_dispatch_response(
+                conn,
+                {
+                    "ok": True,
+                    "status": "running",
+                    "task_ref": full_ref,
+                    "execution_deadline": str(previous_state.get("execution_deadline") or ""),
+                },
+            )
             return
 
-        out, err_out, exit_code, status, msg = execute_command(command, timeout_sec)
+        execution_deadline = ""
+        if isinstance(previous_state, dict):
+            execution_deadline = str(previous_state.get("execution_deadline") or "")
+        if not send_dispatch_response(
+            conn,
+            {
+                "ok": True,
+                "status": "accepted",
+                "task_ref": full_ref,
+                "execution_deadline": execution_deadline,
+                "execution_timeout_seconds": timeout_sec,
+            },
+        ):
+            logging.error("Task %s was claimed but acknowledgment failed; not executing", full_ref)
+            return
+
+        out, err_out, exit_code, status, msg = execute_command(
+            command,
+            timeout_sec,
+            task_ref=full_ref,
+        )
 
         try:
             save_task_record(
@@ -874,6 +1049,7 @@ def run_listen(
     commander_host: str | None,
     commander_port: int | None,
 ) -> None:
+    _SHUTTING_DOWN.clear()
     b, lp = resolve_listen(bind, port, config_path)
     sh, sp = resolve_endpoint(commander_host, commander_port, config_path)
     to = load_exec_timeout(config_path)
@@ -895,6 +1071,14 @@ def run_listen(
     start_report_retry_thread(script_dir)
     try:
         executor = ThreadPoolExecutor(max_workers=worker_threads)
+        execution_slots = threading.BoundedSemaphore(worker_threads)
+
+        def run_claimed_connection(conn: socket.socket) -> None:
+            try:
+                handle_dispatch_connection(conn, sh, sp, timeout_sec)
+            finally:
+                execution_slots.release()
+
         while True:
             new_log_day = date.today()
             if new_log_day != current_log_day:
@@ -905,11 +1089,30 @@ def run_listen(
                 conn, addr = sock.accept()
             except socket.timeout:
                 continue
-            executor.submit(handle_dispatch_connection, conn, sh, sp, timeout_sec)
+            if not execution_slots.acquire(blocking=False):
+                logging.warning("Soldier at capacity; rejecting dispatch from %s", addr)
+                send_dispatch_response(
+                    conn,
+                    {
+                        "ok": False,
+                        "status": "busy",
+                        "error": f"Soldier capacity reached ({worker_threads})",
+                    },
+                )
+                conn.close()
+                continue
+            try:
+                executor.submit(run_claimed_connection, conn)
+            except Exception:
+                execution_slots.release()
+                conn.close()
+                raise
     finally:
-        if "executor" in locals():
-            executor.shutdown(wait=False, cancel_futures=True)
+        _SHUTTING_DOWN.set()
         sock.close()
+        terminate_all_active_processes("soldier shutdown")
+        if "executor" in locals():
+            executor.shutdown(wait=True, cancel_futures=True)
 
 
 def run_report(args: argparse.Namespace, config_path: Path) -> int:
@@ -971,6 +1174,10 @@ Default reads {DEFAULT_CONFIG_NAME} in same directory:
     report_p.add_argument("--exit-code", type=int, default=None, dest="exit_code")
     report_p.add_argument("--stdout", default=None, help="optional output text")
     report_p.add_argument("--stderr", default=None)
+    sub.add_parser(
+        "replay-failed-reports",
+        help="retry records in output/failed_reports.jsonl once",
+    )
 
     args = parser.parse_args()
     
@@ -996,6 +1203,10 @@ Default reads {DEFAULT_CONFIG_NAME} in same directory:
         return 0
     if args.cmd == "report":
         return run_report(args, cfg)
+    if args.cmd == "replay-failed-reports":
+        delivered, remaining = replay_failed_reports_once(script_dir)
+        print(json.dumps({"delivered": delivered, "remaining": remaining}, ensure_ascii=False))
+        return 0 if remaining == 0 else 1
     return 1
 
 

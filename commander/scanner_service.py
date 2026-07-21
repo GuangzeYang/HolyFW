@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
-from typing import Any, Callable
+from datetime import datetime, timedelta
+from typing import Any, Callable, Protocol
 
 try:
     from policies import PendingSelectionPolicy, task_needs_dispatch
@@ -15,6 +15,22 @@ except ImportError:
     from commander.repository import DailyTaskRepository
 
 
+class FailureGovernor(Protocol):
+    def can_dispatch(self, role: str, day: str) -> tuple[bool, str | None]:
+        ...
+
+    def record_failure(
+        self,
+        role: str,
+        day: str,
+        reason: str,
+        task_ref: str = "",
+        *,
+        result_key: str | None = None,
+    ) -> dict[str, Any]:
+        ...
+
+
 class TaskScanService:
     """Scan role task lists and dispatch eligible tasks using injected dependencies."""
 
@@ -22,11 +38,15 @@ class TaskScanService:
         self,
         repository: DailyTaskRepository,
         selection_policy: PendingSelectionPolicy,
-        dispatch_task: Callable[[str, str, str | None], bool],
+        dispatch_task: Callable[[str, str, str | None], Any],
+        failure_governor: FailureGovernor | None = None,
+        max_dispatch_lateness_minutes: int = 6,
     ):
         self.repository = repository
         self.selection_policy = selection_policy
         self.dispatch_task = dispatch_task
+        self.failure_governor = failure_governor
+        self.max_dispatch_lateness_minutes = max_dispatch_lateness_minutes
 
     def process_roles(
         self,
@@ -37,6 +57,11 @@ class TaskScanService:
     ) -> None:
         """Process one scan cycle over all roles with pointer-based scheduling."""
         for role_key in roles:
+            if self.failure_governor is not None:
+                allowed, reason = self.failure_governor.can_dispatch(role_key, date_str)
+                if not allowed:
+                    logging.warning("Skipping role %s dispatch: %s", role_key, reason)
+                    continue
             tasks_any = tasks_by_role.get(role_key)
             if not isinstance(tasks_any, list) or not tasks_any:
                 continue
@@ -84,9 +109,40 @@ class TaskScanService:
                     role_pointers[role_key] = pointer
                     continue
 
-                # Keep earliest pending task; do not skip historical tasks.
+                # Future tasks wait for their planned time.
                 if task_time > now:
                     break
+
+                # Only dispatch tasks within the recent lateness window.
+                earliest_allowed = now - timedelta(minutes=self.max_dispatch_lateness_minutes)
+                if task_time < earliest_allowed:
+                    reason = (
+                        f"Missed dispatch window (>{self.max_dispatch_lateness_minutes} minutes late); "
+                        f"planned={task.get('time')} now={now.strftime('%H:%M:%S')}"
+                    )
+                    logging.warning(
+                        "Expiring overdue task for %s[%s]: %s",
+                        role_key,
+                        pointer,
+                        reason,
+                    )
+                    fields = {
+                        "is_load": True,
+                        "status": "failed",
+                        "exit_code": -1,
+                        "report_message": reason,
+                        "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                    }
+                    self.repository.update_task_fields_by_index(
+                        date_str,
+                        role_key,
+                        pointer,
+                        fields,
+                        only_if_no_task_id=True,
+                    )
+                    task.update(fields)
+                    pointer = self._move_pointer_after_success(role_key, tasks, pointer, role_pointers)
+                    continue
 
                 task_text_value = task.get("task")
                 task_text = task_text_value if isinstance(task_text_value, str) else ""
@@ -114,7 +170,8 @@ class TaskScanService:
                         continue
 
                 logging.info(f"Dispatching task for {role_key}[{pointer}]: {task.get('time')} - {truncated}")
-                success = self.dispatch_task(role_key, task_text, task.get("time"))
+                outcome = self.dispatch_task(role_key, task_text, task.get("time"))
+                success = bool(outcome)
                 if success:
                     # Prevent stale in-memory snapshot from selecting this task again.
                     task["status"] = "waiting"
@@ -124,12 +181,20 @@ class TaskScanService:
                         task["issued_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
                     logging.info(f"Successfully dispatched task for {role_key}[{pointer}]")
                     pointer = self._move_pointer_after_success(role_key, tasks, pointer, role_pointers)
-                    continue
+                    # Dispatch at most one task per role in a scan pass. A very fast
+                    # failure report must still pass through the next cooldown check.
+                    break
 
                 # On dispatch failure, keep pointer unchanged for retry.
                 if marked_loaded:
                     task["is_load"] = False
-                failure_message = f"Dispatch failed at {datetime.now().isoformat(timespec='seconds')}"
+                outcome_status = str(getattr(outcome, "status", "failed"))
+                outcome_error = str(getattr(outcome, "error", "") or "")
+                failure_message = (
+                    f"Dispatch {outcome_status} at {datetime.now().isoformat(timespec='seconds')}"
+                )
+                if outcome_error:
+                    failure_message += f": {outcome_error}"
                 task["report_message"] = failure_message
                 update_fields: dict[str, Any] = {
                     "report_message": failure_message,
@@ -143,6 +208,15 @@ class TaskScanService:
                     update_fields,
                     only_if_no_task_id=True,
                 )
+                is_busy = bool(getattr(outcome, "busy", False))
+                if self.failure_governor is not None and not is_busy:
+                    task_ref = str(getattr(outcome, "task_ref", "") or "")
+                    self.failure_governor.record_failure(
+                        role_key,
+                        date_str,
+                        failure_message,
+                        task_ref,
+                    )
                 logging.error(f"Failed to dispatch task for {role_key}[{pointer}], pointer unchanged")
                 break
 

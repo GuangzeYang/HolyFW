@@ -21,7 +21,9 @@
     "_comment_data_dir": "Directory that stores daily unified task files; relative to commander/ when not absolute.",
     "data_dir": "role_task",
     "_comment_scan_interval_seconds": "Interval between scan cycles in seconds.",
-    "scan_interval_seconds": 60
+    "scan_interval_seconds": 60,
+    "_comment_max_dispatch_lateness_minutes": "Only dispatch tasks whose planned time is within this many minutes before now; older pending tasks are marked missed and skipped.",
+    "max_dispatch_lateness_minutes": 6
   },
   "_comment_storage": "Repository file lock and text storage limits.",
   "storage": {
@@ -37,7 +39,35 @@
     "_comment_client_timeout_seconds": "Subprocess timeout when commander invokes dispatch.py.",
     "client_timeout_seconds": 125,
     "_comment_timeout_minutes": "Expiry timeout in minutes written into dispatched waiting tasks.",
-    "timeout_minutes": 5
+    "timeout_minutes": 20
+  },
+  "_comment_failure_policy": "Per-role cooldown and circuit-breaker settings.",
+  "failure_policy": {
+    "_comment_cooldown_seconds": "Pause a role for this many seconds after each counted failure.",
+    "cooldown_seconds": 300,
+    "_comment_max_consecutive_failures": "Open the role circuit breaker after this many consecutive failures.",
+    "max_consecutive_failures": 3,
+    "_comment_state_file": "Persistent role circuit-breaker state file, relative to commander/ when not absolute.",
+    "state_file": "runtime_state/role_failures.json"
+  },
+  "_comment_email_alert": "SMTP email sent once when a role circuit breaker opens.",
+  "email_alert": {
+    "_comment_enabled": "Enable SMTP alerts after sender, recipients, and authorization-code environment variable are configured.",
+    "enabled": false,
+    "_comment_smtp_host": "QQ Mail SMTP server hostname.",
+    "smtp_host": "smtp.qq.com",
+    "_comment_smtp_port": "QQ Mail SMTP-over-SSL port.",
+    "smtp_port": 465,
+    "_comment_sender": "QQ email address used as the SMTP username and From address.",
+    "sender": "",
+    "_comment_recipients": "Email addresses that receive role circuit-breaker alerts.",
+    "recipients": [],
+    "_comment_auth_code_env": "Environment variable containing the QQ Mail SMTP authorization code.",
+    "auth_code_env": "HOLYFW_QQ_SMTP_AUTH_CODE",
+    "_comment_timeout_seconds": "Bounded timeout for each SMTP connection and send attempt.",
+    "timeout_seconds": 30,
+    "_comment_retry_limit": "Maximum immediate SMTP attempts for one alert; no unbounded background retry.",
+    "retry_limit": 2
   },
   "_comment_generator": "Role task generation quality, retry settings, and DeepSeek API configuration.",
   "generator": {

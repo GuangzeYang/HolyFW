@@ -4,6 +4,46 @@ HolyFramework 是一个面向企业内网场景的分布式任务执行框架。
 
 当前任务生成链路默认使用 DeepSeek API，但调用层已经抽象到 `commander/agent_request_abc.py`，后续可以继续扩展其它模型实现。领域场景、角色职责和任务模板定义在 `domain_resource.md`，它既是说明文档，也是运行时资源文件。
 
+
+
+## 开发者必读
+
+注意：不许上传虚拟环境等大文件
+
+```powershell
+# clone 项目到本地，首次执行返回认证失败是正常情况
+(base) PS > git clone https://git.xlc241.com.cn/ethan/HolyFW.git
+Cloning into 'HolyFW'...
+remote: Failed to authenticate user
+fatal: Authentication failed for 'https://git.xlc241.com.cn/ethan/HolyFW.git/'
+
+(base) PS > git clone https://git.xlc241.com.cn/ethan/HolyFW.git
+Cloning into 'HolyFW'...
+remote: Enumerating objects: 226, done.
+remote: Counting objects: 100% (226/226), done.
+remote: Compressing objects: 100% (224/224), done.
+remote: Total 226 (delta 140), reused 0 (delta 0), pack-reused 0 (from 0)
+Receiving objects: 100% (226/226), 135.13 KiB | 369.00 KiB/s, done.
+Resolving deltas: 100% (140/140), done.
+
+# 切换到项目目录
+(base) PS > cd .\HolyFW\
+
+# 查看当前所有分支
+# master是整个程序的主分支，在生产环境中使用的
+# Dev是开发分支，所有未经过测试的代码与改动都提交到该分支暂存，确保功能没有bug后，在云端申请合并到master分支
+(base) PS \HolyFW> git branch -a
+* master
+  remotes/origin/Dev
+  remotes/origin/HEAD -> origin/master
+  remotes/origin/master
+
+# 切换分支开发
+(base) PS \HolyFW> git switch Dev
+```
+
+
+
 ## 项目做什么
 
 这个项目的目标是模拟一个接近真实的小型企业内网环境，让不同角色在不同主机上执行符合职责的日常任务，持续产生正常、可观测的网络活动。
@@ -45,6 +85,8 @@ HolyFramework/
 │   ├── generate_role_task.py       # 独立生成每日任务文件的脚本入口
 │   ├── dispatch.py                 # 单次手动下发任务的 CLI
 │   ├── dispatch_client.py          # scanner 调用 dispatch.py 的 subprocess 适配层
+│   ├── failure_governor.py         # 角色失败冷却、持久化熔断与邮件告警
+│   ├── breaker_control.py          # 查看和人工解除角色熔断
 │   ├── scanner_service.py          # 扫描与调度主流程
 │   ├── role_file_service.py        # 每日任务文件的生成、修复、加载、保存
 │   ├── role_task_generation.py     # 任务生成编排：prompt、调用模型、校验、落盘
@@ -177,7 +219,7 @@ bind = 0.0.0.0
 port = 38472
 
 [exec]
-timeout = 3600
+timeout = 900
 ```
 
 ### 3. 启动顺序
@@ -233,6 +275,21 @@ cd soldier
 python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status successed --exit-code 0
 ```
 
+#### 查看或解除角色熔断
+
+```powershell
+cd commander
+python breaker_control.py status
+python breaker_control.py reset --role hr
+```
+
+#### 手动重放最终上报失败记录
+
+```powershell
+cd soldier
+python soldier.py replay-failed-reports
+```
+
 ## 进阶使用方法
 
 ## commander/config.json 参数说明
@@ -247,7 +304,7 @@ python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status su
 - `recv_chunk_bytes`：每次 socket 读取的分块大小
 - `socket_timeout_seconds`：连接超时
 - `listen_backlog`：监听 backlog
-- `worker_threads`：处理 soldier 上报连接的最大 worker 数，默认 `6`
+- `worker_threads`：处理 Soldier 上报连接的最大 worker 数，当前为 `6`
 
 ### scanner
 
@@ -255,6 +312,7 @@ python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status su
 
 - `data_dir`：统一任务文件目录
 - `scan_interval_seconds`：扫描间隔秒数
+- `max_dispatch_lateness_minutes`：只下发当前时间往前该分钟数内的到点任务；更早的未派任务会标记为失败并跳过。当前为 `6`
 
 ### storage
 
@@ -269,7 +327,31 @@ python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status su
 
 - `soldier_timeout_seconds`：`dispatch.py` 连接 soldier 的 TCP 超时
 - `client_timeout_seconds`：commander 调用 `dispatch.py` 子进程的超时，必须至少比 `soldier_timeout_seconds` 多 5 秒
-- `timeout_minutes`：下发后写入任务的等待过期时间
+- `timeout_minutes`：下发后写入任务的异常兜底等待时间，当前为 `20` 分钟；Soldier 接受任务后会回传实际安全截止时间
+
+### failure_policy
+
+按角色限制连续失败：
+
+- `cooldown_seconds`：第 1、2 次失败后的暂停时间，当前为 `300` 秒。
+- `max_consecutive_failures`：连续失败熔断阈值，当前为 `3`。
+- `state_file`：熔断状态持久化文件；重启 Commander 不会绕过熔断。
+
+达到阈值后，该角色当天不再启动新任务。`busy` 只表示 Soldier 已达到并发上限，不计入失败；成功结果会清零连续失败次数，但已经打开的熔断必须人工解除或等待日期切换。
+
+### email_alert
+
+角色熔断时可通过 QQ 邮箱 SMTP 发送一次告警。默认关闭，启用前需要：
+
+1. 在 QQ 邮箱中开启 SMTP 服务并生成授权码。
+2. 在 `commander/config.json` 填写 `sender`、`recipients` 并设置 `enabled=true`。
+3. 把授权码放入环境变量，不要写入配置文件：
+
+```powershell
+$env:HOLYFW_QQ_SMTP_AUTH_CODE = "QQ邮箱SMTP授权码"
+```
+
+默认使用 `smtp.qq.com:465` 和 SSL。邮件失败不会阻止角色熔断，也不会调用 opencode。
 
 ### generator
 
@@ -328,7 +410,7 @@ python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status su
 
 - `bind`
 - `port`
-- `worker_threads`：处理下发连接的最大 worker 数，默认 `6`
+- `worker_threads`：任务执行硬并发上限，当前为 `3`；达到上限后新任务立即收到 `busy`
 
 如果是分布式部署，一般要确保 `bind` 不是只监听本机回环地址，并且端口对 commander 所在主机可达。
 
@@ -336,7 +418,7 @@ python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status su
 
 决定单次命令执行超时：
 
-- `timeout`
+- `timeout`：单任务执行超时，当前为 `900` 秒；超时会终止 shell、opencode 和 node 的完整进程树
 
 ## 参数优先级与覆盖
 
@@ -409,8 +491,10 @@ python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status su
 - `soldier` 会执行收到的命令，建议只在受控环境中部署。
 - 分布式部署时，请重点检查 commander 与 soldier 的监听地址、回报地址和防火墙配置。
 - 任务时间基于各主机系统时间，跨主机部署时建议保持时钟同步。
-- commander 与 soldier 的 TCP 处理都使用有界线程池，默认最多 6 个并发处理 worker。
-- dispatch 会先把任务绑定为 `waiting` 再发送到 soldier；如果发送失败，会回滚为可重试状态。
+- commander 的报告处理使用有界线程池；soldier 具有 3 个任务执行槽，满载时立即拒绝而不是进入无界队列。
+- dispatch 会先把任务绑定为 `waiting` 再发送到 soldier；只有收到 Soldier 明确确认才保留 waiting，发送失败或拒绝会回滚为可重试状态。
+- 单任务最多运行 900 秒；超时或 Soldier 退出时会终止整个命令进程树。
+- 同一角色失败后冷却 300 秒，连续 3 次失败后暂停当天任务并可发送邮件告警。
 - soldier 命令输出会按上限截断后写入报告，避免大 stdout/stderr 占满内存。
 - soldier 上报 commander 失败时会落入本地队列，后台最多重试 3 次。
 - 当前生成器默认使用 DeepSeek API；修改模型配置时，请同步检查 `commander/config.json` 中的 `generator` 段。

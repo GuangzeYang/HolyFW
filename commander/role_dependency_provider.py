@@ -13,7 +13,7 @@ except ImportError:
     from common import parse_hhmm_to_minute
 
 ROLE_EMAIL_ALIASES = {
-    role: {role.lower(), f"{role.lower()}@edrtest.local"}
+    role: {role.lower(), f"{role.lower()}@ndrtest.local"}
     for role in ("hr", "manager", "programmer", "accountancy")
 }
 FIELD_PATTERNS = {

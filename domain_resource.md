@@ -32,9 +32,12 @@
 ## 服务器
 
 - Exchange邮箱
+  - 企业邮箱域名固定为：`ndrtest.local`
+  - 角色邮箱示例：`hr@ndrtest.local`、`manager@ndrtest.local`、`accountancy@ndrtest.local`、`programmer@ndrtest.local`、`all@ndrtest.local`
+  - 生成任务时收件人/抄送必须使用 `@ndrtest.local`，禁止使用 `edrtest.local`、`example.com` 或其他域名
 - Web OA系统（odoo）
 - SMB共享文件夹
-  - 共享服务器的FQDN为：`i2-dc0-c08.edrtest.local`
+  - 共享服务器的FQDN为：`i1-dc1-c01.ndrtest.local`
   - 共享文件路径有：
     - `Company_Data\Exchange`：各部门之间临时交换大文件使用，避免在Public乱丢垃圾文件
     - `Company_Data\accountancy`：Accountancy(财务)专用的路径，其他职员不允许访问。用于Accountancy保存或查看excel表格、txt文档、csv表格等文件，和公司工作有关的文件都会保存到此处
@@ -76,24 +79,24 @@
 
 示例：
 
-- 使用 exchange-use skill，进入exchange邮箱，发送邮件，{收件人：admin@example.com，抄送：boss@example.com，主题：项目汇报，内容：请查收最新的项目进度。}
+- 使用 exchange-use skill，进入exchange邮箱，发送邮件，{收件人：manager@ndrtest.local，抄送：hr@ndrtest.local，主题：项目汇报，内容：请查收最新的项目进度。}
 - 使用 exchange-use skill，进入exchange邮箱，查看邮件，{目标：第一封邮件}
-- 使用 exchange-use skill，进入exchange邮箱，答复邮件，{抄送：team@example.com，内容：收到，稍后处理。}
+- 使用 exchange-use skill，进入exchange邮箱，答复邮件，{抄送：programmer@ndrtest.local，内容：收到，稍后处理。}
 
 
 
 exchange邮箱共有以下三种核心操作：
 
 1. 发送邮件
-   - 参数为收件人、抄送人、主题和邮件内容信息，是一个类json格式(没有引号)，包含的"键"有{收件人，抄送，主题，内容}，如：{收件人：admin@example.com，抄送：boss@example.com，主题：项目汇报，内容：请查收进度}
-   - **注意**：**收件人**和**抄送**必须严格按照[收件人地址处理规则]将用户输入转换为合法的完整邮箱地址后再填入。
+   - 参数为收件人、抄送人、主题和邮件内容信息，是一个类json格式(没有引号)，包含的"键"有{收件人，抄送，主题，内容}，如：{收件人：manager@ndrtest.local，抄送：hr@ndrtest.local，主题：项目汇报，内容：请查收进度}
+   - **注意**：**收件人**和**抄送**必须使用 `@ndrtest.local` 完整邮箱地址；禁止 `edrtest.local` 或其他域名。
 
 2. 查看邮件
    - 参数为需要查看的目标邮件标识，是一个类json格式(没有引号)，包含的"键"有{目标}，如：{目标：第一封邮件}
 
 3. 答复邮件
-   - 参数为抄送人(如提示词有要求)和答复内容，是一个类json格式(没有引号)，包含的"键"有{抄送，内容}，如：{抄送：team@example.com，内容：收到，谢谢}
-   - 注意：抄送同样需要严格按照[收件人地址处理规则]处理抄送人地址并填入。通常答复邮件是不会删除原邮件的内容的。
+   - 参数为抄送人(如提示词有要求)和答复内容，是一个类json格式(没有引号)，包含的"键"有{抄送，内容}，如：{抄送：programmer@ndrtest.local，内容：收到，谢谢}
+   - 注意：抄送同样必须使用 `@ndrtest.local`。通常答复邮件是不会删除原邮件的内容的。
 
 
 ## chrome浏览器

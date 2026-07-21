@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from dispatch_client import DispatchClient
+from failure_governor import EmailAlerter, RoleFailureGovernor
 from logging_setup import configure_commander_root_logging, reattach_commander_dated_file_handler
 from policies import EarliestPendingSelectionPolicy
 from repository import DailyTaskRepository
@@ -32,10 +33,13 @@ except ImportError:
     from commander.deepseek_client import build_deepseek_client
 from scanner_service import TaskScanService
 from target_config import load_all_roles
+from common import parse_task_ref
 
 try:
     from runtime_config import (
         get_dispatch_config,
+        get_email_alert_config,
+        get_failure_policy_config,
         get_generator_config,
         get_logging_config,
         get_paths_config,
@@ -48,6 +52,8 @@ try:
 except ImportError:
     from commander.runtime_config import (
         get_dispatch_config,
+        get_email_alert_config,
+        get_failure_policy_config,
         get_generator_config,
         get_logging_config,
         get_paths_config,
@@ -114,6 +120,7 @@ def handle_commander(
     max_line_bytes: int,
     recv_chunk_bytes: int,
     socket_timeout_seconds: int,
+    failure_governor: RoleFailureGovernor | None = None,
 ) -> None:
     logging.info(f"Commander connected from {addr}")
     try:
@@ -165,6 +172,25 @@ def handle_commander(
         send_line(conn, result)
         if result.get("ok"):
             logging.info(f"Task {task_ref} reported as {status}")
+            if failure_governor is not None:
+                parsed_ref, parse_error = parse_task_ref(task_ref)
+                if parse_error is None and parsed_ref is not None:
+                    task_day, role, _ = parsed_ref
+                    if status == "successed":
+                        failure_governor.record_success(
+                            role,
+                            task_day,
+                            task_ref,
+                            result_key=task_ref,
+                        )
+                    elif status == "failed":
+                        failure_governor.record_failure(
+                            role,
+                            task_day,
+                            message or f"Task execution failed with exit_code={exit_code}",
+                            task_ref,
+                            result_key=task_ref,
+                        )
         else:
             logging.error(f"Task {task_ref} report failed: {result.get('error')}")
     finally:
@@ -185,12 +211,15 @@ class TaskScanner:
         domain_resource_file: Path,
         logs_dir: Path,
         log_level_name: str,
+        failure_governor: RoleFailureGovernor | None = None,
         periodic_hook: Callable[[], None] | None = None,
+        max_dispatch_lateness_minutes: int = 6,
     ):
         self.repository = repository
         self.data_dir = repository.data_dir
         self.logs_dir = logs_dir.resolve()
         self.log_level_name = log_level_name
+        self.failure_governor = failure_governor
         self._periodic_hook = periodic_hook
         self._attached_log_date = date.today()
         self.dispatch_client = DispatchClient(
@@ -201,6 +230,7 @@ class TaskScanner:
         self.last_date = None
         self.roles = roles
         self.scan_interval_seconds = scan_interval_seconds
+        self.max_dispatch_lateness_minutes = max_dispatch_lateness_minutes
         self.generation_retry_interval_seconds = generator_config["generation_retry_interval_seconds"]
         self.role_file_service = RoleTaskFileService(
             self.data_dir,
@@ -218,6 +248,8 @@ class TaskScanner:
             repository=self.repository,
             selection_policy=self.selection_policy,
             dispatch_task=self.dispatch_client.dispatch,
+            failure_governor=self.failure_governor,
+            max_dispatch_lateness_minutes=self.max_dispatch_lateness_minutes,
         )
     
     def _get_role_task_file(self) -> Path:
@@ -272,6 +304,20 @@ class TaskScanner:
         if not role_file.exists():
             logging.debug(f"Role task file not present yet, skipping scan cycle: {role_file}")
             return
+
+        for expired in self.repository.expire_waiting_tasks(date_str):
+            role = expired["role"]
+            task_ref = expired["task_ref"]
+            reason = expired["reason"]
+            logging.error("Expired waiting task %s: %s", task_ref, reason)
+            if self.failure_governor is not None:
+                self.failure_governor.record_failure(
+                    role,
+                    date_str,
+                    reason,
+                    task_ref,
+                    result_key=task_ref or None,
+                )
 
         tasks_by_role = self._load_role_tasks(role_file)
         logging.debug(f"Loaded tasks for {len(tasks_by_role)} roles")
@@ -341,6 +387,9 @@ def serve(
     logs_dir: Path,
     log_level_name: str,
     worker_threads: int,
+    failure_policy_config: dict[str, Any],
+    email_alert_config: dict[str, Any],
+    max_dispatch_lateness_minutes: int = 6,
 ) -> None:
     data_dir = data_dir.resolve()
     repository = DailyTaskRepository(
@@ -349,6 +398,12 @@ def serve(
         max_store_text=max_store_text,
     )
     roles = load_all_roles(target_ini_path)
+    failure_governor = RoleFailureGovernor(
+        resolve_config_relative_path(failure_policy_config["state_file"]),
+        cooldown_seconds=failure_policy_config["cooldown_seconds"],
+        max_consecutive_failures=failure_policy_config["max_consecutive_failures"],
+        email_alerter=EmailAlerter(email_alert_config),
+    )
     # Start automatic task scanner
     logging.info(f"Initializing TaskScanner with data_dir={data_dir}")
     scanner = TaskScanner(
@@ -361,6 +416,8 @@ def serve(
         domain_resource_file=domain_resource_file,
         logs_dir=logs_dir,
         log_level_name=log_level_name,
+        failure_governor=failure_governor,
+        max_dispatch_lateness_minutes=max_dispatch_lateness_minutes,
     )
     scanner.start()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -380,6 +437,7 @@ def serve(
                 max_line_bytes,
                 recv_chunk_bytes,
                 socket_timeout_seconds,
+                failure_governor,
             )
     finally:
         if "executor" in locals():
@@ -409,6 +467,8 @@ def main() -> None:
     scanner_config = get_scanner_config(runtime_config)
     storage_config = get_storage_config(runtime_config)
     dispatch_config = get_dispatch_config(runtime_config)
+    failure_policy_config = get_failure_policy_config(runtime_config)
+    email_alert_config = get_email_alert_config(runtime_config)
     generator_config = get_generator_config(runtime_config)
     paths_config = get_paths_config(runtime_config)
     logging_config = get_logging_config(runtime_config)
@@ -445,6 +505,9 @@ def main() -> None:
         logs_dir=logs_dir,
         log_level_name=logging_config["level"],
         worker_threads=server_config["worker_threads"],
+        failure_policy_config=failure_policy_config,
+        email_alert_config=email_alert_config,
+        max_dispatch_lateness_minutes=scanner_config["max_dispatch_lateness_minutes"],
     )
 
 

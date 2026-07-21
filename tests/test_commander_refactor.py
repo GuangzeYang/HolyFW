@@ -126,6 +126,25 @@ class RepositoryTests(unittest.TestCase):
         )
         self.assertTrue(self.repo.has_active_waiting_task("hr", self.today))
 
+    def test_expired_waiting_task_is_marked_failed(self) -> None:
+        past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        self.repo.bind_dispatched_task(
+            date_str=self.today,
+            role="hr",
+            task_id="abc12345",
+            task_text="t1",
+            expiry_time=past,
+            planned_time="09:01",
+        )
+
+        expired = self.repo.expire_waiting_tasks(self.today)
+
+        self.assertEqual(len(expired), 1)
+        item = self.repo.load_day(self.today)["hr"][0]
+        self.assertEqual(item["status"], "failed")
+        self.assertEqual(item["exit_code"], -1)
+        self.assertIn("deadline expired", item["report_message"])
+
     def test_report_overwrites_successed_with_latest_failed_result(self) -> None:
         expiry = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
         task_ref = f"{self.today}_hr_abc12345"
@@ -995,7 +1014,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                     {
                         "hr": [
                             self._saved_task(
-                                "使用 exchange-use skill 发送邮件，收件人: manager@edrtest.local，主题: 入职流程",
+                                "使用 exchange-use skill 发送邮件，收件人: manager@ndrtest.local，主题: 入职流程",
                                 time="10:01",
                             )
                         ]
@@ -1010,7 +1029,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 responses=[
                     self._valid_response(
                         "manager",
-                        "使用 exchange-use skill 查看 hr@edrtest.local 发来的邮件",
+                        "使用 exchange-use skill 查看 hr@ndrtest.local 发来的邮件",
                         time="10:16",
                     )
                 ]
@@ -1123,7 +1142,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                     {
                         "hr": [
                             self._saved_task(
-                                "使用 exchange-use skill 发送邮件，收件人: manager@edrtest.local，主题: 入职流程",
+                                "使用 exchange-use skill 发送邮件，收件人: manager@ndrtest.local，主题: 入职流程",
                                 time="10:01",
                             )
                         ]
@@ -1138,12 +1157,12 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 responses=[
                     self._valid_response(
                         "manager",
-                        "使用 exchange-use skill 查看 hr@edrtest.local 发来的邮件",
+                        "使用 exchange-use skill 查看 hr@ndrtest.local 发来的邮件",
                         time="09:01",
                     ),
                     self._valid_response(
                         "manager",
-                        "使用 exchange-use skill 查看 hr@edrtest.local 发来的邮件",
+                        "使用 exchange-use skill 查看 hr@ndrtest.local 发来的邮件",
                         time="10:16",
                     ),
                 ]

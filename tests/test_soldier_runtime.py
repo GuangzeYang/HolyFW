@@ -6,7 +6,9 @@ from __future__ import annotations
 import json
 import logging
 import logging.handlers
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -95,7 +97,7 @@ class SoldierRuntimeTests(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(console_handlers), 1)
 
-    def test_successful_report_does_not_write_to_dispatch_socket(self) -> None:
+    def test_successful_task_acknowledges_before_execution(self) -> None:
         conn = FakeDispatchConnection()
         payload = {
             "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
@@ -114,10 +116,13 @@ class SoldierRuntimeTests(unittest.TestCase):
         ):
             soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)
 
-        self.assertEqual(conn.sent, [])
+        self.assertEqual(len(conn.sent), 1)
+        acknowledgment = json.loads(conn.sent[0].decode("utf-8"))
+        self.assertTrue(acknowledgment["ok"])
+        self.assertEqual(acknowledgment["status"], "accepted")
         self.assertTrue(conn.closed)
 
-    def test_failed_report_does_not_write_to_dispatch_socket(self) -> None:
+    def test_failed_report_still_has_single_acceptance_acknowledgment(self) -> None:
         conn = FakeDispatchConnection()
         payload = {
             "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
@@ -137,7 +142,9 @@ class SoldierRuntimeTests(unittest.TestCase):
         ):
             soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)
 
-        self.assertEqual(conn.sent, [])
+        self.assertEqual(len(conn.sent), 1)
+        acknowledgment = json.loads(conn.sent[0].decode("utf-8"))
+        self.assertEqual(acknowledgment["status"], "accepted")
         self.assertTrue(conn.closed)
 
     def test_execute_command_truncates_large_output(self) -> None:
@@ -299,6 +306,70 @@ class SoldierRuntimeTests(unittest.TestCase):
             soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)
 
         enqueue_mock.assert_called_once_with("127.0.0.1", 38471, report, "down")
+
+    def test_windows_tree_termination_uses_taskkill_t_and_f(self) -> None:
+        proc = mock.Mock()
+        proc.pid = 4321
+        proc.poll.return_value = None
+        proc.wait.return_value = 0
+        completed = mock.Mock(returncode=0, stderr="")
+
+        with (
+            mock.patch("soldier.soldier.os.name", "nt"),
+            mock.patch("soldier.soldier.subprocess.run", return_value=completed) as run_mock,
+        ):
+            soldier.terminate_process_tree(proc, "test")
+
+        run_mock.assert_called_once()
+        args = run_mock.call_args.args[0]
+        self.assertEqual(args, ["taskkill", "/PID", "4321", "/T", "/F"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows process-tree integration test")
+    def test_execute_timeout_removes_spawned_windows_child(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "spawn_child.py"
+            script.write_text(
+                "import subprocess, sys, time\n"
+                "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                "print(child.pid, flush=True)\n"
+                "time.sleep(60)\n",
+                encoding="utf-8",
+            )
+            command = f'"{sys.executable}" "{script}"'
+
+            stdout, _, exit_code, status, _ = soldier.execute_command(command, timeout_sec=1)
+
+            self.assertEqual(exit_code, -1)
+            self.assertEqual(status, "failed")
+            child_pid = int(stdout.strip())
+            listing = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {child_pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertNotIn(f'"{child_pid}"', listing.stdout)
+
+    def test_failed_reports_can_be_replayed_manually(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            record = {
+                "commander_host": "127.0.0.1",
+                "commander_port": 38471,
+                "payload": {"task_ref": "2026-04-29_hr_c01b883dfefd4c85", "status": "failed"},
+                "attempts": 3,
+                "last_error": "down",
+            }
+            soldier._append_jsonl(soldier.failed_reports_path(base_dir), record)
+
+            with mock.patch("soldier.soldier.send_report", return_value=({"ok": True}, None)):
+                delivered, remaining = soldier.replay_failed_reports_once(base_dir)
+
+            self.assertEqual((delivered, remaining), (1, 0))
+            self.assertEqual(
+                soldier.failed_reports_path(base_dir).read_text(encoding="utf-8"),
+                "",
+            )
 
 
 if __name__ == "__main__":
