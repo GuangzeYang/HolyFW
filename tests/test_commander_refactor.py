@@ -331,10 +331,10 @@ class LoggingSetupTests(unittest.TestCase):
                 Path(tmp),
                 source="generate_role_task",
                 attempt=2,
-                prompt="中文prompt",
+                prompt="English prompt",
                 note="parse_fail",
                 model="deepseek-chat",
-                response_text=b"\xe4\xb8\xad\xe6\x96\x87",
+                response_text=b"English \xe2\x9c\x93",
                 error_text="plain error",
                 status_code=200,
                 request_timeout_seconds=60,
@@ -348,9 +348,9 @@ class LoggingSetupTests(unittest.TestCase):
             self.assertEqual(payload["source"], "generate_role_task")
             self.assertEqual(payload["attempt"], 2)
             self.assertEqual(payload["model"], "deepseek-chat")
-            self.assertEqual(payload["prompt_length"], len("中文prompt"))
-            self.assertEqual(payload["response_text"], "中文")
-            self.assertEqual(payload["response_preview"], "中文")
+            self.assertEqual(payload["prompt_length"], len("English prompt"))
+            self.assertEqual(payload["response_text"], "English ✓")
+            self.assertEqual(payload["response_preview"], "English ✓")
             self.assertEqual(payload["error_text"], "plain error")
             self.assertEqual(payload["note"], "parse_fail")
             self.assertEqual(payload["status_code"], 200)
@@ -370,7 +370,7 @@ class LoggingSetupTests(unittest.TestCase):
                 status_code=200,
                 role="hr",
                 finish_reason="length",
-                prompt_text="发送给 deepseek 的提示词",
+                prompt_text="Prompt sent to DeepSeek",
                 response_text="raw response body",
                 raw_response_text='{"choices":[{"message":{"content":"raw response body"}}]}',
                 error_text="",
@@ -386,7 +386,7 @@ class LoggingSetupTests(unittest.TestCase):
             self.assertIn("finish_reason: length", content)
             self.assertIn("request_state: started", content)
             self.assertIn("--- PROMPT_TEXT ---", content)
-            self.assertIn("发送给 deepseek 的提示词", content)
+            self.assertIn("Prompt sent to DeepSeek", content)
             self.assertIn("--- RAW_RESPONSE ---", content)
             self.assertIn("raw response body", content)
 
@@ -513,10 +513,10 @@ class ExtractorTests(unittest.TestCase):
             "```json\n"
             "{\n"
             '    "hr": [\n'
-            '        {"time": "09:07", "is_load": false, "task": "查看邮件"}\n'
+            '        {"time": "09:07", "is_load": false, "task": "View email"}\n'
             "    ],\n"
             '    "programmer": [\n'
-            '        {"time": "09:24", "is_load": false, "task": "查看IT-Dev目录"},\n'
+            '        {"time": "09:24", "is_load": false, "task": "View the IT-Dev directory"},\n'
             '        {"time": "09:41", "is_load": false\n'
         )
         self.assertIsNone(extract_json_object(text))
@@ -539,7 +539,7 @@ class FileContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             file_path = Path(tmp) / "tasks_04-21.candidate.json"
             file_path.write_text(
-                json.dumps({"hr": [{"time": "09:01", "is_load": False, "task": "处理入职材料"}]}, ensure_ascii=False),
+                json.dumps({"hr": [{"time": "09:01", "is_load": False, "task": "Process onboarding documents"}]}, ensure_ascii=False),
                 encoding="utf-8",
             )
             failure_type, reason, data, file_size = validate_generated_task_file(
@@ -554,7 +554,7 @@ class FileContractTests(unittest.TestCase):
             self.assertGreater(file_size, 0)
             assert data is not None
             self.assertIn("task_id", data["hr"][0])
-            self.assertEqual(data["hr"][0]["task"], "处理入职材料")
+            self.assertEqual(data["hr"][0]["task"], "Process onboarding documents")
 
     def test_validate_generated_task_file_distinguishes_parse_and_schema_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -671,29 +671,29 @@ class FileContractTests(unittest.TestCase):
 
 
 class PromptTests(unittest.TestCase):
-    def test_build_role_task_prompt_requires_json_only_and_chinese_templates(self) -> None:
-        domain_context = "# 任务内容模板\n使用 smb-access 模板访问共享目录。"
+    def test_build_role_task_prompt_requires_json_only_and_english_templates(self) -> None:
+        domain_context = "# Task Content Templates\nUse the smb-access template to access the shared directory."
         prompt = build_role_task_prompt(
             domain_context,
             min_tasks_per_role=2,
             max_tasks_per_role=6,
             roles=("hr", "accountancy"),
         )
-        self.assertIn("只返回一个 JSON 对象", prompt)
-        self.assertIn("必须遵循领域上下文中的任务内容模板和约束", prompt)
-        self.assertIn("恰好等于 4 条", prompt)
+        self.assertIn("Return exactly one JSON object", prompt)
+        self.assertIn("Follow every task-content template and constraint in the domain context", prompt)
+        self.assertIn("exactly 4 tasks", prompt)
         self.assertIn("ceil((min+max)/2)", prompt)
-        self.assertIn("关联依赖事实", prompt)
-        self.assertIn("仅用于推断角色任务之间的隐式关联和前后时间", prompt)
-        self.assertIn("必须按 JSON 数组中的顺序严格递增", prompt)
-        self.assertIn("必须是 >，不能是 = 或更早", prompt)
-        self.assertIn("在任务总数为 4 条时，至少要有 1 条任务的分钟数不是 5 的倍数", prompt)
+        self.assertIn("Related dependency facts", prompt)
+        self.assertIn("only to infer implicit relationships and ordering", prompt)
+        self.assertIn("task times must be strictly increasing in JSON array order", prompt)
+        self.assertIn("strictly greater than the preceding task's time", prompt)
+        self.assertIn("With 4 total tasks, at least 1 task(s) must have a minute value that is not divisible by 5", prompt)
         self.assertIn('"hr": [tasks]', prompt)
         self.assertIn('"accountancy": [tasks]', prompt)
         self.assertNotIn("TASK_FILE_READY", prompt)
         self.assertNotIn("generate_tasks.py", prompt)
         self.assertNotIn("tasks_final.json", prompt)
-        self.assertNotIn("All task descriptions must be in English", prompt)
+        self.assertIn("All task descriptions and all natural-language parameter values must be written in English", prompt)
 
     def test_build_role_task_prompt_inserts_dependency_between_domain_and_rules(self) -> None:
         domain_context = "DOMAIN_BLOCK"
@@ -707,7 +707,7 @@ class PromptTests(unittest.TestCase):
         )
         d = prompt.index("DOMAIN_BLOCK")
         dep_i = prompt.index("DEPENDENCY_BLOCK")
-        h = prompt.index("硬性要求")
+        h = prompt.index("Hard requirements")
         self.assertLess(d, dep_i)
         self.assertLess(dep_i, h)
 
@@ -725,7 +725,7 @@ class RuntimeConfigGeneratorFeasibilityTests(unittest.TestCase):
             cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             with self.assertRaises(ValueError) as ctx:
                 load_runtime_config(cfg_path)
-        self.assertIn("每角色单日最多", str(ctx.exception))
+        self.assertIn("each role can have at most", str(ctx.exception))
 
     def test_load_raises_when_min_internal_below_10(self) -> None:
         from commander.runtime_config import load_runtime_config
@@ -1014,7 +1014,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                     {
                         "hr": [
                             self._saved_task(
-                                "使用 exchange-use skill 发送邮件，收件人: manager@ndrtest.local，主题: 入职流程",
+                                "Use the exchange-use skill to send email, {recipient: manager@edrtest.local, subject: onboarding process}",
                                 time="10:01",
                             )
                         ]
@@ -1029,7 +1029,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 responses=[
                     self._valid_response(
                         "manager",
-                        "使用 exchange-use skill 查看 hr@ndrtest.local 发来的邮件",
+                        "Use the exchange-use skill to view email from hr@edrtest.local",
                         time="10:16",
                     )
                 ]
@@ -1048,8 +1048,8 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 agent_client=client,
                 emit_status=lambda message: None,
             )
-            self.assertIn("\u5173\u8054\u4f9d\u8d56\u4e8b\u5b9e\uff08\u4ec5\u7528\u4e8e\u63a8\u65ad\u9690\u5f0f\u5173\u8054\u548c\u524d\u540e\u65f6\u5e8f\uff09\uff1a", client.prompts[0])
-            self.assertIn('"hr": ["10:01 \u5411 manager \u53d1\u9001\u90ae\u4ef6"]', client.prompts[0])
+            self.assertIn("Related dependency facts (for inferring implicit relationships and ordering only):", client.prompts[0])
+            self.assertIn('"hr": ["10:01 sent an email to manager"]', client.prompts[0])
             self.assertEqual(len(client.prompts), 1)
 
     def test_generate_role_tasks_ignores_file_based_dependency_context(self) -> None:
@@ -1091,10 +1091,10 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 agent_client=client,
                 emit_status=lambda message: None,
             )
-            self.assertNotIn("\u5173\u8054\u4f9d\u8d56\u4e8b\u5b9e\uff08\u4ec5\u7528\u4e8e\u63a8\u65ad\u9690\u5f0f\u5173\u8054\u548c\u524d\u540e\u65f6\u5e8f\uff09\uff1a", client.prompts[0])
+            self.assertNotIn("Related dependency facts (for inferring implicit relationships and ordering only):", client.prompts[0])
             self.assertTrue(result.success)
             self.assertEqual(len(client.prompts), 1)
-            self.assertNotIn("\u53c2\u8003\u4eca\u5929\u5176\u4ed6\u89d2\u8272\u7684\u4efb\u52a1\u5206\u914d\uff1a", client.prompts[0])
+            self.assertNotIn("Use today's tasks for other roles as a reference:", client.prompts[0])
 
     def test_generate_role_tasks_falls_back_when_dependency_provider_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1126,10 +1126,10 @@ class RoleTaskGenerationTests(unittest.TestCase):
                     agent_client=client,
                     emit_status=lambda message: None,
                 )
-            self.assertNotIn("\u5173\u8054\u4f9d\u8d56\u4e8b\u5b9e\uff08\u4ec5\u7528\u4e8e\u63a8\u65ad\u9690\u5f0f\u5173\u8054\u548c\u524d\u540e\u65f6\u5e8f\uff09\uff1a", client.prompts[0])
+            self.assertNotIn("Related dependency facts (for inferring implicit relationships and ordering only):", client.prompts[0])
             self.assertTrue(result.success)
             self.assertEqual(len(client.prompts), 1)
-            self.assertNotIn("参考今天其他角色的任务分配：", client.prompts[0])
+            self.assertNotIn("Use today's tasks for other roles as a reference:", client.prompts[0])
 
     def test_generate_role_tasks_retries_illegal_cross_role_time_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1142,7 +1142,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                     {
                         "hr": [
                             self._saved_task(
-                                "使用 exchange-use skill 发送邮件，收件人: manager@ndrtest.local，主题: 入职流程",
+                                "Use the exchange-use skill to send email, {recipient: manager@edrtest.local, subject: onboarding process}",
                                 time="10:01",
                             )
                         ]
@@ -1157,12 +1157,12 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 responses=[
                     self._valid_response(
                         "manager",
-                        "使用 exchange-use skill 查看 hr@ndrtest.local 发来的邮件",
+                        "Use the exchange-use skill to view email from hr@edrtest.local",
                         time="09:01",
                     ),
                     self._valid_response(
                         "manager",
-                        "使用 exchange-use skill 查看 hr@ndrtest.local 发来的邮件",
+                        "Use the exchange-use skill to view email from hr@edrtest.local",
                         time="10:16",
                     ),
                 ]
@@ -1263,8 +1263,8 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertTrue(result.success)
             self.assertEqual(result.stats["quality_fail"], 1)
             self.assertEqual(len(client.prompts), 2)
-            self.assertIn("上一轮输出未通过校验", client.prompts[1])
-            self.assertIn("至少 80% 的任务分钟数不是 5 的倍数", client.prompts[1])
+            self.assertIn("The previous output failed validation", client.prompts[1])
+            self.assertIn("At least 80% of task minute values must not be divisible by 5", client.prompts[1])
 
     def test_generate_role_tasks_adds_strict_order_retry_feedback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1311,9 +1311,9 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertTrue(result.success)
             self.assertEqual(result.stats["quality_fail"], 1)
             self.assertEqual(len(client.prompts), 2)
-            self.assertIn("上一轮输出未通过校验", client.prompts[1])
-            self.assertIn("必须按 JSON 数组中的顺序严格递增", client.prompts[1])
-            self.assertIn("不能重复、倒退或并列", client.prompts[1])
+            self.assertIn("The previous output failed validation", client.prompts[1])
+            self.assertIn("task times must be strictly increasing in JSON array order", client.prompts[1])
+            self.assertIn("times cannot repeat, move backward, or be equal", client.prompts[1])
 
     def test_generate_role_tasks_time_remediation_fixes_out_of_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1366,8 +1366,8 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertTrue(result.success)
             self.assertEqual(result.stats.get("quality_fail", 0), 0)
             self.assertEqual(len(client.prompts), 2)
-            self.assertIn("任务排期修正助手", client.prompts[1])
-            self.assertIn("非法下标", client.prompts[1])
+            self.assertIn("task schedule correction assistant", client.prompts[1])
+            self.assertIn("Invalid indices", client.prompts[1])
             saved = json.loads(final_file.read_text(encoding="utf-8"))
             self.assertEqual(saved["hr"][0]["time"], "14:01")
 
@@ -1425,7 +1425,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                     "```json\n"
                     "{\n"
                     '    "hr": [\n'
-                    '        {"time": "09:07", "is_load": false, "task": "查看邮件"}\n'
+                    '        {"time": "09:07", "is_load": false, "task": "View email"}\n'
                 ),
                 status_code=200,
                 elapsed_seconds=0.8,

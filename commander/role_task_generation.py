@@ -86,18 +86,18 @@ def _build_retry_feedback(reason: str | None) -> str:
         return ""
 
     lines = [
-        "上一轮输出未通过校验，请根据下面的失败原因重新生成完整 JSON。",
-        f"失败原因：{reason}",
-        "请重新安排完整时间序列，不要复用上一轮的分钟分布。",
+        "The previous output failed validation. Regenerate the complete JSON using the failure reason below.",
+        f"Failure reason: {reason}",
+        "Create a new complete time sequence; do not reuse the previous minute distribution.",
     ]
     lowered = reason.lower()
     if "random minute ratio too low" in lowered:
         lines.append(
-            "必须确保至少 80% 的任务分钟数不是 5 的倍数，避免大量使用 xx:00、xx:05、xx:10、xx:15、xx:20、xx:25、xx:30、xx:35、xx:40、xx:45、xx:50、xx:55。"
+            "At least 80% of task minute values must not be divisible by 5. Avoid excessive use of xx:00, xx:05, xx:10, xx:15, xx:20, xx:25, xx:30, xx:35, xx:40, xx:45, xx:50, and xx:55."
         )
     if "strictly increasing" in lowered:
         lines.append(
-            "同一角色下的任务时间必须按 JSON 数组中的顺序严格递增，后一个任务的 time 必须严格晚于前一个任务，不能重复、倒退或并列。"
+            "Within a role, task times must be strictly increasing in JSON array order. Every later task's time must be strictly later than the preceding task; times cannot repeat, move backward, or be equal."
         )
     return "\n".join(lines)
 
@@ -170,7 +170,7 @@ def _try_time_remediation_for_role(
         try:
             resp2 = agent_client.request_completion(fix_prompt)
         except AgentTimeoutError as exc:
-            prior_fb = f"请求超时：{exc}"
+            prior_fb = f"Request timed out: {exc}"
             append_agent_output_log(
                 logs_dir,
                 source=source,
@@ -187,7 +187,7 @@ def _try_time_remediation_for_role(
             )
             continue
         except AgentRequestError as exc:
-            prior_fb = f"请求失败：{exc}"
+            prior_fb = f"Request failed: {exc}"
             append_agent_output_log(
                 logs_dir,
                 source=source,
@@ -238,19 +238,19 @@ def _try_time_remediation_for_role(
             request_state="finished",
         )
         if not resp2.response_text.strip():
-            prior_fb = "模型返回空内容"
+            prior_fb = "The model returned an empty response"
             continue
         if resp2.finish_reason == "length":
             prior_fb = _truncation_reason(role, resp2.finish_reason)
             continue
         parsed2 = extract_json_object(resp2.response_text)
         if parsed2 is None:
-            prior_fb = "无法从模型输出中解析 JSON"
+            prior_fb = "Could not parse JSON from the model output"
             continue
         new_tasks = parsed2.get(role)
         ok_merge, merge_err = verify_time_remediation_payload(current_rows, new_tasks, current_bad)
         if not ok_merge:
-            prior_fb = merge_err or "合并校验失败"
+            prior_fb = merge_err or "Merge validation failed"
             append_agent_output_log(
                 logs_dir,
                 source=source,
@@ -422,7 +422,7 @@ def generate_role_tasks(
         for attempt in range(1, max_attempts + 1):
             attempt_prompt = role_prompt
             if retry_feedback:
-                attempt_prompt = f"{role_prompt}\n\n# 上一轮修正要求\n{retry_feedback}"
+                attempt_prompt = f"{role_prompt}\n\n# Previous correction requirements\n{retry_feedback}"
             emit_status(f"Generation attempt {attempt}/{max_attempts} for role '{role}'")
             append_agent_output_log(
                 logs_dir,

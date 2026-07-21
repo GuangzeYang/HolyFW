@@ -141,10 +141,10 @@ def _validate_schema(data: dict[str, Any]) -> None:
         or target_tasks > max_feasible_tasks
     ):
         raise ValueError(
-            "generator 任务数量与间隔: 按工作日 7 小时(420 分钟)、任务最小间隔 "
-            f"min_internal={min_internal} 分钟估算，每角色单日最多可安排约 {max_feasible_tasks} 条任务。"
-            f"当前 min_tasks_per_role={min_tasks_per_role}、max_tasks_per_role={max_tasks_per_role}、"
-            f"ceil((min+max)/2)={target_tasks} 已超过该上限，请调低任务数量配置或减小 generator.min_internal。"
+            "Generator task count and interval are not feasible: using a 7-hour (420-minute) workday "
+            f"and min_internal={min_internal} minutes, each role can have at most about {max_feasible_tasks} tasks per day. "
+            f"The configured min_tasks_per_role={min_tasks_per_role}, max_tasks_per_role={max_tasks_per_role}, "
+            f"and ceil((min+max)/2)={target_tasks} exceed that limit. Reduce the task counts or lower generator.min_internal."
         )
     _read_required(data, "generator.api_base_url", str)
     _read_required(data, "generator.api_key", str)

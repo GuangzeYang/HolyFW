@@ -1,64 +1,24 @@
-﻿# HolyFramework
+# HolyFramework
 
-HolyFramework 是一个面向企业内网场景的分布式任务执行框架。项目通过 `commander` 生成和调度每日任务，通过 `soldier` 在不同主机上执行任务并回报结果，从而持续产生日常办公型、可观测的业务流量。
+HolyFramework is a distributed task execution framework designed for enterprise intranet scenarios. The project uses `commander` to generate and schedule daily tasks, while `soldier` executes those tasks on different hosts and reports the results, continuously producing observable business traffic that resembles routine office activity.
 
-当前任务生成链路默认使用 DeepSeek API，但调用层已经抽象到 `commander/agent_request_abc.py`，后续可以继续扩展其它模型实现。领域场景、角色职责和任务模板定义在 `domain_resource.md`，它既是说明文档，也是运行时资源文件。
+The task-generation pipeline uses the DeepSeek API by default, but the invocation layer is abstracted in `commander/agent_request_abc.py` so that other model implementations can be added later. Domain scenarios, role responsibilities, and task templates are defined in `domain_resource.md`, which serves both as documentation and as a runtime resource.
 
+## What the Project Does
 
+The goal of this project is to simulate a realistic small-enterprise intranet in which different roles perform routine, responsibility-appropriate tasks on different hosts, continuously generating normal and observable network activity.
 
-## 开发者必读
+Key features include:
 
-注意：不许上传虚拟环境等大文件
+- Automatically generates a daily task file, organizing a full day of tasks by role.
+- Periodically scans the task schedule and dispatches due tasks to the corresponding hosts.
+- Uses `soldier` to execute commands and report results to `commander`.
+- Continuously writes task status, output, and error information back to the shared task file.
+- Supports manual task generation, manual task dispatch, and manual result reporting.
+- Dynamically defines the role set through `commander.ini`, where each section represents one role.
+- Encapsulates model requests behind an abstract interface; the default implementation is currently `commander/deepseek_client.py`.
 
-```powershell
-# clone 项目到本地，首次执行返回认证失败是正常情况
-(base) PS > git clone https://git.xlc241.com.cn/ethan/HolyFW.git
-Cloning into 'HolyFW'...
-remote: Failed to authenticate user
-fatal: Authentication failed for 'https://git.xlc241.com.cn/ethan/HolyFW.git/'
-
-(base) PS > git clone https://git.xlc241.com.cn/ethan/HolyFW.git
-Cloning into 'HolyFW'...
-remote: Enumerating objects: 226, done.
-remote: Counting objects: 100% (226/226), done.
-remote: Compressing objects: 100% (224/224), done.
-remote: Total 226 (delta 140), reused 0 (delta 0), pack-reused 0 (from 0)
-Receiving objects: 100% (226/226), 135.13 KiB | 369.00 KiB/s, done.
-Resolving deltas: 100% (140/140), done.
-
-# 切换到项目目录
-(base) PS > cd .\HolyFW\
-
-# 查看当前所有分支
-# master是整个程序的主分支，在生产环境中使用的
-# Dev是开发分支，所有未经过测试的代码与改动都提交到该分支暂存，确保功能没有bug后，在云端申请合并到master分支
-(base) PS \HolyFW> git branch -a
-* master
-  remotes/origin/Dev
-  remotes/origin/HEAD -> origin/master
-  remotes/origin/master
-
-# 切换分支开发
-(base) PS \HolyFW> git switch Dev
-```
-
-
-
-## 项目做什么
-
-这个项目的目标是模拟一个接近真实的小型企业内网环境，让不同角色在不同主机上执行符合职责的日常任务，持续产生正常、可观测的网络活动。
-
-主要功能包括：
-
-- 自动生成每日角色任务文件，按角色组织全天任务。
-- 定时扫描任务计划，到点后自动下发到对应主机。
-- 使用 `soldier` 执行命令，并将结果回报给 `commander`。
-- 将任务状态、输出、错误信息持续写回统一任务文件。
-- 支持手动生成任务、手动下发任务和手动报告结果。
-- 通过 `commander.ini` 动态定义角色集合，每个 section 都代表一个角色。
-- 通过抽象接口封装模型请求，当前默认实现为 `commander/deepseek_client.py`。
-
-## 工作流程
+## Workflow
 
 ```mermaid
 flowchart TD
@@ -72,57 +32,64 @@ flowchart TD
     reportBack --> updateState[Update task status and output]
 ```
 
-## 目录结构
+## Directory Structure
 
 ```text
 HolyFramework/
-├── README.md                       # 项目总说明（当前主入口文档）
-├── common.py                       # commander 与 soldier 共用的校验、路径、任务格式与提示词工具
-├── domain_resource.md              # 领域场景与任务模板资源，任务生成运行时会读取
-├── requirements.txt                # Python 依赖
+├── README.md                              # Main project documentation and current entry point
+├── common.py                              # Shared validation, path, task-format, and prompt utilities
+├── domain_resource.md                     # Domain scenarios and task-template resource read at runtime
+├── requirements.txt                       # Python dependencies
+├── skill/                                 # Per-role Skill bundles installed on role hosts
+│   ├── accountancy-skills/                # Accountancy host Skills
+│   ├── hr-skills/                         # HR host Skills
+│   ├── manager-skills/                    # Manager host Skills
+│   └── programmer-skills/                 # Programmer host Skills
 ├── commander/
-│   ├── commander.py                # commander 主入口：启动 TCP 服务、扫描线程和依赖装配
-│   ├── generate_role_task.py       # 独立生成每日任务文件的脚本入口
-│   ├── dispatch.py                 # 单次手动下发任务的 CLI
-│   ├── dispatch_client.py          # scanner 调用 dispatch.py 的 subprocess 适配层
-│   ├── failure_governor.py         # 角色失败冷却、持久化熔断与邮件告警
-│   ├── breaker_control.py          # 查看和人工解除角色熔断
-│   ├── scanner_service.py          # 扫描与调度主流程
-│   ├── role_file_service.py        # 每日任务文件的生成、修复、加载、保存
-│   ├── role_task_generation.py     # 任务生成编排：prompt、调用模型、校验、落盘
-│   ├── agent_request_abc.py        # 模型请求抽象接口与通用响应/异常类型
-│   ├── deepseek_client.py          # 当前默认模型实现：DeepSeek API 客户端
-│   ├── repository.py               # 任务文件仓储：读写、锁、状态回写
-│   ├── domain.py                   # 任务状态流转规则
-│   ├── policies.py                 # 任务选择策略（默认选择最早 pending）
-│   ├── target_config.py            # 读取 commander.ini 中的角色和目标主机配置
-│   ├── runtime_config.py           # 读取并校验 config.json
-│   ├── logging_setup.py            # commander/dispatch 日志初始化
-│   ├── config.json                 # commander 主配置文件
-│   ├── commander.ini               # 角色 -> soldier 主机/端口映射
-│   ├── role_task/                  # 每日统一任务文件目录
-│   └── logs/                       # commander 和 dispatch 日志目录
+│   ├── commander.py                       # Main entry point: TCP server, scanner thread, and dependency wiring
+│   ├── generate_role_task.py              # Standalone entry point for generating the daily task file
+│   ├── dispatch.py                        # CLI for manually dispatching a single task
+│   ├── dispatch_client.py                 # Subprocess adapter used by the scanner to invoke dispatch.py
+│   ├── scanner_service.py                 # Main scanning and scheduling workflow
+│   ├── role_file_service.py               # Daily task-file generation, repair, loading, and saving
+│   ├── role_task_generation.py            # Task generation orchestration: prompt, model call, validation, and persistence
+│   ├── agent_request_abc.py               # Abstract model-request interface and common response/exception types
+│   ├── deepseek_client.py                  # Default model implementation: DeepSeek API client
+│   ├── repository.py                      # Task-file repository: I/O, locking, and status updates
+│   ├── domain.py                          # Task status-transition rules
+│   ├── policies.py                        # Task-selection policies; selects the earliest pending task by default
+│   ├── target_config.py                   # Loads roles and target-host configuration from commander.ini
+│   ├── runtime_config.py                  # Loads and validates config.json
+│   ├── logging_setup.py                   # Commander and dispatch logging setup
+│   ├── config.json                        # Main commander configuration file
+│   ├── commander.ini                      # Role-to-soldier host/port mapping
+│   ├── role_task/                         # Directory containing shared daily task files
+│   └── logs/                              # Commander and dispatch log directory
 ├── soldier/
-│   ├── soldier.py                  # soldier 主程序：监听任务、执行命令、回报结果
-│   ├── soldier.ini                 # soldier 配置文件
-│   └── logs/                       # soldier 日志目录
+│   ├── soldier.py                         # Main program: receives tasks, executes commands, and reports results
+│   ├── soldier.ini                        # Soldier configuration file
+│   └── logs/                              # Soldier log directory
 └── tests/
-    └── test_commander_refactor.py  # 核心回归测试
+    ├── test_commander_logging_hook.py     # Commander log-switch hook tests
+    ├── test_commander_refactor.py         # Core commander regression tests
+    ├── test_common_work_windows.py        # Shared work-window utility tests
+    ├── test_role_dependency_provider.py   # Role dependency-provider tests
+    └── test_soldier_runtime.py             # Soldier runtime tests
 ```
 
-## 核心概念
+## Core Concepts
 
 ### Commander
 
-`commander` 负责生成任务、维护每日任务文件、扫描到点任务并分发给目标 `soldier`。它还负责接收执行结果并把状态写回同一份任务文件。
+`commander` generates tasks, maintains daily task files, scans for due tasks, and dispatches them to the target `soldier`. It also receives execution results and writes their status back to the same task file.
 
 ### Soldier
 
-`soldier` 是任务执行端。它监听来自 `commander` 的 TCP 请求，执行收到的命令，然后把状态、输出和错误信息回报给 `commander`。
+`soldier` is the task execution endpoint. It listens for TCP requests from `commander`, executes the received commands, and then reports status, output, and error information back to `commander`.
 
-### 统一任务文件
+### Shared Task File
 
-每日任务文件位于 `commander/role_task/tasks_MM-DD.json`，按角色组织任务。每个任务项至少包含以下字段：
+Daily task files are stored at `commander/role_task/tasks_MM-DD.json` and organize tasks by role. Each task entry contains at least the following fields:
 
 - `time`
 - `is_load`
@@ -137,11 +104,11 @@ HolyFramework/
 - `stdout`
 - `stderr`
 
-其中状态流转遵循：`planned -> waiting -> successed/failed`。
+Status transitions follow `planned -> waiting -> successed/failed`.
 
-### 角色来源
+### Role Source
 
-角色集合不再写死在代码里，而是来自 `commander/commander.ini` 的 section。比如：
+The role set is no longer hard-coded. Instead, it is derived from the sections in `commander/commander.ini`. For example:
 
 ```ini
 [hr]
@@ -153,61 +120,61 @@ host = 192.168.14.73
 port = 38472
 ```
 
-这表示：
+This means:
 
-- `hr`、`accountancy` 是两个角色名。
-- 每个角色对应一个目标 `soldier` 主机和监听端口。
-- 新增或删除角色时，只需要调整 `commander.ini` 的 section。
+- `hr` and `accountancy` are two role names.
+- Each role maps to a target `soldier` host and listening port.
+- To add or remove a role, only the sections in `commander.ini` need to be changed.
 
-## 基础使用方法
+## Basic Usage
 
-### 1. 环境依赖
+### 1. Environment Requirements
 
-基础依赖来自 `requirements.txt`：
+Install the base dependencies from `requirements.txt`:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-当前 Python 依赖只有：
+The current Python dependencies are:
 
 - `filelock>=3.13.0`
 - `colorlog>=6.8.2`
 
-除此之外，还需要：
+You also need:
 
-- Python 3.8+
-- 系统上可执行的 `opencode` 命令
-- commander 与各 soldier 之间的网络互通
+- Python 3.10+
+- An executable `opencode` command available on the system
+- Network connectivity between `commander` and every `soldier`
 
-### 2. 配置准备
+### 2. Configuration
 
-项目运行前至少需要检查三份配置：
+Before running the project, review at least these three configuration files:
 
 #### `commander/config.json`
 
-这是 commander 的主配置文件，控制监听、扫描、存储、下发、任务生成、路径和日志。当前默认配置包括：
+This is the main `commander` configuration file. It controls listening, scanning, storage, dispatch, task generation, paths, and logging. The current default configuration includes:
 
-- commander 监听 `0.0.0.0:38471`
-- 扫描间隔 `60` 秒
-- 任务生成默认使用 DeepSeek：
+- `commander` listens on `0.0.0.0:38471`
+- Scan interval: `60` seconds
+- Task generation uses DeepSeek by default:
   - `api_base_url`
   - `api_key`
   - `model`
   - `request_timeout_seconds`
 
-注意：`generator.api_key` 属于敏感信息，不建议长期以明文保存在仓库中。
+Note: `generator.api_key` is sensitive information and should not be stored in plaintext in the repository long-term.
 
 #### `commander/commander.ini`
 
-用于定义角色与目标主机的映射。每个 section 表示一个角色，每个角色需要：
+Defines the mapping between roles and target hosts. Each section represents one role and must contain:
 
 - `host`
 - `port`
 
 #### `soldier/soldier.ini`
 
-用于配置 soldier 的监听地址、上报的 commander 地址和执行超时：
+Configures the `soldier` listening address, the `commander` address used for reporting, and the execution timeout:
 
 ```ini
 [commander]
@@ -222,60 +189,60 @@ port = 38472
 timeout = 900
 ```
 
-### 3. 启动顺序
+### 3. Startup Order
 
-推荐先启动 `soldier`，再启动 `commander`。
+Start `soldier` first, then start `commander`.
 
-#### 启动 soldier
+#### Start soldier
 
 ```bash
 cd soldier
 python soldier.py listen
 ```
 
-可选参数：
+Optional arguments:
 
 ```bash
 python soldier.py listen --bind 0.0.0.0 --listen-port 38472 --commander-host 127.0.0.1 --commander-port 38471
 ```
 
-#### 启动 commander
+#### Start commander
 
 ```bash
 cd commander
 python commander.py
 ```
 
-可选参数：
+Optional arguments:
 
 ```bash
 python commander.py --host 0.0.0.0 --port 38471 --data-dir ./role_task
 ```
 
-### 4. 常用辅助命令
+### 4. Common Utility Commands
 
-#### 手动生成每日任务
+#### Manually generate the daily task file
 
 ```bash
 cd commander
 python generate_role_task.py
 ```
 
-#### 手动下发任务
+#### Manually dispatch a task
 
 ```bash
 cd commander
-python dispatch.py --target hr --command "opencode run \"使用Exchange查看邮件\"" --task "使用Exchange查看邮件"
+python dispatch.py --target hr --command "opencode run \"Check email with Exchange\"" --task "Check email with Exchange"
 ```
 
-#### soldier 手动报告结果
+#### Manually report a result from soldier
 
 ```bash
 cd soldier
 python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status successed --exit-code 0
 ```
 
-#### 查看或解除角色熔断
+#### View or lift character circuit breaker status
 
 ```powershell
 cd commander
@@ -283,233 +250,233 @@ python breaker_control.py status
 python breaker_control.py reset --role hr
 ```
 
-#### 手动重放最终上报失败记录
+#### Manually retry records that ultimately failed to report.
 
 ```powershell
 cd soldier
 python soldier.py replay-failed-reports
 ```
 
-## 进阶使用方法
+## Advanced Usage
 
-## commander/config.json 参数说明
+## `commander/config.json` Parameters
 
 ### server
 
-控制 commander 的 TCP 监听：
+Controls the `commander` TCP listener:
 
-- `host`：监听地址
-- `port`：监听端口
-- `max_line_bytes`：单条请求最大字节数
-- `recv_chunk_bytes`：每次 socket 读取的分块大小
-- `socket_timeout_seconds`：连接超时
-- `listen_backlog`：监听 backlog
-- `worker_threads`：处理 Soldier 上报连接的最大 worker 数，当前为 `6`
+- `host`: Listening address
+- `port`: Listening port
+- `max_line_bytes`: Maximum size in bytes of a single request
+- `recv_chunk_bytes`: Chunk size for each socket read
+- `socket_timeout_seconds`: Connection timeout
+- `listen_backlog`: Listener backlog
+- `worker_threads`: Maximum number of workers that handle `soldier` report connections; defaults to `6`
 
 ### scanner
 
-控制扫描逻辑：
+Controls scanning behavior:
 
-- `data_dir`：统一任务文件目录
-- `scan_interval_seconds`：扫描间隔秒数
-- `max_dispatch_lateness_minutes`：只下发当前时间往前该分钟数内的到点任务；更早的未派任务会标记为失败并跳过。当前为 `6`
+- `data_dir`: Shared task-file directory
+- `scan_interval_seconds`: Scan interval in seconds
 
 ### storage
 
-控制任务文件写入与输出保存：
+Controls task-file writes and output storage:
 
-- `lock_timeout_seconds`：文件锁超时
-- `max_store_text`：保存 stdout/stderr 的最大字符数
+- `lock_timeout_seconds`: File-lock timeout
+- `max_store_text`: Maximum number of characters stored for stdout/stderr
 
 ### dispatch
 
-控制任务派发：
+Controls task dispatch:
 
-- `soldier_timeout_seconds`：`dispatch.py` 连接 soldier 的 TCP 超时
-- `client_timeout_seconds`：commander 调用 `dispatch.py` 子进程的超时，必须至少比 `soldier_timeout_seconds` 多 5 秒
-- `timeout_minutes`：下发后写入任务的异常兜底等待时间，当前为 `20` 分钟；Soldier 接受任务后会回传实际安全截止时间
+- `soldier_timeout_seconds`: TCP timeout used by `dispatch.py` when connecting to `soldier`
+- `client_timeout_seconds`: Timeout for the `dispatch.py` subprocess invoked by `commander`; must be at least 5 seconds longer than `soldier_timeout_seconds`
+- `timeout_minutes`: Waiting-expiration period written to a task after dispatch
 
 ### failure_policy
 
-按角色限制连续失败：
+Limit consecutive failures by role：
 
-- `cooldown_seconds`：第 1、2 次失败后的暂停时间，当前为 `300` 秒。
-- `max_consecutive_failures`：连续失败熔断阈值，当前为 `3`。
-- `state_file`：熔断状态持久化文件；重启 Commander 不会绕过熔断。
+- `cooldown_seconds`: The pause duration after the first and second failures; currently set to `300` seconds.
+- `max_consecutive_failures`: The threshold for triggering the circuit breaker based on consecutive failures; currently set to `3`.
+- `state_file`: The file used to persist the circuit breaker state; restarting Commander will not bypass the circuit breaker.
 
-达到阈值后，该角色当天不再启动新任务。`busy` 只表示 Soldier 已达到并发上限，不计入失败；成功结果会清零连续失败次数，但已经打开的熔断必须人工解除或等待日期切换。
+Once the threshold is reached, the role will not initiate new tasks for the remainder of the day. A `busy` status simply indicates that the Soldier has hit its concurrency limit and does not count as a failure; while a successful result resets the consecutive failure count, a triggered circuit breaker must be manually reset or will only clear upon the change of date.
 
 ### email_alert
 
-角色熔断时可通过 QQ 邮箱 SMTP 发送一次告警。默认关闭，启用前需要：
+An alert can be sent via QQ Mail SMTP when a role circuit-breaker trips. This feature is disabled by default; to enable it, you must:
 
-1. 在 QQ 邮箱中开启 SMTP 服务并生成授权码。
-2. 在 `commander/config.json` 填写 `sender`、`recipients` 并设置 `enabled=true`。
-3. 把授权码放入环境变量，不要写入配置文件：
+1. Enable the SMTP service in your QQ Mail account and generate an authorization code.
+2. Fill in the `sender` and `recipients` fields in `commander/config.json` and set `enabled=true`.
+3. Store the authorization code in an environment variable rather than writing it to the configuration file:
 
 ```powershell
-$env:HOLYFW_QQ_SMTP_AUTH_CODE = "QQ邮箱SMTP授权码"
+$env:HOLYFW_QQ_SMTP_AUTH_CODE = "Your QQ Mail SMTP authorization code"
 ```
 
-默认使用 `smtp.qq.com:465` 和 SSL。邮件失败不会阻止角色熔断，也不会调用 opencode。
+By default, the system uses `smtp.qq.com:465` with SSL. Email delivery failures will not prevent the role circuit-breaker from tripping, nor will they trigger `opencode`.
 
 ### generator
 
-控制任务生成：
+Controls task generation:
 
-- `min_tasks_per_role`：每个角色最少任务数
-- `max_tasks_per_role`：每个角色最多任务数
-- `min_non_five_ratio`：分钟数不是整 5 分钟的最小比例
-- `max_attempts`：生成重试次数
-- `api_base_url`：模型 API 地址
-- `api_key`：模型 API 密钥
-- `model`：模型名称
-- `request_timeout_seconds`：单次模型请求超时
+- `min_tasks_per_role`: Minimum number of tasks per role
+- `max_tasks_per_role`: Maximum number of tasks per role
+- `min_non_five_ratio`: Minimum ratio of task times whose minute value is not a multiple of five
+- `max_attempts`: Number of generation attempts
+- `api_base_url`: Model API URL
+- `api_key`: Model API key
+- `model`: Model name
+- `request_timeout_seconds`: Timeout for a single model request
 
 ### paths
 
-控制路径解析。相对路径都是相对于 `commander/` 目录：
+Controls path resolution. Relative paths are resolved from the `commander/` directory:
 
 - `logs_dir`
 - `target_ini_file`
 - `dispatch_script`
 - `domain_resource_file`
 
-例如，当前 `domain_resource_file` 默认指向 `../domain_resource.md`，所以根目录的 `domain_resource.md` 会在任务生成时被读取。
+For example, `domain_resource_file` currently defaults to `../domain_resource.md`, so the root-level `domain_resource.md` is read during task generation.
 
 ### logging
 
-控制日志：
+Controls logging:
 
 - `level`
 - `backup_count`
 - `rotation_interval_days`
 
-## commander.ini 高级说明
+## Advanced `commander.ini` Details
 
-`commander.ini` 不只是“地址表”，它还决定了角色集合本身。
+`commander.ini` is more than an address table: it also defines the role set itself.
 
-代码中 `commander/target_config.py` 的 `load_all_roles()` 会读取所有 section 名作为角色列表，所以：
+`load_all_roles()` in `commander/target_config.py` reads every section name as a role, so:
 
-- 新增一个 section，就会新增一个角色。
-- 删除一个 section，就会从调度和任务生成中移除对应角色。
-- section 名会统一转成小写。
+- Adding a section adds a role.
+- Removing a section removes that role from scheduling and task generation.
+- Section names are normalized to lowercase.
 
-## soldier.ini 高级说明
+## Advanced `soldier.ini` Details
 
-### commander 段
+### commander Section
 
-决定 soldier 向哪台 commander 回报结果：
+Determines which `commander` receives result reports from the `soldier`:
 
 - `ip`
 - `port`
 
-### listen 段
+### listen Section
 
-决定 soldier 接收任务的监听地址：
+Determines the address on which `soldier` receives tasks:
 
 - `bind`
 - `port`
-- `worker_threads`：任务执行硬并发上限，当前为 `3`；达到上限后新任务立即收到 `busy`
+- `worker_threads`：Maximum limit on concurrent active tasks; currently `3`. New tasks receive a `busy` response immediately upon reaching the limit.
 
-如果是分布式部署，一般要确保 `bind` 不是只监听本机回环地址，并且端口对 commander 所在主机可达。
+For distributed deployments, ensure that `bind` is not limited to the local loopback address and that the port is reachable from the `commander` host.
 
-### exec 段
+### exec Section
 
-决定单次命令执行超时：
+Sets the timeout for a single command execution:
 
 - `timeout`：单任务执行超时，当前为 `900` 秒；超时会终止 shell、opencode 和 node 的完整进程树
 
-## 参数优先级与覆盖
+## Parameter Precedence and Overrides
 
 ### commander
 
-`commander.py` 支持以下覆盖：
+`commander.py` supports the following overrides:
 
-- `--host` 覆盖 `server.host`
-- `--port` 覆盖 `server.port`
-- `--data-dir` 覆盖 `scanner.data_dir`
+- `--host` overrides `server.host`
+- `--port` overrides `server.port`
+- `--data-dir` overrides `scanner.data_dir`
 
 ### dispatch
 
-`dispatch.py` 支持以下覆盖：
+`dispatch.py` supports the following overrides:
 
-- `--data-dir` 覆盖 `scanner.data_dir`
-- `--timeout-minutes` 覆盖 `dispatch.timeout_minutes`
-- `--config` 覆盖 `paths.target_ini_file`
+- `--data-dir` overrides `scanner.data_dir`
+- `--timeout-minutes` overrides `dispatch.timeout_minutes`
+- `--config` overrides `paths.target_ini_file`
 
 ### soldier
 
-`soldier.py` 中命令行参数优先于 `soldier.ini`：
+Command-line arguments in `soldier.py` take precedence over `soldier.ini`:
 
 - `--config`
-- `listen` 模式下的 `--bind`、`--listen-port`、`--commander-host`、`--commander-port`
-- `report` 模式下的 `--host`、`--port`
+- In `listen` mode: `--bind`, `--listen-port`, `--commander-host`, and `--commander-port`
+- In `report` mode: `--host` and `--port`
 
-## 模型生成链路
+## Model-Based Task Generation Pipeline
 
-当前任务生成流程如下：
+The current task-generation workflow is:
 
-1. `commander/generate_role_task.py` 或 `RoleTaskFileService` 触发生成。
-2. `commander/role_task_generation.py` 读取 `domain_resource.md`，构造 prompt。
-3. `commander/deepseek_client.py` 通过 `DeepSeekAgentClient` 调用 DeepSeek API。
-4. 返回内容经过 JSON 提取、结构校验和质量校验后落盘为 `tasks_MM-DD.json`。
+1. `commander/generate_role_task.py` or `RoleTaskFileService` triggers generation.
+2. `commander/role_task_generation.py` reads `domain_resource.md` and constructs the prompt.
+3. `commander/deepseek_client.py` calls the DeepSeek API through `DeepSeekAgentClient`.
+4. The returned content is extracted as JSON, structurally validated, quality-checked, and then persisted as `tasks_MM-DD.json`.
 
-其中：
+In this design:
 
-- `commander/agent_request_abc.py` 定义了统一的模型请求接口。
-- `commander/deepseek_client.py` 是当前默认实现。
-- 如果后续增加新的模型客户端，只需要新增实现并注入，不必重写任务生成主流程。
+- `commander/agent_request_abc.py` defines the common model-request interface.
+- `commander/deepseek_client.py` is the current default implementation.
+- To add another model client, implement the interface and inject the new client; the main task-generation workflow does not need to be rewritten.
 
-## 日志与运行产物
+## Logs and Runtime Artifacts
 
 ### commander
 
-日志位于 `commander/logs/`，常见文件包括：
+Logs are stored in `commander/logs/`. Common files include:
 
-- `commander_YYYY-MM-DD.log`（按自然日切换：周期钩子在日期变化时把 root 文件日志挂到当天文件；`dispatch_*.log` 仍由 `TimedRotatingFileHandler` 在午夜轮转。）
+- `commander_YYYY-MM-DD.log` (switches by calendar day: when the date changes, a periodic hook reattaches the root file logger to that day's file; `dispatch_*.log` continues to rotate at midnight through `TimedRotatingFileHandler`.)
 - `dispatch_YYYY-MM-DD.log`
 - `agent_output_YYYY-MM-DD.log`
 - `agent_responses_YYYY-MM-DD/`
 
 ### soldier
 
-日志位于 `soldier/logs/`，文件名通常为：
+Logs are stored in `soldier/logs/`. The filename is usually:
 
-- `soldier_YYYY-MM-DD.log`（按自然日切换：长期运行时会把 root 文件日志挂到当天文件，不使用轮转后缀。）
+- `soldier_YYYY-MM-DD.log` (switches by calendar day: for long-running processes, the root file logger is reattached to that day's file without using rotated suffixes.)
 
-除此之外，soldier 还会生成：
+The `soldier` also generates:
 
-- `received_task_MM-DD.jsonl`：任务接收记录
-- `output/`：每次执行的 stdout/stderr 落盘文件
-- `output/pending_reports.jsonl`：向 commander 上报失败后的待重试队列
-- `output/failed_reports.jsonl`：重试 3 次后仍失败的上报记录
+- `received_task_MM-DD.jsonl`: Task receipt records
+- `output/`: Files containing stdout/stderr from each execution
+- `output/pending_reports.jsonl`: Queue of reports awaiting retry after reporting to `commander` fails
+- `output/failed_reports.jsonl`: Reports that still failed after three retry attempts
 
-## 注意事项
+## Important Notes
 
-- `domain_resource.md` 是运行时资源文件，不要当成普通说明文档删除。
-- `soldier` 会执行收到的命令，建议只在受控环境中部署。
-- 分布式部署时，请重点检查 commander 与 soldier 的监听地址、回报地址和防火墙配置。
-- 任务时间基于各主机系统时间，跨主机部署时建议保持时钟同步。
-- commander 的报告处理使用有界线程池；soldier 具有 3 个任务执行槽，满载时立即拒绝而不是进入无界队列。
-- dispatch 会先把任务绑定为 `waiting` 再发送到 soldier；只有收到 Soldier 明确确认才保留 waiting，发送失败或拒绝会回滚为可重试状态。
-- 单任务最多运行 900 秒；超时或 Soldier 退出时会终止整个命令进程树。
-- 同一角色失败后冷却 300 秒，连续 3 次失败后暂停当天任务并可发送邮件告警。
-- soldier 命令输出会按上限截断后写入报告，避免大 stdout/stderr 占满内存。
-- soldier 上报 commander 失败时会落入本地队列，后台最多重试 3 次。
-- 当前生成器默认使用 DeepSeek API；修改模型配置时，请同步检查 `commander/config.json` 中的 `generator` 段。
+- `domain_resource.md` is a runtime resource; do not delete it as though it were ordinary documentation.
+- The instructions in `skill/` are written in English, but Exchange, Odoo, and other external interfaces may use a different locale. Browser Skills inspect the live DOM or accessibility state and locate controls by stable attributes and current semantics instead of assuming English labels.
+- Keep three concepts separate: the Skill instruction language is English, the UI locale is detected at runtime, and task-provided business content is preserved unless the task explicitly requests translation.
+- Each role directory contains Skills intended for that role host. Do not install multiple same-named role variants into one flat Skill directory without isolating them.
+- `soldier` executes received commands and should be deployed only in a controlled environment.
+- In distributed deployments, carefully check the listening addresses, report-back addresses, and firewall configuration for `commander` and `soldier`.
+- Task times are based on each host's system clock. Keep clocks synchronized across hosts in distributed deployments.
+- Both `commander` and `soldier` use bounded thread pools for TCP processing, with a default maximum of 6 concurrent workers.
+- Dispatch binds a task as `waiting` before sending it to `soldier`. If sending fails, the task is rolled back to a retryable state.
+- `soldier` command output is truncated to the configured limit before being written to a report, preventing large stdout/stderr streams from exhausting memory.
+- If `soldier` cannot report to `commander`, the report is added to a local queue and retried up to three times in the background.
+- The generator uses the DeepSeek API by default. When changing model settings, also review the `generator` section in `commander/config.json`.
 
-## 开发与回归
+## Development and Regression Testing
 
-可在仓库根目录执行完整 unittest 发现：
+Run full unittest discovery from the repository root:
 
 ```bash
 python -m unittest discover -s tests -p "test*.py"
 ```
 
-测试覆盖 commander 任务仓储、生成校验、调度回滚、日志切换、soldier 输出截断与上报重试等核心路径。网络抖动、真实多机部署和系统级进程守护仍建议通过集成/运维演练验证。
+The tests cover core paths including the `commander` task repository, generation validation, dispatch rollback, log switching, `soldier` output truncation, and report retries. Network instability, real multi-host deployments, and system-level process supervision should still be validated through integration and operational exercises.
 
-如果你要继续扩展项目，建议优先阅读这些代码入口：
+When extending the project, start with these entry points:
 
 - `commander/commander.py`
 - `commander/scanner_service.py`

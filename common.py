@@ -241,7 +241,7 @@ def build_role_task_prompt(
     """Build a constrained prompt for role task generation.
 
     dependency_context is inserted between domain_context and the hard-requirements block.
-    When empty or whitespace-only, nothing is inserted between domain_context and 硬性要求.
+    When empty or whitespace-only, nothing is inserted between domain_context and the hard requirements.
     """
     role_names = _normalize_roles(roles)
     role_display = ", ".join(role_names)
@@ -252,9 +252,9 @@ def build_role_task_prompt(
     dep = dependency_context if isinstance(dependency_context, str) else ""
 
     lines: list[str] = [
-        "请基于下面提供的领域上下文，为每个角色生成一整天的工作任务序列。",
-        "所需的完整上下文已经提供，不要再询问更多背景信息，也不要请求澄清。",
-        "只返回一个 JSON 对象，不要输出任何额外内容，也不要使用 Markdown 代码块包裹。",
+        "Using the domain context below, generate a full-day sequence of work tasks for every role.",
+        "All required context has already been provided. Do not ask for more background or clarification.",
+        "Return exactly one JSON object. Do not output anything else or wrap the response in a Markdown code block.",
         "",
         domain_context,
         "",
@@ -264,24 +264,24 @@ def build_role_task_prompt(
         lines.append("")
     lines.extend(
         [
-            "硬性要求（必须全部满足）：",
-            f"1. 角色必须完整覆盖：{role_display}。",
-            f"2. 每个角色本次生成的任务条数必须恰好等于 {target_tasks} 条（由 min_tasks_per_role 与 max_tasks_per_role 按 ceil((min+max)/2) 计算）。",
-            f"3. 顶层 JSON 对象必须使用如下格式：{{{output_format}}}。",
-            '4. 每条任务项必须使用如下格式：{"time":"09:15","is_load":false,"task":"..."}。',
-            "5. 每条任务的 time 表示任务开始时刻，仅校验该开始时刻；合法时段为两段闭区间："
-            "09:00–12:00（含两端）与 13:30–18:00（含两端）；"
-            "12:00 与 13:30 之间除 12:00、13:30 外的时刻（如 12:01–13:29）不在合法时段内。",
-            "6. 同一角色下的任务时间必须按 JSON 数组中的顺序严格递增，后一个任务的 time 必须严格晚于前一个任务（必须是 >，不能是 = 或更早）。",
-            "7. 至少 80% 的任务分钟数不能是 5 的倍数，相邻任务之间的时间间隔应在 5 到 15 分钟之间随机变化。",
-            f"8. 严禁把大多数任务安排在 xx:00、xx:05、xx:10、xx:15、xx:20、xx:25、xx:30、xx:35、xx:40、xx:45、xx:50 或 xx:55；"
-            f"在任务总数为 {target_tasks} 条时，至少要有 {non_five_min} 条任务的分钟数不是 5 的倍数。",
-            "9. 任务内容必须符合对应角色职责，并尽量体现可被观测的网络行为，例如 Exchange、OA、SMB、FTP 或浏览器访问。",
-            "10. 编写任务描述时，必须遵循领域上下文中的任务内容模板和约束。",
-            "11. 如果附带「关联依赖事实」，这些事实仅用于推断角色任务之间的隐式关联和前后时间顺序（如HR在9:00向程序员发送邮件，程序员就必须在9:00之后才能开始处理邮件，不能在9:00之前开始处理邮件），不要参照这些事实的数量、格式、措辞或时间密度。",
-            "12. 不要向用户提问，也不要请求用户确认。",
-            "13. 不要输出解释、Markdown、代码块、执行说明或重试建议。",
-            "14. 最终只返回 JSON 对象本身。",
+            "Hard requirements (all must be satisfied):",
+            f"1. The output must include every role: {role_display}.",
+            f"2. Generate exactly {target_tasks} tasks for each role. This target is calculated as ceil((min+max)/2) from min_tasks_per_role and max_tasks_per_role.",
+            f"3. The top-level JSON object must use this format: {{{output_format}}}.",
+            '4. Every task item must use this format: {"time":"09:15","is_load":false,"task":"..."}.',
+            "5. Each task's time value is its start time, and only that start time is validated. The valid periods are the two closed intervals "
+            "09:00–12:00 (inclusive) and 13:30–18:00 (inclusive). Times strictly between 12:00 and 13:30, such as 12:01–13:29, are invalid.",
+            "6. Within each role, task times must be strictly increasing in JSON array order. Every later task's time must be strictly greater than the preceding task's time (> only, never equal or earlier).",
+            "7. At least 80% of task minute values must not be divisible by 5. Randomly vary the interval between adjacent tasks from 5 to 15 minutes.",
+            f"8. Do not schedule most tasks at xx:00, xx:05, xx:10, xx:15, xx:20, xx:25, xx:30, xx:35, xx:40, xx:45, xx:50, or xx:55. "
+            f"With {target_tasks} total tasks, at least {non_five_min} task(s) must have a minute value that is not divisible by 5.",
+            "9. Every task must fit the corresponding role's duties and should expose observable network behavior where appropriate, such as Exchange, OA, SMB, FTP, or browser activity.",
+            "10. All task descriptions and all natural-language parameter values must be written in English.",
+            "11. Follow every task-content template and constraint in the domain context when writing task descriptions.",
+            "12. If Related dependency facts are included, use them only to infer implicit relationships and ordering between role tasks. For example, if HR sends the programmer an email at 09:00, the programmer may begin processing it only after 09:00, never before. Do not imitate the facts' quantity, format, wording, or time density.",
+            "13. Do not ask the user questions or request confirmation.",
+            "14. Do not output explanations, Markdown, code blocks, execution instructions, or retry suggestions.",
+            "15. Return only the JSON object itself.",
         ]
     )
     return "\n".join(lines)
@@ -410,31 +410,31 @@ def build_role_task_time_remediation_prompt(
     non_five_min = max(1, (min_tasks_per_role * 4) // 5)
     bad_set = sorted(set(bad_indices))
     lines: list[str] = [
-        "你是任务排期修正助手。下面给出某角色一整天的任务数组（每条含数组下标、time、is_load、task）。",
-        "上一轮整表未通过自动校验，其中部分条目的「开始时间」time 不在允许的工作时段内。",
+        "You are a task schedule correction assistant. Below is one role's full-day task array; each item includes its array index, time, is_load, and task.",
+        "The previous complete array failed automatic validation because some task start-time values are outside the allowed working periods.",
         "",
-        "允许的工作时段为两段闭区间：09:00–12:00（含 12:00）与 13:30–18:00（含 18:00）；",
-        "12:00 与 13:30 之间除端点外的时刻无效。",
+        "The allowed working periods are the closed intervals 09:00–12:00 (including 12:00) and 13:30–18:00 (including 18:00).",
+        "Times strictly between 12:00 and 13:30 are invalid.",
         "",
-        f"角色名：{role}",
-        f"整改后该角色的任务条数必须恰好为 {target_tasks} 条（与 min_tasks_per_role/max_tasks_per_role 的 ceil((min+max)/2) 一致）。",
-        "尽量少删；若删除导致条数不足，本次整改视为失败，应通过改 time 为主来满足条数。",
-        "整改后的列表仍须满足：按数组顺序 time 严格递增；至少 80% 的任务其分钟数不是 5 的倍数（至少 "
-        f"{non_five_min} 条任务的分钟数不是 5 的倍数）。",
+        f"Role: {role}",
+        f"After correction, this role must contain exactly {target_tasks} tasks, matching ceil((min_tasks_per_role + max_tasks_per_role) / 2).",
+        "Delete as few items as possible. If deletion leaves too few tasks, the correction fails; prefer changing time values to preserve the required count.",
+        "The corrected list must still have strictly increasing time values in array order, and at least 80% of task minute values must not be divisible by 5 (at least "
+        f"{non_five_min} such tasks).",
         "",
-        "硬性约束（必须遵守）：",
-        "1. 对于「非法下标」集合中的条目：只允许「修改该条的 time」或「从数组中删除整条」。",
-        "2. 对于不在非法下标集合中的条目：time、is_load、task 必须与下面给出的原文完全一致，不得改写、不得调换顺序相对关系（删除非法条后其余条相对顺序保持从早到晚）。",
-        "3. 只允许输出一个 JSON 对象，顶层格式为 {\"<role>\": [ 任务数组 ]}，不要 Markdown、不要解释。",
-        "4. 每条任务对象须含 time、is_load、task（以及你方若补充的其它字段须与常见任务结构一致）。",
+        "Hard constraints (must be followed):",
+        "1. For an item whose index is in the invalid-index set, you may only change that item's time or delete the entire item from the array.",
+        "2. For every item whose index is not in the invalid-index set, time, is_load, and task must remain exactly as provided below. Do not rewrite it or change its relative order; after invalid items are deleted, all remaining items must preserve their chronological relative order.",
+        "3. Output exactly one JSON object with the top-level format {\"<role>\": [task array]}. Do not include Markdown or explanations.",
+        "4. Every task object must contain time, is_load, and task. Any additional fields must remain compatible with the standard task structure.",
         "",
-        f"非法下标（0-based，与下列「当前任务」数组一致）：{bad_set}",
+        f"Invalid indices (0-based, matching the Current tasks array below): {bad_set}",
     ]
     if validation_reason.strip():
-        lines.extend(["", "校验失败摘要：", validation_reason.strip()])
+        lines.extend(["", "Validation failure summary:", validation_reason.strip()])
     if prior_feedback.strip():
-        lines.extend(["", "上一轮整改未通过，请继续修正：", prior_feedback.strip()])
-    lines.extend(["", "当前任务（带下标，供对照）：", json.dumps(_tasks_with_indices(old_tasks), ensure_ascii=False)])
+        lines.extend(["", "The previous correction failed. Continue correcting it:", prior_feedback.strip()])
+    lines.extend(["", "Current tasks (with indices for reference):", json.dumps(_tasks_with_indices(old_tasks), ensure_ascii=False)])
     return "\n".join(lines)
 
 

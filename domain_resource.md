@@ -1,54 +1,38 @@
+# Purpose
 
+We use agents to define a set of roles, with each role assigned to a separate host. Through this role-playing setup, we build a simulated intranet that closely resembles a real corporate environment. Over a period of weeks or months, this intranet should continuously generate realistic, benign business traffic that can be observed and collected.
 
+- Role: A "person" who holds a position in the company. Each position performs different computer-based duties and therefore generates different types of traffic. Emotional and behavioral variation should also be considered so that the roles behave more like real people.
 
+  Example: The company's HR employee may sometimes email all employees to announce a new appointment. At the beginning of a month, HR may email department managers to collect performance information for their staff. When in a good mood, HR may send the request on the first day of the month; when in a bad mood, HR may delay it by several days.
 
-# 任务
+- Role-playing: Each human-like role performs its own duties as a real employee would, allowing the virtual company to operate realistically.
 
+- Company: Because the number of available hosts is limited, the simulated network primarily represents a small or micro-sized company.
 
+# Roles
 
-我们使用agent定义了一些角色，并且让各个角色分别占据一台主机，通过这种角色扮演，搭建一个接近现实企业环境的伪内网。该内网在一段时间内（周或月）持续产生接近现实的、良性的企业内网的业务流量，这些流量一定是可以被观测和收集。
+- HR: The company's human resources employee.
+- Accountancy: The company's accounting and finance employee.
+- Manager: The company's general manager. The Manager publishes front-end project specifications in the shared file directory and follows up on project progress.
+- Programmer: The company's front-end programmer, proficient in Python, HTML, CSS, and JavaScript. The Programmer uses a traditional technology stack, never uses frameworks, and prefers to build front-end pages by hand. The Programmer must report project progress to the Manager from time to time, usually by email.
 
-- 角色：在企业中担任职务的“人”，每个职务使用计算机进行的业务各不相同，产生的流量也各不相同。同时还要考虑一些情感因素 让角色们 更“类人”
+# Available Resources
 
-  示例：公司中的HR，有时会向所有员工主机发送邮件通知新人员的任命安排、在月初（心情好的时候会在1号，心情不好的时候会推迟几天），向部门管理人发送邮件 统计基层员工的绩效等
+## Servers
 
-- 角色扮演：各“类人”像真人一样，各司其职，让这个虚拟公司真的运营起来
-
-- 企业：鉴于主机数量，我们主要模拟小、微型企业的网络环境。    
-
-
-
-# 角色
-
-- HR：公司的人事
-- Accountancy：公司的财务
-- Manager：公司的总经理，负责发布前端项目书在共享文件目录上，并且会跟进项目进展
-- Programmer：公司的前端程序员，精通python语言和html、css、js。使用的技术栈比较传统，从不使用框架，喜欢手写前端页面项目。需要不定时的向Manager汇报项目进度，一般以发送邮件的形式汇报。
-
-
-
-# 可用资源
-
-## 服务器
-
-- Exchange邮箱
-  - 企业邮箱域名固定为：`ndrtest.local`
-  - 角色邮箱示例：`hr@ndrtest.local`、`manager@ndrtest.local`、`accountancy@ndrtest.local`、`programmer@ndrtest.local`、`all@ndrtest.local`
-  - 生成任务时收件人/抄送必须使用 `@ndrtest.local`，禁止使用 `edrtest.local`、`example.com` 或其他域名
-- Web OA系统（odoo）
-- SMB共享文件夹
-  - 共享服务器的FQDN为：`i1-dc1-c01.ndrtest.local`
-  - 共享文件路径有：
-    - `Company_Data\Exchange`：各部门之间临时交换大文件使用，避免在Public乱丢垃圾文件
-    - `Company_Data\accountancy`：Accountancy(财务)专用的路径，其他职员不允许访问。用于Accountancy保存或查看excel表格、txt文档、csv表格等文件，和公司工作有关的文件都会保存到此处
-    - `Company_Data\HR-Private`：HR(人事)专用的路径，其他职员不允许访问。用于HR保存或查看excel表格、txt文档、csv表格等文件
-    - `Company_Data\IT-Dev`：Programmer(程序员)专用的路径，其他职员不允许访问。用于Programmer保存或查看 md文档、txt文档、csv表格、代码文件等。一般是项目文档和开发的代码文件
-    - `Company_Data\Management`：Manager(总经理)专用的路径，其他职员不允许访问。用于Manager保存或查看 md文档、txt文档、csv表格、代码文件等
-    - `Company_Data\Public`：所有人共同使用的目录，一般用来存放通知文件、或者需要大家填写的excel表格等。
-
-- FTP服务器
-
-
+- Exchange email server
+- Web-based office automation system (Odoo)
+- SMB shared folders
+  - The FQDN of the shared server is `i2-dc0-c08.edrtest.local`.
+  - Available shared paths:
+    - `Company_Data\Exchange`: Used to exchange large files temporarily between departments so that unnecessary files are not left in the Public folder.
+    - `Company_Data\accountancy`: Reserved for Accountancy. Other employees are not allowed to access it. Accountancy uses this path to save or view Excel workbooks, TXT documents, CSV files, and other company-related files.
+    - `Company_Data\HR-Private`: Reserved for HR. Other employees are not allowed to access it. HR uses this path to save or view Excel workbooks, TXT documents, CSV files, and similar files.
+    - `Company_Data\IT-Dev`: Reserved for the Programmer. Other employees are not allowed to access it. The Programmer uses this path to save or view Markdown documents, TXT documents, CSV files, source code, and similar files. It generally contains project documentation and development code.
+    - `Company_Data\Management`: Reserved for the Manager. Other employees are not allowed to access it. The Manager uses this path to save or view Markdown documents, TXT documents, CSV files, source code, and similar files.
+    - `Company_Data\Public`: Shared by everyone. It is generally used for notices, Excel workbooks that all employees need to complete, and other company-wide materials.
+- FTP server
 
 ## MCP
 
@@ -56,110 +40,128 @@
 - playwright
 - excel
 
-## skill
+## Skills
 
-1. 使用 Exchange邮箱的skill：通过浏览器输入地址的方式登录Exchange服务器，有发送邮件、查看邮件等操作
-2. 使用谷歌浏览器的skill：它通过playwright实现，可以打开浏览器并输入网址进行访问，也可以浏览网页，还可以检索
-3. 使用SMB共享文件夹的skill：这包括上传文件，查看共享文件夹内容，复制文件到本地。访问权限不足时的处理操作等
-4. 使用FTP服务器的skill：向目标上传/下载文件
-5. 使用odoo系统的skill：通过浏览器输入地址的方式登录Web OA系统，有人员管理
+1. `exchange-use`: Logs in to the Exchange server through a browser and supports operations such as sending and viewing email.
+2. `playwright-browser`: Uses Playwright to open a browser, visit URLs, browse web pages, and perform searches.
+3. `smb-access`: Supports uploading files, viewing shared-folder contents, copying files locally, and handling insufficient-access situations.
+4. FTP skill: Uploads files to and downloads files from a target FTP server.
+5. `odoo-use`: Logs in to the web-based Odoo office automation system through a browser and supports personnel management.
 
-# 工作时间
+# Working Hours
 
-- 工作日期：周一至周五
-- 工作时间：9:00~12:00, 13:30~18:00
+- Working days: Monday through Friday
+- Working hours: 9:00-12:00 and 13:30-18:00
 
-# 任务内容模板
+# Task Description Templates
 
-生成的task内容如果涉及到域内资源的使用时，必须遵循各个资源的调用提示词模板，模板如下：
+**All generated task descriptions must be written entirely in English.** This requirement applies to actions, parameter names, subjects, message bodies, document contents, and all other generated free text.
 
-## Exchange邮箱
+When a generated task uses a domain resource, its description must follow the corresponding invocation template below.
 
-使用 exchange-use skill，进入exchange邮箱，<操作>[，参数]
+## Exchange Email
 
-示例：
+Template:
 
-- 使用 exchange-use skill，进入exchange邮箱，发送邮件，{收件人：manager@ndrtest.local，抄送：hr@ndrtest.local，主题：项目汇报，内容：请查收最新的项目进度。}
-- 使用 exchange-use skill，进入exchange邮箱，查看邮件，{目标：第一封邮件}
-- 使用 exchange-use skill，进入exchange邮箱，答复邮件，{抄送：programmer@ndrtest.local，内容：收到，稍后处理。}
+`Use the exchange-use skill, open the Exchange mailbox, <action>[, {parameters}]`
 
+Examples:
 
+- `Use the exchange-use skill, open the Exchange mailbox, send email, {recipient: admin@example.com, cc: boss@example.com, subject: Project status report, body: Please review the latest project progress.}`
+- `Use the exchange-use skill, open the Exchange mailbox, view email, {target: first email}`
+- `Use the exchange-use skill, open the Exchange mailbox, reply to email, {cc: team@example.com, body: Received. I will handle it shortly.}`
 
-exchange邮箱共有以下三种核心操作：
+The Exchange mailbox supports the following three core actions:
 
-1. 发送邮件
-   - 参数为收件人、抄送人、主题和邮件内容信息，是一个类json格式(没有引号)，包含的"键"有{收件人，抄送，主题，内容}，如：{收件人：manager@ndrtest.local，抄送：hr@ndrtest.local，主题：项目汇报，内容：请查收进度}
-   - **注意**：**收件人**和**抄送**必须使用 `@ndrtest.local` 完整邮箱地址；禁止 `edrtest.local` 或其他域名。
+1. `send email`
+   - Parameters contain the recipient, carbon-copy recipient, subject, and message body.
+   - Use a JSON-like format without quotation marks. The supported fields are `recipient`, `cc`, `subject`, and `body`.
+   - Example: `{recipient: admin@example.com, cc: boss@example.com, subject: Project status report, body: Please review the progress.}`
+   - **Important:** Values for `recipient` and `cc` must be converted into valid, complete email addresses in strict accordance with the Recipient Address Handling Rules before they are inserted.
 
-2. 查看邮件
-   - 参数为需要查看的目标邮件标识，是一个类json格式(没有引号)，包含的"键"有{目标}，如：{目标：第一封邮件}
+2. `view email`
+   - The parameter identifies the email to view.
+   - Use a JSON-like format without quotation marks. The supported field is `target`.
+   - Example: `{target: first email}`
 
-3. 答复邮件
-   - 参数为抄送人(如提示词有要求)和答复内容，是一个类json格式(没有引号)，包含的"键"有{抄送，内容}，如：{抄送：programmer@ndrtest.local，内容：收到，谢谢}
-   - 注意：抄送同样必须使用 `@ndrtest.local`。通常答复邮件是不会删除原邮件的内容的。
+3. `reply to email`
+   - Parameters contain a carbon-copy recipient when required by the task and the reply body.
+   - Use a JSON-like format without quotation marks. The supported fields are `cc` and `body`.
+   - Example: `{cc: team@example.com, body: Received, thank you.}`
+   - The `cc` value must also be converted into a valid, complete email address in strict accordance with the Recipient Address Handling Rules. A reply should normally preserve the original email content.
 
+## Chrome Browser
 
-## chrome浏览器
+Template:
 
-- 使用`playwright-browser` skill，打开浏览器，<操作>
+`Use the playwright-browser skill, open the browser, <action>.`
 
-示例：
+Examples:
 
-使用`playwright-browser` skill，打开浏览器，访问xxx网站。
+- `Use the playwright-browser skill, open the browser, visit the xxx website.`
+- `Use the playwright-browser skill, open the browser, search for the xxx keyword, randomly select a relevant page, and browse its content for xx seconds.`
 
-使用`playwright-browser` skill，打开浏览器，搜索xxx关键字，随机点击某一个相关网页，并浏览该网页内容xx秒。
+The `<action>` placeholder describes browser interactions, including page scrolling, mouse clicks, keyboard input, and URL navigation.
 
-这里的<操作>指的是浏览器上的操作，包括{页面滚动、鼠标点击、键盘输入，访问网址}
+## SMB Shared Folders
 
-## SMB共享文件夹
+Template:
 
-使用 smb-access skill，访问SMB共享目录，使用<操作类型>，<具体操作>[，参数]
+`Use the smb-access skill, connect to the SMB shared directory, use <operation type> to <specific operation>[, {parameters}]`
 
-示例：
+Examples:
 
-- 使用 smb-access skill，连接SMB共享目录，使用创建，创建文件，{路径: /share/test.txt, 内容: hello world}
-- 使用 smb-access skill，连接SMB共享目录，使用复制，复制文件，{源路径: /share/a.txt, 目标路径: /backup/a.txt}
-- 使用 smb-access skill，连接SMB共享目录，使用删除，删除文件，{路径: /share/old.txt}
+- `Use the smb-access skill, connect to the SMB shared directory, use create to create a file, {path: /share/test.txt, content: hello world}`
+- `Use the smb-access skill, connect to the SMB shared directory, use copy to copy a file, {source path: /share/a.txt, destination path: /backup/a.txt}`
+- `Use the smb-access skill, connect to the SMB shared directory, use delete to delete a file, {path: /share/old.txt}`
 
+SMB shared-file operations are divided into the following operation types:
 
+1. `create`: Create a folder, create a file, or write content.
+   - Parameters contain path and content information.
+   - Use a JSON-like format without quotation marks. The supported fields are `path` and `content`.
+   - Example: `{path: /share/test.txt, content: hello world}`
 
-SMB共享文件操作分为几个操作类型，每个类型又包含若干具体操作，具体如下：
+2. `copy`: Copy a folder or file.
+   - Parameters contain the source and destination paths.
+   - Use a JSON-like format without quotation marks. The supported fields are `source path` and `destination path`.
+   - Example: `{source path: /share/a.txt, destination path: /backup/a.txt}`
 
-1. 创建：创建文件夹、创建文件、写入内容
-   - 参数为路径和内容信息，是一个类json格式(没有引号)，包含的"键"有{路径，内容}，如：{路径：/share/test.txt，内容：hello world}
+3. `move`: Move a folder or file.
+   - Parameters contain the source and destination paths.
+   - Use a JSON-like format without quotation marks. The supported fields are `source path` and `destination path`.
+   - Example: `{source path: /share/a.txt, destination path: /backup/a.txt}`
 
-2. 复制：复制文件夹、复制文件
-   - 参数为源路径和目标路径，是一个类json格式(没有引号)，包含的"键"有{源路径，目标路径}，如：{源路径：/share/a.txt，目标路径：/backup/a.txt}
+4. `delete`: Delete a folder or file.
+   - The parameter contains the target path.
+   - Use a JSON-like format without quotation marks. The supported field is `path`.
+   - Example: `{path: /share/old.txt}`
 
-3. 移动：移动文件夹、移动文件
-   - 参数为源路径和目标路径，是一个类json格式(没有引号)，包含的"键"有{源路径，目标路径}，如：{源路径：/share/a.txt，目标路径：/backup/a.txt}
+5. `view`: View folder contents or file contents.
+   - The parameter contains the target path.
+   - Use a JSON-like format without quotation marks. The supported field is `path`.
+   - Example: `{path: /share/}`
 
-4. 删除：删除文件夹、删除文件
-   - 参数为路径，是一个类json格式(没有引号)，包含的"键"有{路径}，如：{路径：/share/old.txt}
+## Odoo System
 
-5. 查看：查看文件夹内容、查看文件内容
-   - 参数为路径，是一个类json格式(没有引号)，包含的"键"有{路径}，如：{路径：/share/}
+Template:
 
-## odoo系统
+`Use the playwright-browser and odoo-use skills, open the browser, log in to the Odoo system, use the <module> module, <operation>[, {parameters}]`
 
-- 使用`odoo-use` 和`playwright-browser`两个skill，打开浏览器，登录odoo系统，使用\<xx\>模块，\<该模块包含的一个操作\>[，参数]
+Examples:
 
-示例：
+- `Use the playwright-browser and odoo-use skills, open the browser, log in to the Odoo system, use the Employees module, add employee, {name: DemoNew1, job position: Sales, work email: 123987@demo.com}`
+- `Use the playwright-browser and odoo-use skills, open the browser, log in to the Odoo system, use the Employees module, delete employee, {name: demo-1, job position: Sales, work email: 12fgh87@demo.com}`
 
-使用playwright-browser和odoo-use 两个skill，打开浏览器，登录odoo系统，使用员工模块，添加员工，{姓名：DemoNew1， 岗位：销售，工作电子邮件：123987@demo.com}
+Odoo provides the following modules and operations:
 
-使用playwright-browser和odoo-use 两个skill，打开浏览器，登录odoo系统，使用员工模块，删除员工，{姓名：demo-1， 岗位：销售，工作电子邮件：12fgh87@demo.com}
+1. `Employees` module: Add an employee, delete an employee, or update employee information.
+   - Parameters contain employee information.
+   - Use a JSON-like format without quotation marks. The supported fields are `name`, `job position`, and `work email`.
+   - Example: `{name: DemoNew1, job position: Sales, work email: 123987@demo.com}`
 
-
-
-odoo分为几个模块，每个模块又包含若干操作，具体如下：
-
-1. 员工模块：添加员工、删除员工、修改员工信息
-   - **参数**为员工的信息，是一个类json格式（没有引号），包含的“键”有{姓名，岗位，工作电子邮件}，如：{姓名：DemoNew1， 岗位：销售，工作电子邮件：123987@demo.com}
-2. 招聘模块：新建招聘、修改招聘信息、查看招聘申请
-   - **参数**为招聘的信息，是一个类json格式（没有引号），包含的“键”有{工作岗位，部门，邮箱地址，工作地点}，如：{工作岗位：人力资源经理， 部门：人事部，邮箱地址：123987@demo.com，工作地点：南京}
-
-
-
-
+2. `Recruitment` module: Create a job posting, update recruitment information, or view job applications.
+   - Parameters contain recruitment information.
+   - Use a JSON-like format without quotation marks. The supported fields are `job position`, `department`, `email address`, and `work location`.
+   - Example: `{job position: Human Resources Manager, department: Human Resources, email address: 123987@demo.com, work location: Nanjing}`
 

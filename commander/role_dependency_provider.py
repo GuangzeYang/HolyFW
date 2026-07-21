@@ -12,14 +12,20 @@ try:
 except ImportError:
     from common import parse_hhmm_to_minute
 
+ROLE_EMAIL_DOMAINS = ("edrtest.local", "ndrtest.local")
 ROLE_EMAIL_ALIASES = {
+<<<<<<< HEAD
     role: {role.lower(), f"{role.lower()}@ndrtest.local"}
+=======
+    role: {role.lower(), *(f"{role.lower()}@{domain}" for domain in ROLE_EMAIL_DOMAINS)}
+>>>>>>> 63282b4 (feat:Replace relevant terms with English equivalents.)
     for role in ("hr", "manager", "programmer", "accountancy")
 }
 FIELD_PATTERNS = {
-    "\u6536\u4ef6\u4eba": re.compile(r"\u6536\u4ef6\u4eba[:\uff1a]([^\uff0c}\n]*)"),
-    "\u6284\u9001": re.compile(r"\u6284\u9001[:\uff1a]([^\uff0c}\n]*)"),
+    field_name: re.compile(rf"\b{field_name}\s*:\s*([^,}}\r\n]*)", re.IGNORECASE)
+    for field_name in ("recipient", "to", "cc")
 }
+SEND_EMAIL_ACTION_PATTERN = re.compile(r"\bsend\s+email\b", re.IGNORECASE)
 
 
 def build_dependency_context(task_data: dict[str, Any], target_role: str) -> str:
@@ -30,16 +36,22 @@ def build_dependency_context(task_data: dict[str, Any], target_role: str) -> str
 
     grouped: dict[str, list[str]] = {}
     for event in events:
-        grouped.setdefault(event["source_role"], []).append(f"{event['time']} \u5411 {target_role} \u53d1\u9001\u90ae\u4ef6")
-    return f"\u5173\u8054\u4f9d\u8d56\u4e8b\u5b9e\uff08\u4ec5\u7528\u4e8e\u63a8\u65ad\u9690\u5f0f\u5173\u8054\u548c\u524d\u540e\u65f6\u5e8f\uff09\uff1a {json.dumps(grouped, ensure_ascii=False)}"
-
+        grouped.setdefault(event["source_role"], []).append(
+            f"{event['time']} sent an email to {target_role}"
+        )
+    return (
+        "Related dependency facts (for inferring implicit relationships and ordering only): "
+        f"{json.dumps(grouped, ensure_ascii=False)}"
+    )
 
 
 def _task_snippet(text: str, max_len: int = 100) -> str:
-    t = text.strip().replace("\n", " ")
-    if len(t) <= max_len:
-        return t
-    return t[: max_len - 1] + "…"
+    text = text.strip().replace("\n", " ")
+    if len(text) <= max_len:
+        return text
+    if max_len <= 3:
+        return text[:max_len]
+    return text[: max_len - 3] + "..."
 
 
 def _format_dependency_violation(
@@ -53,16 +65,20 @@ def _format_dependency_violation(
     dep_time: str,
     dep_task_text: str,
 ) -> str:
-    """Human-readable dependency ordering failure for model retry prompts (Chinese)."""
+    """Return a human-readable dependency ordering failure for model retry prompts."""
     return (
-        "跨角色时序不满足（请只调整本角色任务时间或顺序以满足依赖，勿改已落盘的其他角色任务）。\n"
-        f"依赖方：角色「{dep_role}」已生成的第 {dep_index + 1} 条任务（数组下标 {dep_index}），开始时间为 {dep_time}。"
-        f"该条任务内容摘要：{_task_snippet(dep_task_text)}。\n"
-        f"当前生成方：角色「{target_role}」本轮候选的第 {candidate_index + 1} 条任务（数组下标 {candidate_index}），"
-        f"开始时间为 {candidate_time}。该条任务内容摘要：{_task_snippet(candidate_task_text)}。\n"
-        f"错误原因：上述「{target_role}」任务的开始时间 {candidate_time} 早于或等于依赖方任务的开始时间 {dep_time}，"
-        f"不满足「须在依赖方该邮件任务完成之后」的约束。\n"
-        f"正确约束：「{target_role}」本条开始时间必须严格晚于 {dep_time}（并与其余本角色任务时间严格递增、落在允许工作时段内）。"
+        "Cross-role dependency order is invalid. Adjust only this role's task time or order "
+        "to satisfy the dependency; do not change tasks already saved for other roles.\n"
+        f"Dependency source: role '{dep_role}', existing task {dep_index + 1} "
+        f"(array index {dep_index}), starts at {dep_time}.\n"
+        f"Source task summary: {_task_snippet(dep_task_text)}.\n"
+        f"Current candidate: role '{target_role}', candidate task {candidate_index + 1} "
+        f"(array index {candidate_index}), starts at {candidate_time}.\n"
+        f"Candidate task summary: {_task_snippet(candidate_task_text)}.\n"
+        f"Reason: the candidate starts at {candidate_time}, which is earlier than or equal to "
+        f"the dependency source task's start time of {dep_time}; it must start after that email task.\n"
+        f"Required constraint: this '{target_role}' task must start strictly later than {dep_time}, "
+        "remain strictly ordered with the role's other tasks, and stay within the permitted work period."
     )
 
 
@@ -104,10 +120,9 @@ def validate_dependency_order(
             dep_time=str(earliest.get("time", "")),
             dep_task_text=str(earliest.get("task", "")),
         )
-        return (False, reason)
+        return False, reason
 
     return True, None
-
 
 
 def collect_dependency_events(task_data: dict[str, Any], target_role: str) -> list[dict[str, Any]]:
@@ -137,15 +152,19 @@ def collect_dependency_events(task_data: dict[str, Any], target_role: str) -> li
     return events
 
 
-
-def _extract_email_event(source_role: str, target_role: str, task_text: str, time_text: str) -> dict[str, Any] | None:
+def _extract_email_event(
+    source_role: str,
+    target_role: str,
+    task_text: str,
+    time_text: str,
+) -> dict[str, Any] | None:
     lowered = task_text.lower()
-    if "exchange-use skill" not in lowered or "\u53d1\u9001\u90ae\u4ef6" not in task_text:
+    if "exchange-use skill" not in lowered or SEND_EMAIL_ACTION_PATTERN.search(task_text) is None:
         return None
 
     recipients = set()
-    recipients.update(_extract_field_values(task_text, "\u6536\u4ef6\u4eba"))
-    recipients.update(_extract_field_values(task_text, "\u6284\u9001"))
+    for field_name in FIELD_PATTERNS:
+        recipients.update(_extract_field_values(task_text, field_name))
     aliases = ROLE_EMAIL_ALIASES.get(target_role, {target_role.lower()})
     if not any(alias in recipients for alias in aliases):
         return None
@@ -159,7 +178,6 @@ def _extract_email_event(source_role: str, target_role: str, task_text: str, tim
     }
 
 
-
 def _candidate_task_matches_event(task_text: str, event: dict[str, Any]) -> bool:
     lowered = task_text.lower()
     if event.get("relation") != "email":
@@ -167,7 +185,6 @@ def _candidate_task_matches_event(task_text: str, event: dict[str, Any]) -> bool
     if "exchange-use skill" not in lowered:
         return False
     return any(alias in lowered for alias in event.get("aliases", ()))
-
 
 
 def _extract_field_values(task_text: str, field_name: str) -> list[str]:
