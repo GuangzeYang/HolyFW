@@ -1014,7 +1014,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                     {
                         "hr": [
                             self._saved_task(
-                                "Use the exchange-use skill to send email, {recipient: manager@edrtest.local, subject: onboarding process}",
+                                "Use the exchange-use skill to send email, {recipient: manager@ndrtest.local, subject: onboarding process}",
                                 time="10:01",
                             )
                         ]
@@ -1029,7 +1029,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 responses=[
                     self._valid_response(
                         "manager",
-                        "Use the exchange-use skill to view email from hr@edrtest.local",
+                        "Use the exchange-use skill to view email from hr@ndrtest.local",
                         time="10:16",
                     )
                 ]
@@ -1142,7 +1142,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                     {
                         "hr": [
                             self._saved_task(
-                                "Use the exchange-use skill to send email, {recipient: manager@edrtest.local, subject: onboarding process}",
+                                "Use the exchange-use skill to send email, {recipient: manager@ndrtest.local, subject: onboarding process}",
                                 time="10:01",
                             )
                         ]
@@ -1157,12 +1157,12 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 responses=[
                     self._valid_response(
                         "manager",
-                        "Use the exchange-use skill to view email from hr@edrtest.local",
+                        "Use the exchange-use skill to view email from hr@ndrtest.local",
                         time="09:01",
                     ),
                     self._valid_response(
                         "manager",
-                        "Use the exchange-use skill to view email from hr@edrtest.local",
+                        "Use the exchange-use skill to view email from hr@ndrtest.local",
                         time="10:16",
                     ),
                 ]

@@ -16,3 +16,6 @@ logs/
 # Task data files
 commander/role_task/tasks_*.json
 **/tasks_*.json
+
+# Host-specific role skills
+skill/

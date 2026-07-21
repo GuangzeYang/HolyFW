@@ -17,7 +17,7 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
                     "is_load": True,
                     "task": (
                         "Use exchange-use skill, send email, "
-                        "{recipient: programmer@edrtest.local, subject: Release status}"
+                        "{recipient: programmer@ndrtest.local, subject: Release status}"
                     ),
                 }
             ]
@@ -26,7 +26,7 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
             {
                 "time": "09:09",
                 "is_load": False,
-                "task": "Use exchange-use skill to review email from manager@edrtest.local",
+                "task": "Use exchange-use skill to review email from manager@ndrtest.local",
             }
         ]
 
@@ -50,7 +50,7 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
                     "is_load": True,
                     "task": (
                         "Use exchange-use skill, send email, "
-                        "{to: manager@edrtest.local, subject: Onboarding}"
+                        "{to: manager@ndrtest.local, subject: Onboarding}"
                     ),
                 }
             ]
@@ -66,9 +66,9 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
 
     def test_recipient_fields_are_case_insensitive_and_accept_regular_commas(self) -> None:
         templates = (
-            "{RECIPIENT: programmer@edrtest.local, subject: Status}",
-            "{To: programmer@edrtest.local, subject: Status}",
-            "{CC: PROGRAMMER@EDRTEST.LOCAL, subject: Status}",
+            "{RECIPIENT: programmer@ndrtest.local, subject: Status}",
+            "{To: programmer@ndrtest.local, subject: Status}",
+            "{CC: PROGRAMMER@NDRTEST.LOCAL, subject: Status}",
         )
         for fields in templates:
             with self.subTest(fields=fields):
@@ -86,31 +86,44 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
                     build_dependency_context(task_data, "programmer"),
                 )
 
-    def test_dependency_aliases_support_both_internal_email_domains(self) -> None:
-        for domain in ("edrtest.local", "ndrtest.local"):
-            with self.subTest(domain=domain):
-                task_data = {
-                    "hr": [
-                        {
-                            "time": "10:01",
-                            "task": (
-                                "Use exchange-use skill, send email, "
-                                f"{{recipient: manager@{domain}, subject: Onboarding}}"
-                            ),
-                        }
-                    ]
+    def test_dependency_aliases_use_the_ndrtest_internal_email_domain(self) -> None:
+        task_data = {
+            "hr": [
+                {
+                    "time": "10:01",
+                    "task": (
+                        "Use exchange-use skill, send email, "
+                        "{recipient: manager@ndrtest.local, subject: Onboarding}"
+                    ),
                 }
+            ]
+        }
 
-                self.assertIn(
-                    "10:01 sent an email to manager",
-                    build_dependency_context(task_data, "manager"),
-                )
+        self.assertIn(
+            "10:01 sent an email to manager",
+            build_dependency_context(task_data, "manager"),
+        )
+
+    def test_edrtest_email_domain_is_not_an_internal_role_alias(self) -> None:
+        task_data = {
+            "hr": [
+                {
+                    "time": "10:01",
+                    "task": (
+                        "Use exchange-use skill, send email, "
+                        "{recipient: manager@edrtest.local, subject: Onboarding}"
+                    ),
+                }
+            ]
+        }
+
+        self.assertEqual(build_dependency_context(task_data, "manager"), "")
 
     def test_non_send_email_actions_do_not_create_dependencies(self) -> None:
         tasks = (
-            "Use exchange-use skill to review email, {to: programmer@edrtest.local}",
-            "Use exchange-use skill to reply to email, {to: programmer@edrtest.local}",
-            "Use exchange-use skill to send an email, {to: programmer@edrtest.local}",
+            "Use exchange-use skill to review email, {to: programmer@ndrtest.local}",
+            "Use exchange-use skill to reply to email, {to: programmer@ndrtest.local}",
+            "Use exchange-use skill to send an email, {to: programmer@ndrtest.local}",
         )
         for task_text in tasks:
             with self.subTest(task_text=task_text):

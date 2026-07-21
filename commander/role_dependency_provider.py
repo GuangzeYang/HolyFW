@@ -12,13 +12,8 @@ try:
 except ImportError:
     from common import parse_hhmm_to_minute
 
-ROLE_EMAIL_DOMAINS = ("edrtest.local", "ndrtest.local")
 ROLE_EMAIL_ALIASES = {
-<<<<<<< HEAD
     role: {role.lower(), f"{role.lower()}@ndrtest.local"}
-=======
-    role: {role.lower(), *(f"{role.lower()}@{domain}" for domain in ROLE_EMAIL_DOMAINS)}
->>>>>>> 63282b4 (feat:Replace relevant terms with English equivalents.)
     for role in ("hr", "manager", "programmer", "accountancy")
 }
 FIELD_PATTERNS = {
