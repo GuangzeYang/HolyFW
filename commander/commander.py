@@ -65,21 +65,6 @@ except ImportError:
     )
 import logging
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def send_line(conn: socket.socket, obj: dict[str, Any]) -> None:
     conn.sendall((json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8"))
 
