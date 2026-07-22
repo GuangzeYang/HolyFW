@@ -172,7 +172,7 @@ def handle_commander(
                         failure_governor.record_failure(
                             role,
                             task_day,
-                            message or f"Task execution failed with exit_code={exit_code}",
+                            msg or f"Task execution failed with exit_code={exit_code}",
                             task_ref,
                             result_key=task_ref,
                         )
