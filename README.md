@@ -216,8 +216,12 @@ python commander.py
 Optional arguments:
 
 ```bash
-python commander.py --host 0.0.0.0 --port 38471 --data-dir ./role_task
+python commander.py --host 0.0.0.0 --port 38471 --data-dir ./role_task --debug
 ```
+
+By default, tasks wait until their planned time and are then dispatched in generated order,
+regardless of how late they are. With `--debug`, tasks more than
+`scanner.max_dispatch_lateness_minutes` late are marked failed instead of being dispatched.
 
 ### 4. Common Utility Commands
 
@@ -395,6 +399,7 @@ Sets the timeout for a single command execution:
 - `--host` overrides `server.host`
 - `--port` overrides `server.port`
 - `--data-dir` overrides `scanner.data_dir`
+- `--debug` enables the configured dispatch-lateness window; without it, overdue tasks remain dispatchable
 
 ### dispatch
 

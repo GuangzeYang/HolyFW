@@ -86,7 +86,7 @@
     "_comment_api_base_url": "DeepSeek API base URL. '/chat/completions' will be appended automatically when needed.",
     "api_base_url": "https://api.deepseek.com",
     "_comment_api_key": "DeepSeek API key used for task generation.",
-    "api_key": "sk-49a648a1723842dabf042e4a602162db",
+    "api_key": "sk-9db48328b65b451e9a7e1782d75350ef",
     "_comment_model": "DeepSeek model used for task generation.",
     "model": "deepseek-v4-pro",
     "_comment_request_timeout_seconds": "Timeout for each DeepSeek API request in seconds. Keep this bounded so retries fail fast instead of appearing hung for a long time.",

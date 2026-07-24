@@ -41,12 +41,14 @@ class TaskScanService:
         dispatch_task: Callable[[str, str, str | None], Any],
         failure_governor: FailureGovernor | None = None,
         max_dispatch_lateness_minutes: int = 6,
+        debug: bool = False,
     ):
         self.repository = repository
         self.selection_policy = selection_policy
         self.dispatch_task = dispatch_task
         self.failure_governor = failure_governor
         self.max_dispatch_lateness_minutes = max_dispatch_lateness_minutes
+        self.debug = debug
 
     def process_roles(
         self,
@@ -113,9 +115,10 @@ class TaskScanService:
                 if task_time > now:
                     break
 
-                # Only dispatch tasks within the recent lateness window.
-                earliest_allowed = now - timedelta(minutes=self.max_dispatch_lateness_minutes)
-                if task_time < earliest_allowed:
+                # Debug mode limits dispatches to the recent lateness window.
+                if self.debug and task_time < now - timedelta(
+                    minutes=self.max_dispatch_lateness_minutes
+                ):
                     reason = (
                         f"Missed dispatch window (>{self.max_dispatch_lateness_minutes} minutes late); "
                         f"planned={task.get('time')} now={now.strftime('%H:%M:%S')}"

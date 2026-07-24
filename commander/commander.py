@@ -199,6 +199,7 @@ class TaskScanner:
         failure_governor: RoleFailureGovernor | None = None,
         periodic_hook: Callable[[], None] | None = None,
         max_dispatch_lateness_minutes: int = 6,
+        debug: bool = False,
     ):
         self.repository = repository
         self.data_dir = repository.data_dir
@@ -235,6 +236,7 @@ class TaskScanner:
             dispatch_task=self.dispatch_client.dispatch,
             failure_governor=self.failure_governor,
             max_dispatch_lateness_minutes=self.max_dispatch_lateness_minutes,
+            debug=debug,
         )
     
     def _get_role_task_file(self) -> Path:
@@ -375,6 +377,7 @@ def serve(
     failure_policy_config: dict[str, Any],
     email_alert_config: dict[str, Any],
     max_dispatch_lateness_minutes: int = 6,
+    debug: bool = False,
 ) -> None:
     data_dir = data_dir.resolve()
     repository = DailyTaskRepository(
@@ -403,6 +406,7 @@ def serve(
         log_level_name=log_level_name,
         failure_governor=failure_governor,
         max_dispatch_lateness_minutes=max_dispatch_lateness_minutes,
+        debug=debug,
     )
     scanner.start()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -440,6 +444,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="tasks_MM-DD.json directory (default from commander/config.json)",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="expire planned tasks that are later than the configured dispatch window",
     )
     return parser
 
@@ -493,6 +502,7 @@ def main() -> None:
         failure_policy_config=failure_policy_config,
         email_alert_config=email_alert_config,
         max_dispatch_lateness_minutes=scanner_config["max_dispatch_lateness_minutes"],
+        debug=args.debug,
     )
 
 

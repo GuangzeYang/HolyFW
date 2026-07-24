@@ -47,6 +47,7 @@ class DispatchLatenessWindowTests(unittest.TestCase):
             selection_policy=EarliestPendingSelectionPolicy(),
             dispatch_task=fake_dispatch,
             max_dispatch_lateness_minutes=6,
+            debug=True,
         )
 
     def test_expires_task_older_than_six_minutes_and_dispatches_recent(self) -> None:
@@ -81,6 +82,70 @@ class DispatchLatenessWindowTests(unittest.TestCase):
         self.assertEqual(self.dispatched[0][2], recent_time)
         self.assertEqual(data["hr"][2]["status"], "planned")
 
+    def test_non_debug_dispatches_task_older_than_six_minutes(self) -> None:
+        old_time = (datetime.now() - timedelta(minutes=10)).strftime("%H:%M")
+        self.repo.save_day(self.today, {"hr": [_pending_task(old_time, "old task")]})
+        service = TaskScanService(
+            repository=self.repo,
+            selection_policy=EarliestPendingSelectionPolicy(),
+            dispatch_task=self.service.dispatch_task,
+            max_dispatch_lateness_minutes=6,
+            debug=False,
+        )
+
+        service.process_roles(
+            tasks_by_role=self.repo.load_day(self.today),
+            roles=("hr",),
+            role_pointers={},
+            date_str=self.today,
+        )
+
+        data = self.repo.load_day(self.today)
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0][1], "old task")
+        self.assertNotEqual(data["hr"][0]["status"], "failed")
+        self.assertNotIn("Missed dispatch window", data["hr"][0]["report_message"])
+
+    def test_non_debug_still_waits_for_future_task(self) -> None:
+        future_time = (datetime.now() + timedelta(minutes=20)).strftime("%H:%M")
+        self.repo.save_day(self.today, {"hr": [_pending_task(future_time, "future task")]})
+        service = TaskScanService(
+            repository=self.repo,
+            selection_policy=EarliestPendingSelectionPolicy(),
+            dispatch_task=self.service.dispatch_task,
+            max_dispatch_lateness_minutes=6,
+            debug=False,
+        )
+
+        service.process_roles(
+            tasks_by_role=self.repo.load_day(self.today),
+            roles=("hr",),
+            role_pointers={},
+            date_str=self.today,
+        )
+
+        self.assertEqual(self.dispatched, [])
+        self.assertEqual(self.repo.load_day(self.today)["hr"][0]["status"], "planned")
+
+    def test_non_debug_still_rejects_invalid_task_time(self) -> None:
+        self.repo.save_day(self.today, {"hr": [_pending_task("invalid", "invalid task")]})
+        service = TaskScanService(
+            repository=self.repo,
+            selection_policy=EarliestPendingSelectionPolicy(),
+            dispatch_task=self.service.dispatch_task,
+            max_dispatch_lateness_minutes=6,
+            debug=False,
+        )
+
+        service.process_roles(
+            tasks_by_role=self.repo.load_day(self.today),
+            roles=("hr",),
+            role_pointers={},
+            date_str=self.today,
+        )
+
+        self.assertEqual(self.dispatched, [])
+        self.assertTrue(self.repo.load_day(self.today)["hr"][0]["is_load"])
 
 if __name__ == "__main__":
     unittest.main()
