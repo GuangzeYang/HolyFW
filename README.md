@@ -460,11 +460,6 @@ The `soldier` also generates:
 ## Important Notes
 
 - `domain_resource.md` is a runtime resource; do not delete it as though it were ordinary documentation.
-- The instructions in `skill/` are written in English, but Exchange, Odoo, and other external interfaces may use a different locale. Browser Skills inspect the live DOM or accessibility state and locate controls by stable attributes and current semantics instead of assuming English labels.
-- Keep three concepts separate: the Skill instruction language is English, the UI locale is detected at runtime, and task-provided business content is preserved unless the task explicitly requests translation.
-- Each role directory contains Skills intended for that role host. Do not install multiple same-named role variants into one flat Skill directory without isolating them.
-- The `victim-skills/penetration-test` bundle is for authorized NDR/EDR adversary emulation on a compromised domain host. Install it only on the `victim` soldier host, add a `[victim]` section to `commander/commander.ini`, and pre-position tools listed in `skill/victim-skills/penetration-test/references/lab-prerequisites.md`.
-- The repository `资料库/` directory is local authoring/reference material only. Delete it (or never copy it) when deploying HolyFW to test machines; runtime behavior must not depend on it.
 - `soldier` executes received commands and should be deployed only in a controlled environment.
 - In distributed deployments, carefully check the listening addresses, report-back addresses, and firewall configuration for `commander` and `soldier`.
 - Task times are based on each host's system clock. Keep clocks synchronized across hosts in distributed deployments.
