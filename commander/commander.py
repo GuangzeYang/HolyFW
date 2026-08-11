@@ -23,7 +23,7 @@ from typing import Any, Callable
 
 from dispatch_client import DispatchClient
 from failure_governor import EmailAlerter, RoleFailureGovernor
-from logging_setup import configure_commander_root_logging, reattach_commander_dated_file_handler
+from logging_setup import configure_commander_root_logging, log_extra, reattach_commander_dated_file_handler
 from policies import EarliestPendingSelectionPolicy
 from repository import DailyTaskRepository
 from role_file_service import RoleTaskFileService
@@ -107,7 +107,7 @@ def handle_commander(
     socket_timeout_seconds: int,
     failure_governor: RoleFailureGovernor | None = None,
 ) -> None:
-    logging.info(f"Commander connected from {addr}")
+    logging.debug("Commander connected from %s", addr)
     try:
         conn.settimeout(socket_timeout_seconds)
         try:
@@ -155,29 +155,45 @@ def handle_commander(
             repository, task_ref, status, msg, exit_code, out, err_out
         )
         send_line(conn, result)
+        parsed_ref, parse_error = parse_task_ref(task_ref)
+        role_name = "system"
+        task_id = task_ref
+        role_index: int | None = None
+        if parse_error is None and parsed_ref is not None:
+            task_day, role_name, task_id = parsed_ref
+            role_index = repository.find_task_index(task_day, role_name, task_id)
+        extras = log_extra(role_name, role_index)
         if result.get("ok"):
-            logging.info(f"Task {task_ref} reported as {status}")
-            if failure_governor is not None:
-                parsed_ref, parse_error = parse_task_ref(task_ref)
-                if parse_error is None and parsed_ref is not None:
-                    task_day, role, _ = parsed_ref
-                    if status == "successed":
-                        failure_governor.record_success(
-                            role,
-                            task_day,
-                            task_ref,
-                            result_key=task_ref,
-                        )
-                    elif status == "failed":
-                        failure_governor.record_failure(
-                            role,
-                            task_day,
-                            msg or f"Task execution failed with exit_code={exit_code}",
-                            task_ref,
-                            result_key=task_ref,
-                        )
+            if status == "successed":
+                logging.info("Success — %s", task_id, extra=extras)
+            elif status == "failed":
+                logging.error("Failed — %s", task_id, extra=extras)
+            else:
+                logging.debug("Reported as %s — %s", status, task_id, extra=extras)
+            if failure_governor is not None and parse_error is None and parsed_ref is not None:
+                task_day, role, _ = parsed_ref
+                if status == "successed":
+                    failure_governor.record_success(
+                        role,
+                        task_day,
+                        task_ref,
+                        result_key=task_ref,
+                    )
+                elif status == "failed":
+                    failure_governor.record_failure(
+                        role,
+                        task_day,
+                        msg or f"Task execution failed with exit_code={exit_code}",
+                        task_ref,
+                        result_key=task_ref,
+                    )
         else:
-            logging.error(f"Task {task_ref} report failed: {result.get('error')}")
+            logging.debug(
+                "Report rejected — %s — %s",
+                task_id,
+                result.get("error"),
+                extra=extras,
+            )
     finally:
         conn.close()
 
@@ -200,6 +216,7 @@ class TaskScanner:
         periodic_hook: Callable[[], None] | None = None,
         max_dispatch_lateness_minutes: int = 6,
         debug: bool = False,
+        target_ini_path: Path | None = None,
     ):
         self.repository = repository
         self.data_dir = repository.data_dir
@@ -211,6 +228,7 @@ class TaskScanner:
         self.dispatch_client = DispatchClient(
             dispatch_script,
             timeout_seconds=dispatch_timeout_seconds,
+            target_ini_path=target_ini_path,
         )
         self.role_pointers = {}  # {"hr": 0, "accountancy": 0, "manager": 0, "programmer": 0, ...}
         self.last_date = None
@@ -350,9 +368,9 @@ class TaskScanner:
                 time.sleep(self.generation_retry_interval_seconds)
 
         threading.Thread(target=scan_loop, daemon=True).start()
-        logging.info("Task scanner thread created")
+        logging.debug("Task scanner thread created")
         threading.Thread(target=generation_retry_loop, daemon=True).start()
-        logging.info("Role task generation retry thread created")
+        logging.debug("Role task generation retry thread created")
 
 
 def serve(
@@ -392,8 +410,7 @@ def serve(
         max_consecutive_failures=failure_policy_config["max_consecutive_failures"],
         email_alerter=EmailAlerter(email_alert_config),
     )
-    # Start automatic task scanner
-    logging.info(f"Initializing TaskScanner with data_dir={data_dir}")
+    logging.debug("Initializing TaskScanner with data_dir=%s", data_dir)
     scanner = TaskScanner(
         repository,
         roles,
@@ -407,13 +424,14 @@ def serve(
         failure_governor=failure_governor,
         max_dispatch_lateness_minutes=max_dispatch_lateness_minutes,
         debug=debug,
+        target_ini_path=target_ini_path,
     )
     scanner.start()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))
     sock.listen(listen_backlog)
-    logging.info(f"Listening on {host}:{port}, data_dir={data_dir}, worker_threads={worker_threads}")
+    logging.info("Listening on %s:%s", host, port)
     try:
         executor = ThreadPoolExecutor(max_workers=worker_threads)
         while True:
@@ -448,7 +466,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="expire planned tasks that are later than the configured dispatch window",
+        help=(
+            "enable DEBUG logging and expire planned tasks that are later than "
+            "the configured dispatch window"
+        ),
     )
     return parser
 
@@ -470,15 +491,16 @@ def main() -> None:
     host = args.host if args.host is not None else server_config["host"]
     port = args.port if args.port is not None else server_config["port"]
     data_dir = args.data_dir if args.data_dir is not None else resolve_config_relative_path(scanner_config["data_dir"])
-    
+
     logs_dir = resolve_config_relative_path(paths_config["logs_dir"])
-    log_file = configure_commander_root_logging(logs_dir, level_name=logging_config["level"])
+    log_level_name = "DEBUG" if args.debug else logging_config["level"]
+    log_file = configure_commander_root_logging(logs_dir, level_name=log_level_name)
 
     target_ini_path = resolve_config_relative_path(paths_config["target_ini_file"])
     dispatch_script = resolve_config_relative_path(paths_config["dispatch_script"])
     domain_resource_file = resolve_config_relative_path(paths_config["domain_resource_file"])
 
-    logging.info(f"Starting commander, logs: {log_file}")
+    logging.info("Starting commander, logs: %s", log_file)
 
     serve(
         host,
@@ -497,7 +519,7 @@ def main() -> None:
         domain_resource_file=domain_resource_file,
         dispatch_script=dispatch_script,
         logs_dir=logs_dir,
-        log_level_name=logging_config["level"],
+        log_level_name=log_level_name,
         worker_threads=server_config["worker_threads"],
         failure_policy_config=failure_policy_config,
         email_alert_config=email_alert_config,

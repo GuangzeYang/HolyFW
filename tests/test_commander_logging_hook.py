@@ -40,6 +40,9 @@ class CommanderLoggingHookTests(unittest.TestCase):
         expected = logs / f"commander_{date.today().isoformat()}.log"
         self.assertEqual(path.resolve(), expected.resolve())
         self.assertTrue(path.is_file())
+        logging.info("Starting commander", extra={"role": "system"})
+        content = path.read_text(encoding="utf-8")
+        self.assertRegex(content, r"\d{4}-\d{2}-\d{2} .* - INFO - system - Starting commander")
 
     def test_reattach_replaces_only_dated_handler(self) -> None:
         td = tempfile.mkdtemp()

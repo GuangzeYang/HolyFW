@@ -19,19 +19,18 @@ import logging
 
 try:
     from common import validate_task_id
-    from logging_setup import configure_daily_logging
+    from logging_setup import configure_subprocess_logging
     from repository import DailyTaskRepository
     from target_config import load_target_config
 except ImportError:
     from common import validate_task_id
-    from commander.logging_setup import configure_daily_logging
+    from commander.logging_setup import configure_subprocess_logging
     from commander.repository import DailyTaskRepository
     from commander.target_config import load_target_config
 
 try:
     from runtime_config import (
         get_dispatch_config,
-        get_logging_config,
         get_paths_config,
         get_scanner_config,
         get_storage_config,
@@ -41,7 +40,6 @@ try:
 except ImportError:
     from commander.runtime_config import (
         get_dispatch_config,
-        get_logging_config,
         get_paths_config,
         get_scanner_config,
         get_storage_config,
@@ -97,7 +95,12 @@ def send_to_soldier(
         with socket.create_connection((soldier_host, soldier_port), timeout=timeout) as sock:
             sock.settimeout(timeout)
             sock.sendall(line.encode("utf-8"))
-            logging.info(f"Task {task_ref} dispatched to {soldier_host}:{soldier_port}")
+            logging.debug(
+                "Running — %s — Dispatched to (%s,%s)",
+                task_ref.split("_")[-1] if "_" in task_ref else task_ref,
+                soldier_host,
+                soldier_port,
+            )
             buffer = b""
             while b"\n" not in buffer:
                 chunk = sock.recv(4096)
@@ -190,7 +193,6 @@ def main() -> int:
 
     runtime_config = load_runtime_config()
     dispatch_config = get_dispatch_config(runtime_config)
-    logging_config = get_logging_config(runtime_config)
     scanner_config = get_scanner_config(runtime_config)
     storage_config = get_storage_config(runtime_config)
     paths_config = get_paths_config(runtime_config)
@@ -211,17 +213,9 @@ def main() -> int:
     
     # Normalize target to lowercase for role name (strict matching)
     target_role = args.target.lower()
-    
-    logs_dir = resolve_config_relative_path(paths_config["logs_dir"])
-    log_file = configure_daily_logging(
-        logs_dir,
-        "dispatch",
-        level_name=logging_config["level"],
-        backup_count=logging_config["backup_count"],
-        rotation_interval_days=logging_config["rotation_interval_days"],
-    )
 
-    logging.info(f"Dispatch starting, logs: {log_file}")
+    # No dispatch_*.log file — commander owns dated execution logs. Keep stderr only.
+    configure_subprocess_logging("WARNING")
 
     data_dir = args.data_dir.resolve() if args.data_dir is not None else resolve_config_relative_path(scanner_config["data_dir"])
     repository = DailyTaskRepository(
@@ -261,9 +255,6 @@ def main() -> int:
     task_file = repository.day_path(date_str)
     repository.expire_waiting_tasks(date_str)
     if has_waiting_tasks(repository, date_str, target_role):
-        logging.warning(
-            f"Role {target_role} still has waiting tasks in {task_file}, not dispatching this time"
-        )
         print(
             json.dumps(
                 {
@@ -290,7 +281,6 @@ def main() -> int:
         expiry_time,
         args.planned_time,
     )
-    logging.info(f"Written to {task_file}, task_ref={task_ref}")
 
     try:
         resp = send_to_soldier(

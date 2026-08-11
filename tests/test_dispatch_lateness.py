@@ -38,7 +38,12 @@ class DispatchLatenessWindowTests(unittest.TestCase):
         self.today = datetime.now().strftime("%Y-%m-%d")
         self.dispatched: list[tuple[str, str, str | None]] = []
 
-        def fake_dispatch(role: str, task_text: str, task_time: str | None = None):
+        def fake_dispatch(
+            role: str,
+            task_text: str,
+            task_time: str | None = None,
+            **_kwargs,
+        ):
             self.dispatched.append((role, task_text, task_time))
             return True
 

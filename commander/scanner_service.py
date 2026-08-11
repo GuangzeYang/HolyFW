@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, Callable, Protocol
 
 try:
+    from logging_setup import log_extra
     from policies import PendingSelectionPolicy, task_needs_dispatch
     from repository import DailyTaskRepository
 except ImportError:
+    from commander.logging_setup import log_extra
     from commander.policies import PendingSelectionPolicy, task_needs_dispatch
     from commander.repository import DailyTaskRepository
 
@@ -38,7 +41,7 @@ class TaskScanService:
         self,
         repository: DailyTaskRepository,
         selection_policy: PendingSelectionPolicy,
-        dispatch_task: Callable[[str, str, str | None], Any],
+        dispatch_task: Callable[..., Any],
         failure_governor: FailureGovernor | None = None,
         max_dispatch_lateness_minutes: int = 6,
         debug: bool = False,
@@ -62,7 +65,11 @@ class TaskScanService:
             if self.failure_governor is not None:
                 allowed, reason = self.failure_governor.can_dispatch(role_key, date_str)
                 if not allowed:
-                    logging.warning("Skipping role %s dispatch: %s", role_key, reason)
+                    logging.debug(
+                        "Skipping dispatch: %s",
+                        reason,
+                        extra=log_extra(role_key),
+                    )
                     continue
             tasks_any = tasks_by_role.get(role_key)
             if not isinstance(tasks_any, list) or not tasks_any:
@@ -80,12 +87,19 @@ class TaskScanService:
                     break
 
                 if self.repository.has_active_waiting_task(role_key, date_str):
-                    logging.debug(f"Role {role_key} has waiting task, pausing pointer at index {pointer}")
+                    logging.debug(
+                        "Waiting task present, pausing pointer at index %s",
+                        pointer,
+                        extra=log_extra(role_key, pointer),
+                    )
                     break
 
                 task = tasks[pointer]
                 if not isinstance(task, dict):
-                    logging.warning(f"Invalid task format at {role_key}[{pointer}], skipping")
+                    logging.debug(
+                        "Invalid task format, skipping",
+                        extra=log_extra(role_key, pointer),
+                    )
                     pointer += 1
                     role_pointers[role_key] = pointer
                     continue
@@ -98,7 +112,10 @@ class TaskScanService:
                 task_time_raw = task.get("time")
                 task_time = self._parse_task_datetime(task_time_raw if isinstance(task_time_raw, str) else "", now)
                 if task_time is None:
-                    logging.warning(f"Invalid task time for {role_key}[{pointer}], skipping")
+                    logging.debug(
+                        "Invalid task time, skipping",
+                        extra=log_extra(role_key, pointer),
+                    )
                     task["is_load"] = True
                     self.repository.update_task_fields_by_index(
                         date_str,
@@ -123,11 +140,10 @@ class TaskScanService:
                         f"Missed dispatch window (>{self.max_dispatch_lateness_minutes} minutes late); "
                         f"planned={task.get('time')} now={now.strftime('%H:%M:%S')}"
                     )
-                    logging.warning(
-                        "Expiring overdue task for %s[%s]: %s",
-                        role_key,
-                        pointer,
+                    logging.debug(
+                        "Expiring overdue task: %s",
                         reason,
+                        extra=log_extra(role_key, pointer),
                     )
                     fields = {
                         "is_load": True,
@@ -149,7 +165,6 @@ class TaskScanService:
 
                 task_text_value = task.get("task")
                 task_text = task_text_value if isinstance(task_text_value, str) else ""
-                truncated = task_text[:50] + "..." if task_text and len(task_text) > 50 else task_text
 
                 # Reading task marks is_load=True before dispatch.
                 marked_loaded = False
@@ -164,28 +179,30 @@ class TaskScanService:
                     latest = self.repository.get_task_by_index(date_str, role_key, pointer)
                     if latest is not None:
                         task.update(latest)
-                    if marked_loaded:
-                        logging.info(
-                            f"Marked task loaded for {role_key}[{pointer}]: {task.get('time')} - {truncated}"
-                        )
-                    elif not task_needs_dispatch(task):
+                    if not marked_loaded and not task_needs_dispatch(task):
                         pointer = self._move_pointer_after_success(role_key, tasks, pointer, role_pointers)
                         continue
 
-                logging.info(f"Dispatching task for {role_key}[{pointer}]: {task.get('time')} - {truncated}")
-                outcome = self.dispatch_task(role_key, task_text, task.get("time"))
+                task_id = uuid.uuid4().hex[:16]
+                extras = log_extra(role_key, pointer)
+                logging.info("Running — %s", task_id, extra=extras)
+                outcome = self.dispatch_task(
+                    role_key,
+                    task_text,
+                    task.get("time"),
+                    task_id=task_id,
+                    role_index=pointer,
+                )
                 success = bool(outcome)
                 if success:
                     # Prevent stale in-memory snapshot from selecting this task again.
                     task["status"] = "waiting"
-                    if not task.get("task_id"):
-                        task["task_id"] = "__dispatched__"
+                    resolved_id = str(getattr(outcome, "task_id", "") or task_id)
+                    task["task_id"] = resolved_id or "__dispatched__"
                     if not task.get("issued_at"):
                         task["issued_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
-                    logging.info(f"Successfully dispatched task for {role_key}[{pointer}]")
                     pointer = self._move_pointer_after_success(role_key, tasks, pointer, role_pointers)
-                    # Dispatch at most one task per role in a scan pass. A very fast
-                    # failure report must still pass through the next cooldown check.
+                    # Dispatch at most one task per role in a scan pass.
                     break
 
                 # On dispatch failure, keep pointer unchanged for retry.
@@ -220,7 +237,6 @@ class TaskScanService:
                         failure_message,
                         task_ref,
                     )
-                logging.error(f"Failed to dispatch task for {role_key}[{pointer}], pointer unchanged")
                 break
 
     def _parse_task_datetime(self, task_time_str: str, now: datetime) -> datetime | None:
@@ -259,8 +275,11 @@ class TaskScanService:
             return pointer
 
         if earliest_idx < pointer:
-            logging.info(
-                f"Rewinding pointer for role {role_name}: {pointer} -> {earliest_idx}"
+            logging.debug(
+                "Rewinding pointer: %s -> %s",
+                pointer,
+                earliest_idx,
+                extra=log_extra(role_name, earliest_idx),
             )
             pointer = earliest_idx
             role_pointers[role_name] = pointer

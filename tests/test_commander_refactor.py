@@ -18,7 +18,7 @@ import commander.role_task_generation as role_task_generation
 from commander.agent_request_abc import AgentRequestABC, AgentRequestError, AgentResponse, AgentTimeoutError
 from commander.deepseek_client import DeepSeekAgentClient, DeepSeekConfig
 from commander.domain import STATUS_PLANNED, STATUS_WAITING
-from commander.logging_setup import append_agent_output_log, write_agent_response_log
+from commander.logging_setup import write_interactive_log
 from commander.policies import EarliestPendingSelectionPolicy, task_needs_dispatch
 from commander.role_file_service import RoleTaskFileService
 from commander.role_task_generation import RoleTaskGenerationResult
@@ -325,70 +325,36 @@ class RepositoryTests(unittest.TestCase):
 
 
 class LoggingSetupTests(unittest.TestCase):
-    def test_append_agent_output_log_writes_api_fields(self) -> None:
+    def test_write_interactive_log_uses_role_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            log_file = append_agent_output_log(
+            log_file = write_interactive_log(
                 Path(tmp),
-                source="generate_role_task",
-                attempt=2,
-                prompt="English prompt",
-                note="parse_fail",
-                model="deepseek-chat",
-                response_text=b"English \xe2\x9c\x93",
-                error_text="plain error",
-                status_code=200,
-                request_timeout_seconds=60,
-                failure_stage="response_parse",
-                elapsed_seconds=12.5,
-                expected_output_file="commander/role_task/tasks_04-21.candidate.json",
-            )
-
-            self.assertTrue(log_file.exists())
-            payload = json.loads(log_file.read_text(encoding="utf-8").strip())
-            self.assertEqual(payload["source"], "generate_role_task")
-            self.assertEqual(payload["attempt"], 2)
-            self.assertEqual(payload["model"], "deepseek-chat")
-            self.assertEqual(payload["prompt_length"], len("English prompt"))
-            self.assertEqual(payload["response_text"], "English ✓")
-            self.assertEqual(payload["response_preview"], "English ✓")
-            self.assertEqual(payload["error_text"], "plain error")
-            self.assertEqual(payload["note"], "parse_fail")
-            self.assertEqual(payload["status_code"], 200)
-            self.assertEqual(payload["request_timeout_seconds"], 60)
-            self.assertEqual(payload["failure_stage"], "response_parse")
-            self.assertEqual(payload["expected_output_file"], "commander/role_task/tasks_04-21.candidate.json")
-
-    def test_write_agent_response_log_writes_separate_file(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            log_file = write_agent_response_log(
-                Path(tmp),
-                source="generate_role_task",
+                role="hr",
                 attempt=3,
-                note="api_response",
                 provider="deepseek",
                 model="deepseek-chat",
                 status_code=200,
-                role="hr",
-                finish_reason="length",
-                prompt_text="Prompt sent to DeepSeek",
-                response_text="raw response body",
-                raw_response_text='{"choices":[{"message":{"content":"raw response body"}}]}',
+                finish_reason="stop",
+                response_text="role work content",
+                raw_response_text='{"choices":[{"message":{"content":"role work content"}}]}',
                 error_text="",
-                request_state="started",
+                request_state="finished",
+                caller="generate_role_task",
             )
 
             self.assertTrue(log_file.exists())
+            self.assertTrue(log_file.name.startswith("hr_attempt3_"))
+            self.assertTrue(log_file.name.endswith("_interactive.log"))
             content = log_file.read_text(encoding="utf-8")
-            self.assertIn("source: generate_role_task", content)
-            self.assertIn("attempt: 3", content)
-            self.assertIn("note: api_response", content)
             self.assertIn("role: hr", content)
-            self.assertIn("finish_reason: length", content)
-            self.assertIn("request_state: started", content)
-            self.assertIn("--- PROMPT_TEXT ---", content)
-            self.assertIn("Prompt sent to DeepSeek", content)
-            self.assertIn("--- RAW_RESPONSE ---", content)
-            self.assertIn("raw response body", content)
+            self.assertIn("attempt: 3", content)
+            self.assertIn("note: interactive", content)
+            self.assertIn("caller: generate_role_task", content)
+            self.assertIn("finish_reason: stop", content)
+            self.assertIn("request_state: finished", content)
+            self.assertNotIn("--- PROMPT_TEXT ---", content)
+            self.assertIn("--- RESPONSE_TEXT ---", content)
+            self.assertIn("role work content", content)
 
 
 class FakeHTTPResponse:
@@ -875,18 +841,14 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertFalse(final_file.with_name("tasks_04-21.candidate.json").exists())
             saved = json.loads(final_file.read_text(encoding="utf-8"))
             self.assertEqual(saved["hr"][0]["task"], "approve onboarding")
-            log_file = next(logs_dir.glob("agent_output_*.log"))
-            payload = json.loads(log_file.read_text(encoding="utf-8").splitlines()[-1])
-            self.assertEqual(payload["note"], "success")
-            self.assertEqual(payload["failure_stage"], "promoted_final_file")
-            self.assertEqual(payload["provider"], "fake")
-            response_log = next((logs_dir / f"agent_responses_{date.today().isoformat()}").glob("*.log"))
-            response_log_text = response_log.read_text(encoding="utf-8")
+            response_logs = list((logs_dir / f"agent_responses_{date.today().isoformat()}").glob("hr_*_interactive.log"))
+            self.assertEqual(len(response_logs), 1)
+            response_log_text = response_logs[0].read_text(encoding="utf-8")
             self.assertIn("provider: fake", response_log_text)
             self.assertIn("role: hr", response_log_text)
-            self.assertIn("--- PROMPT_TEXT ---", response_log_text)
+            self.assertIn("note: interactive", response_log_text)
             self.assertIn("--- RESPONSE_TEXT ---", response_log_text)
-            self.assertIn('"hr": [tasks]', response_log_text)
+            self.assertNotIn("--- PROMPT_TEXT ---", response_log_text)
             self.assertTrue(any("Successfully generated unified tasks" in item for item in statuses))
 
     def test_generate_role_tasks_merges_single_role_responses(self) -> None:
@@ -1188,7 +1150,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
             saved = json.loads(final_file.read_text(encoding="utf-8"))
             self.assertEqual(saved["manager"][0]["time"], "10:16")
 
-    def test_generate_role_tasks_logs_request_started_before_request_completion(self) -> None:
+    def test_generate_role_tasks_writes_one_interactive_log_per_interaction(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             logs_dir = root / "logs"
@@ -1197,13 +1159,8 @@ class RoleTaskGenerationTests(unittest.TestCase):
             domain_resource_path.write_text("# template", encoding="utf-8")
 
             def on_request(_index: int, _prompt: str) -> None:
-                log_file = next(logs_dir.glob("agent_output_*.log"))
-                payload = json.loads(log_file.read_text(encoding="utf-8").splitlines()[-1])
-                self.assertEqual(payload["note"], "request_started")
-                self.assertEqual(payload["request_state"], "started")
-                self.assertEqual(payload["failure_stage"], "api_request")
-                response_log = next((logs_dir / f"agent_responses_{date.today().isoformat()}").glob("*request_started*.log"))
-                self.assertIn("request_state: started", response_log.read_text(encoding="utf-8"))
+                response_dir = logs_dir / f"agent_responses_{date.today().isoformat()}"
+                self.assertFalse(response_dir.exists() and any(response_dir.glob("*")))
 
             result = role_task_generation.generate_role_tasks(
                 source="generate_role_task",
@@ -1220,8 +1177,10 @@ class RoleTaskGenerationTests(unittest.TestCase):
             )
 
             self.assertTrue(result.success)
-            entries = [json.loads(line) for line in next(logs_dir.glob("agent_output_*.log")).read_text(encoding="utf-8").splitlines()]
-            self.assertIn("request_finished", [entry["note"] for entry in entries])
+            self.assertFalse(any(logs_dir.glob("agent_output_*.log")))
+            response_logs = list((logs_dir / f"agent_responses_{date.today().isoformat()}").glob("hr_*_interactive.log"))
+            self.assertEqual(len(response_logs), 1)
+            self.assertIn("request_state: finished", response_logs[0].read_text(encoding="utf-8"))
 
     def test_generate_role_tasks_adds_retry_feedback_after_quality_fail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1404,12 +1363,6 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertEqual(result.stats["parse_fail"], 1)
             self.assertEqual(result.failure_reason, "Model response for role 'hr' did not contain a valid JSON object")
             self.assertFalse(final_file.exists())
-            log_file = next(logs_dir.glob("agent_output_*.log"))
-            payload = json.loads(log_file.read_text(encoding="utf-8").splitlines()[-1])
-            self.assertEqual(payload["note"], "parse_fail")
-            self.assertEqual(payload["failure_stage"], "response_parse")
-            self.assertEqual(payload["provider"], "fake")
-            self.assertEqual(payload["role"], "hr")
 
     def test_generate_role_tasks_classifies_truncated_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1454,12 +1407,6 @@ class RoleTaskGenerationTests(unittest.TestCase):
             )
             self.assertFalse(final_file.exists())
             self.assertFalse(final_file.with_name("tasks_04-21.candidate.json").exists())
-            log_file = next(logs_dir.glob("agent_output_*.log"))
-            payload = json.loads(log_file.read_text(encoding="utf-8").splitlines()[-1])
-            self.assertEqual(payload["note"], "parse_fail: truncated_response")
-            self.assertEqual(payload["failure_stage"], "response_parse")
-            self.assertEqual(payload["finish_reason"], "length")
-            self.assertEqual(payload["role"], "hr")
 
     def test_generate_role_tasks_classifies_api_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1492,13 +1439,6 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertFalse(result.success)
             self.assertEqual(result.stats["api_timeout"], 1)
             self.assertEqual(result.failure_reason, "Role 'hr' request timed out: timeout")
-            log_file = next(logs_dir.glob("agent_output_*.log"))
-            payload = json.loads(log_file.read_text(encoding="utf-8").splitlines()[-1])
-            self.assertEqual(payload["note"], "api_timeout")
-            self.assertEqual(payload["failure_stage"], "api_request")
-            self.assertEqual(payload["error_text"], "gateway timeout")
-            self.assertEqual(payload["provider"], "fake")
-            self.assertEqual(payload["role"], "hr")
 
 
 class RoleTaskFileServiceTests(unittest.TestCase):

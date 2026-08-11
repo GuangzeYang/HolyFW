@@ -439,10 +439,10 @@ In this design:
 
 Logs are stored in `commander/logs/`. Common files include:
 
-- `commander_YYYY-MM-DD.log` (switches by calendar day: when the date changes, a periodic hook reattaches the root file logger to that day's file; `dispatch_*.log` continues to rotate at midnight through `TimedRotatingFileHandler`.)
-- `dispatch_YYYY-MM-DD.log`
-- `agent_output_YYYY-MM-DD.log`
-- `agent_responses_YYYY-MM-DD/`
+- `commander_YYYY-MM-DD.log` (switches by calendar day: when the date changes, a periodic hook reattaches the root file logger to that day's file)
+- `agent_responses_YYYY-MM-DD/` interactive AI logs named `{role}_attemptN_*_interactive.log` (one file per finished model interaction)
+
+Format: `time - LEVEL - role[index] - message`. Production (`INFO`) records task start (`Running — <task_id>`) and end (`Success` / `Failed`). Pass `--debug` for detailed dispatch and scan process logs. Dispatch no longer writes a separate `dispatch_*.log`.
 
 ### soldier
 

@@ -188,6 +188,22 @@ class DailyTaskRepository:
                 return None
             return dict(item)
 
+    def find_task_index(self, date_str: str, role: str, task_id: str) -> int | None:
+        """Return the list index of ``task_id`` for *role*, or None if missing."""
+        path = self.day_path(date_str)
+        if not path.exists():
+            return None
+        lock_path = str(path) + ".lock"
+        with FileLock(lock_path, timeout=self.lock_timeout):
+            data = load_json_file(path)
+            tasks = data.get(role)
+            if not isinstance(tasks, list):
+                return None
+            for index, item in enumerate(tasks):
+                if isinstance(item, dict) and item.get("task_id") == task_id:
+                    return index
+        return None
+
     def update_task_expiry(
         self,
         date_str: str,

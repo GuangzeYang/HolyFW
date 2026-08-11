@@ -105,13 +105,13 @@
     "_comment_domain_resource_file": "Domain resource markdown file used for prompt generation.",
     "domain_resource_file": "../domain_resource.md"
   },
-  "_comment_logging": "Logging behavior for commander scripts.",
+  "_comment_logging": "Logging behavior for commander. INFO is production start/end only; pass --debug for DEBUG process logs. Interactive AI logs live under agent_responses_*/.",
   "logging": {
-    "_comment_level": "Root logger level name (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
+    "_comment_level": "Default root logger level when --debug is not set (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
     "level": "INFO",
-    "_comment_backup_count": "Number of rotated daily log files to keep.",
+    "_comment_backup_count": "Reserved for compatibility; dispatch no longer uses rotating file logs.",
     "backup_count": 7,
-    "_comment_rotation_interval_days": "Rotation interval in days for TimedRotatingFileHandler.",
+    "_comment_rotation_interval_days": "Reserved for compatibility; dispatch no longer uses rotating file logs.",
     "rotation_interval_days": 1
   }
 }

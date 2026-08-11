@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -28,9 +27,9 @@ except ImportError:
     from commander.agent_request_abc import AgentRequestABC, AgentRequestError, AgentTimeoutError
 
 try:
-    from logging_setup import append_agent_output_log, write_agent_response_log
+    from logging_setup import write_interactive_log
 except ImportError:
-    from commander.logging_setup import append_agent_output_log, write_agent_response_log
+    from commander.logging_setup import write_interactive_log
 
 
 StatusCallback = Callable[[str], None]
@@ -142,100 +141,28 @@ def _try_time_remediation_for_role(
             prior_feedback=prior_fb,
         )
         emit_status(f"Time remediation sub-attempt {sub_k}/{TIME_REMEDIATION_MAX_SUB_ATTEMPTS} for role '{role}'")
-        append_agent_output_log(
-            logs_dir,
-            source=source,
-            attempt=attempt,
-            prompt=fix_prompt,
-            note="time_remediation_request_started",
-            provider=agent_client.provider_name,
-            model=agent_client.model,
-            request_timeout_seconds=agent_client.request_timeout_seconds,
-            failure_stage="time_remediation",
-            request_state="started",
-            expected_output_file=str(role_candidate_file),
-            role=role,
-        )
-        write_agent_response_log(
-            logs_dir,
-            source=source,
-            attempt=attempt,
-            note=f"time_remediation_sub_{sub_k}_started",
-            prompt_text=fix_prompt,
-            provider=agent_client.provider_name,
-            model=agent_client.model,
-            role=role,
-            request_state="started",
-        )
         try:
             resp2 = agent_client.request_completion(fix_prompt)
         except AgentTimeoutError as exc:
             prior_fb = f"Request timed out: {exc}"
-            append_agent_output_log(
-                logs_dir,
-                source=source,
-                attempt=attempt,
-                prompt=fix_prompt,
-                note="time_remediation_api_timeout",
-                provider=agent_client.provider_name,
-                model=agent_client.model,
-                error_text=str(exc),
-                request_timeout_seconds=agent_client.request_timeout_seconds,
-                failure_stage="time_remediation",
-                expected_output_file=str(role_candidate_file),
-                role=role,
-            )
             continue
         except AgentRequestError as exc:
             prior_fb = f"Request failed: {exc}"
-            append_agent_output_log(
-                logs_dir,
-                source=source,
-                attempt=attempt,
-                prompt=fix_prompt,
-                note="time_remediation_api_error",
-                provider=agent_client.provider_name,
-                model=agent_client.model,
-                error_text=str(exc),
-                request_timeout_seconds=agent_client.request_timeout_seconds,
-                failure_stage="time_remediation",
-                expected_output_file=str(role_candidate_file),
-                role=role,
-            )
             continue
 
         extra_elapsed += resp2.elapsed_seconds
-        append_agent_output_log(
+        write_interactive_log(
             logs_dir,
-            source=source,
+            role=role,
             attempt=attempt,
-            prompt=fix_prompt,
-            note="time_remediation_request_finished",
             provider=agent_client.provider_name,
             model=resp2.model,
-            status_code=resp2.status_code,
-            request_timeout_seconds=agent_client.request_timeout_seconds,
-            failure_stage="time_remediation",
-            elapsed_seconds=resp2.elapsed_seconds,
-            request_state="finished",
-            expected_output_file=str(role_candidate_file),
-            role=role,
-            finish_reason=resp2.finish_reason,
-        )
-        write_agent_response_log(
-            logs_dir,
-            source=source,
-            attempt=attempt,
-            note=f"time_remediation_sub_{sub_k}_response",
-            prompt_text=fix_prompt,
-            provider=agent_client.provider_name,
-            model=resp2.model,
-            role=role,
             status_code=resp2.status_code,
             finish_reason=resp2.finish_reason,
             response_text=resp2.response_text,
             raw_response_text=resp2.raw_response_text,
             request_state="finished",
+            caller=source,
         )
         if not resp2.response_text.strip():
             prior_fb = "The model returned an empty response"
@@ -251,20 +178,6 @@ def _try_time_remediation_for_role(
         ok_merge, merge_err = verify_time_remediation_payload(current_rows, new_tasks, current_bad)
         if not ok_merge:
             prior_fb = merge_err or "Merge validation failed"
-            append_agent_output_log(
-                logs_dir,
-                source=source,
-                attempt=attempt,
-                prompt=fix_prompt,
-                note=f"time_remediation_merge_fail: {prior_fb}",
-                provider=agent_client.provider_name,
-                model=resp2.model,
-                response_text=resp2.response_text,
-                request_timeout_seconds=agent_client.request_timeout_seconds,
-                failure_stage="time_remediation_merge",
-                expected_output_file=str(role_candidate_file),
-                role=role,
-            )
             continue
 
         padded = normalize_role_tasks(
@@ -424,110 +337,32 @@ def generate_role_tasks(
             if retry_feedback:
                 attempt_prompt = f"{role_prompt}\n\n# Previous correction requirements\n{retry_feedback}"
             emit_status(f"Generation attempt {attempt}/{max_attempts} for role '{role}'")
-            append_agent_output_log(
-                logs_dir,
-                source=source,
-                attempt=attempt,
-                prompt=attempt_prompt,
-                note="request_started",
-                provider=agent_client.provider_name,
-                model=agent_client.model,
-                request_timeout_seconds=agent_client.request_timeout_seconds,
-                failure_stage="api_request",
-                request_state="started",
-                expected_output_file=str(role_candidate_file),
-                role=role,
-            )
-            write_agent_response_log(
-                logs_dir,
-                source=source,
-                attempt=attempt,
-                note="request_started",
-                prompt_text=attempt_prompt,
-                provider=agent_client.provider_name,
-                model=agent_client.model,
-                role=role,
-                request_state="started",
-            )
             try:
                 _cleanup_file(role_candidate_file)
                 response = agent_client.request_completion(attempt_prompt)
                 total_elapsed_seconds += response.elapsed_seconds
-                append_agent_output_log(
+                write_interactive_log(
                     logs_dir,
-                    source=source,
+                    role=role,
                     attempt=attempt,
-                    prompt=attempt_prompt,
-                    note="request_finished",
                     provider=agent_client.provider_name,
                     model=response.model,
                     status_code=response.status_code,
-                    request_timeout_seconds=agent_client.request_timeout_seconds,
-                    failure_stage="api_response",
-                    elapsed_seconds=response.elapsed_seconds,
-                    request_state="finished",
-                    expected_output_file=str(role_candidate_file),
-                    role=role,
-                    finish_reason=response.finish_reason,
-                )
-                write_agent_response_log(
-                    logs_dir,
-                    source=source,
-                    attempt=attempt,
-                    note="api_response",
-                    prompt_text=attempt_prompt,
-                    provider=agent_client.provider_name,
-                    model=response.model,
-                    status_code=response.status_code,
-                    role=role,
                     finish_reason=response.finish_reason,
                     response_text=response.response_text,
                     raw_response_text=response.raw_response_text,
                     request_state="finished",
+                    caller=source,
                 )
                 if not response.response_text.strip():
                     stats["empty_response"] += 1
                     last_failure_reason = f"Model returned an empty response for role '{role}'"
-                    append_agent_output_log(
-                        logs_dir,
-                        source=source,
-                        attempt=attempt,
-                        prompt=attempt_prompt,
-                        note="empty_response",
-                        provider=agent_client.provider_name,
-                        model=response.model,
-                        response_text=response.response_text,
-                        status_code=response.status_code,
-                        request_timeout_seconds=agent_client.request_timeout_seconds,
-                        failure_stage="api_response",
-                        elapsed_seconds=response.elapsed_seconds,
-                        expected_output_file=str(role_candidate_file),
-                        role=role,
-                        finish_reason=response.finish_reason,
-                    )
                     emit_status(last_failure_reason)
                     continue
 
                 if response.finish_reason == "length":
                     stats["parse_fail"] += 1
                     last_failure_reason = _truncation_reason(role, response.finish_reason)
-                    append_agent_output_log(
-                        logs_dir,
-                        source=source,
-                        attempt=attempt,
-                        prompt=attempt_prompt,
-                        note="parse_fail: truncated_response",
-                        provider=agent_client.provider_name,
-                        model=response.model,
-                        response_text=response.response_text,
-                        status_code=response.status_code,
-                        request_timeout_seconds=agent_client.request_timeout_seconds,
-                        failure_stage="response_parse",
-                        elapsed_seconds=response.elapsed_seconds,
-                        expected_output_file=str(role_candidate_file),
-                        role=role,
-                        finish_reason=response.finish_reason,
-                    )
                     emit_status(last_failure_reason)
                     continue
 
@@ -535,23 +370,6 @@ def generate_role_tasks(
                 if parsed is None:
                     stats["parse_fail"] += 1
                     last_failure_reason = _parse_failure_reason(role)
-                    append_agent_output_log(
-                        logs_dir,
-                        source=source,
-                        attempt=attempt,
-                        prompt=attempt_prompt,
-                        note="parse_fail",
-                        provider=agent_client.provider_name,
-                        model=response.model,
-                        response_text=response.response_text,
-                        status_code=response.status_code,
-                        request_timeout_seconds=agent_client.request_timeout_seconds,
-                        failure_stage="response_parse",
-                        elapsed_seconds=response.elapsed_seconds,
-                        expected_output_file=str(role_candidate_file),
-                        role=role,
-                        finish_reason=response.finish_reason,
-                    )
                     emit_status(last_failure_reason)
                     continue
 
@@ -615,26 +433,6 @@ def generate_role_tasks(
                     stats[failure_type] = stats.get(failure_type, 0) + 1
                     last_failure_reason = f"Role '{role}' validation failed: {reason}"
                     retry_feedback = _build_retry_feedback(reason)
-                    append_agent_output_log(
-                        logs_dir,
-                        source=source,
-                        attempt=attempt,
-                        prompt=attempt_prompt,
-                        note=f"{failure_type}: {reason}",
-                        provider=agent_client.provider_name,
-                        model=response.model,
-                        response_text=response.response_text,
-                        status_code=response.status_code,
-                        request_timeout_seconds=agent_client.request_timeout_seconds,
-                        failure_stage="candidate_validation",
-                        elapsed_seconds=response.elapsed_seconds,
-                        expected_output_file=str(role_candidate_file),
-                        detected_output_file=str(role_candidate_file),
-                        file_exists=True,
-                        file_size=validated_file_size,
-                        role=role,
-                        finish_reason=response.finish_reason,
-                    )
                     emit_status(f"Generated candidate failed {failure_type} for role '{role}': {reason}")
                     continue
 
@@ -649,88 +447,38 @@ def generate_role_tasks(
             except AgentTimeoutError as exc:
                 stats["api_timeout"] += 1
                 last_failure_reason = f"Role '{role}' request timed out: {exc}"
-                write_agent_response_log(
+                write_interactive_log(
                     logs_dir,
-                    source=source,
+                    role=role,
                     attempt=attempt,
-                    note="api_timeout",
-                    prompt_text=attempt_prompt,
                     provider=agent_client.provider_name,
                     model=agent_client.model,
                     status_code=exc.status_code,
-                    role=role,
                     error_text=exc.response_text or str(exc),
                     request_state="failed",
-                )
-                append_agent_output_log(
-                    logs_dir,
-                    source=source,
-                    attempt=attempt,
-                    prompt=attempt_prompt,
-                    note="api_timeout",
-                    provider=agent_client.provider_name,
-                    model=agent_client.model,
-                    error_text=exc.response_text or str(exc),
-                    status_code=exc.status_code,
-                    request_timeout_seconds=agent_client.request_timeout_seconds,
-                    failure_stage="api_request",
-                    elapsed_seconds=exc.elapsed_seconds,
-                    expected_output_file=str(role_candidate_file),
-                    role=role,
+                    caller=source,
                 )
                 emit_status(last_failure_reason)
             except AgentRequestError as exc:
                 stats["api_error"] += 1
                 last_failure_reason = f"Role '{role}' request failed: {exc}"
                 if exc.response_text:
-                    write_agent_response_log(
+                    write_interactive_log(
                         logs_dir,
-                        source=source,
+                        role=role,
                         attempt=attempt,
-                        note="api_error",
-                        prompt_text=attempt_prompt,
                         provider=agent_client.provider_name,
                         model=agent_client.model,
                         status_code=exc.status_code,
-                        role=role,
                         raw_response_text=exc.response_text,
                         error_text=exc.response_text,
                         request_state="failed",
+                        caller=source,
                     )
-                append_agent_output_log(
-                    logs_dir,
-                    source=source,
-                    attempt=attempt,
-                    prompt=attempt_prompt,
-                    note="api_error",
-                    provider=agent_client.provider_name,
-                    model=agent_client.model,
-                    error_text=exc.response_text or str(exc),
-                    status_code=exc.status_code,
-                    request_timeout_seconds=agent_client.request_timeout_seconds,
-                    failure_stage="api_request",
-                    elapsed_seconds=exc.elapsed_seconds,
-                    expected_output_file=str(role_candidate_file),
-                    role=role,
-                )
                 emit_status(last_failure_reason)
             except Exception as exc:
                 stats["runtime_error"] += 1
                 last_failure_reason = f"Error generating tasks for role '{role}': {exc}"
-                append_agent_output_log(
-                    logs_dir,
-                    source=source,
-                    attempt=attempt,
-                    prompt=attempt_prompt,
-                    note="runtime_error",
-                    provider=agent_client.provider_name,
-                    model=agent_client.model,
-                    error_text=str(exc),
-                    request_timeout_seconds=agent_client.request_timeout_seconds,
-                    failure_stage="runtime_exception",
-                    expected_output_file=str(role_candidate_file),
-                    role=role,
-                )
                 emit_status(last_failure_reason)
 
         _cleanup_file(role_candidate_file)
@@ -755,45 +503,11 @@ def generate_role_tasks(
         if failure_type is not None:
             stats[failure_type] = stats.get(failure_type, 0) + 1
             last_failure_reason = reason
-            append_agent_output_log(
-                logs_dir,
-                source=source,
-                attempt=1,
-                prompt="\n\n".join(sorted(normalized_roles)),
-                note=f"{failure_type}: {reason}",
-                provider=agent_client.provider_name,
-                model=agent_client.model,
-                response_text=json.dumps(persisted_data, ensure_ascii=False),
-                request_timeout_seconds=agent_client.request_timeout_seconds,
-                failure_stage="candidate_validation",
-                elapsed_seconds=total_elapsed_seconds,
-                expected_output_file=str(final_file),
-                detected_output_file=str(final_file),
-                file_exists=True,
-                file_size=validated_file_size,
-            )
             emit_status(f"Generated candidate failed {failure_type}: {reason}")
             return RoleTaskGenerationResult(False, None, last_failure_reason, stats)
 
         assert data is not None
         save_final_file(final_file, data)
-        append_agent_output_log(
-            logs_dir,
-            source=source,
-            attempt=1,
-            prompt="\n\n".join(sorted(normalized_roles)),
-            note="success",
-            provider=agent_client.provider_name,
-            model=agent_client.model,
-            response_text=json.dumps(data, ensure_ascii=False),
-            request_timeout_seconds=agent_client.request_timeout_seconds,
-            failure_stage="promoted_final_file",
-            elapsed_seconds=total_elapsed_seconds,
-            expected_output_file=str(final_file),
-            detected_output_file=str(final_file),
-            file_exists=True,
-            file_size=validated_file_size,
-        )
         emit_status(f"Successfully generated unified tasks: {final_file}")
         return RoleTaskGenerationResult(True, final_file, None, stats)
     finally:
