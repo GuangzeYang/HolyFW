@@ -16,6 +16,7 @@ We use agents to define a set of roles, with each role assigned to a separate ho
 - Accountancy: The company's accounting and finance employee.
 - Manager: The company's general manager. The Manager publishes front-end project specifications in the shared file directory and follows up on project progress.
 - Programmer: The company's front-end programmer, proficient in Python, HTML, CSS, and JavaScript. The Programmer uses a traditional technology stack, never uses frameworks, and prefers to build front-end pages by hand. The Programmer must report project progress to the Manager from time to time, usually by email.
+- Victim: A domain-joined workstation that has already been compromised for authorized NDR/EDR adversary-emulation exercises. The Victim does not perform ordinary office work. It executes one bounded penetration-test technique per task from the `penetration-test` skill, using only approved lab targets, and always records evidence plus cleanup.
 
 # Available Resources
 
@@ -47,6 +48,7 @@ We use agents to define a set of roles, with each role assigned to a separate ho
 3. `smb-access`: Supports uploading files, viewing shared-folder contents, copying files locally, and handling insufficient-access situations.
 4. FTP skill: Uploads files to and downloads files from a target FTP server.
 5. `odoo-use`: Logs in to the web-based Odoo office automation system through a browser and supports personnel management.
+6. `penetration-test`: Used only by the Victim role. Runs one authorized adversary-emulation phase (recon, execution, credential access, privilege escalation, lateral movement, persistence, C2 simulation, synthetic exfiltration, or cleanup) against explicitly approved lab assets.
 
 # Working Hours
 
@@ -164,4 +166,24 @@ Odoo provides the following modules and operations:
    - Parameters contain recruitment information.
    - Use a JSON-like format without quotation marks. The supported fields are `job position`, `department`, `email address`, and `work location`.
    - Example: `{job position: Human Resources Manager, department: Human Resources, email address: 123987@demo.com, work location: Nanjing}`
+
+## Victim Penetration Test
+
+Template:
+
+`Use the penetration-test skill on the victim host, run <mode> for the <phase> phase, {run_id: <id>, approved target: <exact host or IP>, technique: <approved technique>, traffic objective: <expected protocol behavior>, success criteria: <bounded evidence>, cleanup: <rollback and verification>}`
+
+Examples:
+
+- `Use the penetration-test skill on the victim host, run observe for the reconnaissance phase, {run_id: recon-001, approved target: <DC_IP>, technique: domain users and trusts, traffic objective: LDAP queries to the approved DC, success criteria: sanitized user and trust counts saved, cleanup: not applicable}`
+- `Use the penetration-test skill on the victim host, run execute for the execution phase, {run_id: exec-wmi-001, approved target: <TARGET_IP>, technique: WMIExec, traffic objective: WMI/DCOM remote command, success criteria: remote marker file created then deleted, cleanup: delete C:\Windows\Temp\holyfw_exec-wmi-001.txt}`
+- `Use the penetration-test skill on the victim host, run execute for the credential-access phase, {run_id: cred-kerb-001, approved target: <DC_IP>, technique: Kerberoasting CA-01, traffic objective: Kerberos TGS-REQ to the approved DC, success criteria: ticket count recorded without hash contents, cleanup: delete C:\temp\kerberoast_cred-kerb-001.txt}`
+
+Rules for Victim tasks:
+
+- Generate Victim tasks only when the `victim` role is present in `commander.ini`.
+- Every task uses exactly one technique and one approved target.
+- Prefer modes `observe` or `simulate` unless prerequisites for `execute` are explicitly available.
+- Never invent credentials, hashes, tickets, subnets, or unapproved hosts. Use placeholders and treat missing values as blockers.
+- Do not generate defense-evasion tasks that disable EDR/AV/logging, open-ended scanning, destructive impact, or multi-host autonomous propagation.
 

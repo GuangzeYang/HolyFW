@@ -19,3 +19,6 @@ commander/role_task/tasks_*.json
 
 # Host-specific role skills
 skill/
+
+# Local authoring/reference only — never deploy to test machines
+资料库/
