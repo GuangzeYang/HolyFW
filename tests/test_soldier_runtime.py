@@ -60,6 +60,9 @@ class SoldierRuntimeTests(unittest.TestCase):
         expected = logs / f"soldier_{date.today().isoformat()}.log"
         self.assertEqual(path.resolve(), expected.resolve())
         self.assertTrue(path.is_file())
+        logging.info("Received — echo ok", extra={"task": "abc123"})
+        content = path.read_text(encoding="utf-8")
+        self.assertRegex(content, r"\d{4}-\d{2}-\d{2} .* - INFO - abc123 - Received — echo ok")
 
         dated_handlers = [
             handler
@@ -69,6 +72,40 @@ class SoldierRuntimeTests(unittest.TestCase):
         self.assertEqual(len(dated_handlers), 1)
         self.assertIsInstance(dated_handlers[0], logging.FileHandler)
         self.assertNotIsInstance(dated_handlers[0], logging.handlers.TimedRotatingFileHandler)
+
+    def test_append_task_execution_log_writes_unified_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            path = soldier.append_task_execution_log(
+                task_id="c01b883dfefd4c85",
+                task_ref="2026-04-29_accountancy_c01b883dfefd4c85",
+                date_str="2026-04-29",
+                received_at="2026-04-29T09:08:09+08:00",
+                command='opencode run "Check email"',
+                status="successed",
+                exit_code=0,
+                stdout_text="done",
+                stderr_text="",
+                base_dir=base,
+            )
+            self.assertEqual(path, base / "logs" / "tasks_2026-04-29.jsonl")
+            payload = json.loads(path.read_text(encoding="utf-8").strip())
+            self.assertEqual(payload["received_at"], "2026-04-29T09:08:09+08:00")
+            self.assertEqual(payload["command"], 'opencode run "Check email"')
+            self.assertEqual(payload["status"], "successed")
+            self.assertEqual(payload["exit_code"], 0)
+            self.assertEqual(payload["stdout"], "done")
+            self.assertEqual(payload["task_id"], "c01b883dfefd4c85")
+
+    def test_pending_and_task_state_live_under_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            pending = soldier.pending_reports_path(base)
+            failed = soldier.failed_reports_path(base)
+            state = soldier.task_state_path("2026-04-29", base)
+            self.assertEqual(pending, base / "runtime" / "pending_reports.jsonl")
+            self.assertEqual(failed, base / "runtime" / "failed_reports.jsonl")
+            self.assertEqual(state, base / "runtime" / "task_state_04-29.jsonl")
 
     def test_reattach_replaces_only_soldier_dated_file_handler(self) -> None:
         td = tempfile.mkdtemp()
@@ -109,8 +146,7 @@ class SoldierRuntimeTests(unittest.TestCase):
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
             mock.patch("soldier.soldier.claim_task_execution", return_value=("claimed", {})),
             mock.patch("soldier.soldier.execute_command", return_value=("ok", "", 0, "successed", None)),
-            mock.patch("soldier.soldier.save_task_record"),
-            mock.patch("soldier.soldier.save_command_output", return_value=Path("out.txt")),
+            mock.patch("soldier.soldier.append_task_execution_log", return_value=Path("logs/tasks_2026-04-29.jsonl")),
             mock.patch("soldier.soldier.mark_task_completed"),
             mock.patch("soldier.soldier.send_report", return_value=({"ok": True}, None)),
         ):
@@ -134,8 +170,7 @@ class SoldierRuntimeTests(unittest.TestCase):
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
             mock.patch("soldier.soldier.claim_task_execution", return_value=("claimed", {})),
             mock.patch("soldier.soldier.execute_command", return_value=("ok", "", 0, "successed", None)),
-            mock.patch("soldier.soldier.save_task_record"),
-            mock.patch("soldier.soldier.save_command_output", return_value=Path("out.txt")),
+            mock.patch("soldier.soldier.append_task_execution_log", return_value=Path("logs/tasks_2026-04-29.jsonl")),
             mock.patch("soldier.soldier.mark_task_completed"),
             mock.patch("soldier.soldier.send_report", return_value=(None, "boom")),
             mock.patch("soldier.soldier.enqueue_pending_report"),

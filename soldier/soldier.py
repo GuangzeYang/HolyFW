@@ -48,7 +48,8 @@ SUBPROCESS_TIMEOUT_DEFAULT = 900
 DEFAULT_WORKER_THREADS = 3
 MAX_LINE_BYTES = 65536
 MAX_COMMAND_OUTPUT_BYTES = 65536
-OUTPUT_DIR_NAME = "output"
+LOGS_DIR_NAME = "logs"
+RUNTIME_DIR_NAME = "runtime"
 TASK_STATE_FILE_PREFIX = "task_state"
 PENDING_REPORTS_FILE_NAME = "pending_reports.jsonl"
 FAILED_REPORTS_FILE_NAME = "failed_reports.jsonl"
@@ -58,6 +59,7 @@ REPORT_SOCKET_TIMEOUT_SECONDS = 60
 RUNNING_STALE_GRACE_SECONDS = 120
 PROCESS_TREE_KILL_TIMEOUT_SECONDS = 30
 SOLDIER_DATED_FILE_HANDLER_NAME = "soldier_dated_file"
+SOLDIER_LOG_FORMAT = "%(asctime)s - %(levelname)s - %(task)s - %(message)s"
 LOG_DATE_CHECK_INTERVAL_SECONDS = 1.0
 _PENDING_REPORTS_LOCK = threading.Lock()
 _TASK_STATE_LOCK = threading.Lock()
@@ -66,23 +68,37 @@ _ACTIVE_PROCESSES: dict[int, subprocess.Popen] = {}
 _SHUTTING_DOWN = threading.Event()
 
 
+class _TaskDefaultFilter(logging.Filter):
+    """Ensure every record has a ``task`` attribute for the soldier formatter."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not hasattr(record, "task") or not record.task:
+            record.task = "system"
+        return True
+
+
+def task_extra(task_id: str | None = None) -> dict[str, str]:
+    return {"task": (task_id or "system").strip() or "system"}
+
+
 def _plain_log_formatter() -> logging.Formatter:
-    return logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    return logging.Formatter(SOLDIER_LOG_FORMAT)
 
 
 def _build_console_handler(level: int) -> logging.StreamHandler:
     console_handler = logging.StreamHandler()
     console_handler.setLevel(level)
+    console_handler.addFilter(_TaskDefaultFilter())
     plain_formatter = _plain_log_formatter()
     if colorlog is not None:
         color_formatter = colorlog.ColoredFormatter(
-            '%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            "%(log_color)s" + SOLDIER_LOG_FORMAT,
             log_colors={
-                'DEBUG': 'cyan',
-                'INFO': 'green',
-                'WARNING': 'yellow',
-                'ERROR': 'red',
-                'CRITICAL': 'bold_red',
+                "DEBUG": "cyan",
+                "INFO": "green",
+                "WARNING": "yellow",
+                "ERROR": "red",
+                "CRITICAL": "bold_red",
             },
         )
         console_handler.setFormatter(color_formatter)
@@ -114,6 +130,7 @@ def reattach_soldier_dated_file_handler(
 
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(level)
+    file_handler.addFilter(_TaskDefaultFilter())
     file_handler.setFormatter(_plain_log_formatter())
     file_handler.name = SOLDIER_DATED_FILE_HANDLER_NAME
     root.addHandler(file_handler)
@@ -137,12 +154,61 @@ def configure_soldier_root_logging(logs_dir: Path, level: int = logging.INFO) ->
     return reattach_soldier_dated_file_handler(logs_dir, level, logger=logger)
 
 
+def get_logs_dir(base_dir: Path | None = None) -> Path:
+    root = base_dir or Path(__file__).resolve().parent
+    path = root / LOGS_DIR_NAME
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
+def get_runtime_dir(base_dir: Path | None = None) -> Path:
+    root = base_dir or Path(__file__).resolve().parent
+    path = root / RUNTIME_DIR_NAME
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
+def tasks_log_path(date_str: str, base_dir: Path | None = None) -> Path:
+    """Unified per-day JSONL of received tasks and execution results under logs/."""
+    day = date_str if DATE_FULL.match(date_str) else date.today().isoformat()
+    return get_logs_dir(base_dir) / f"tasks_{day}.jsonl"
 
 
+def append_task_execution_log(
+    *,
+    task_id: str,
+    task_ref: str,
+    date_str: str,
+    received_at: str,
+    command: str,
+    status: str,
+    exit_code: int,
+    stdout_text: str,
+    stderr_text: str,
+    message: str | None = None,
+    base_dir: Path | None = None,
+) -> Path:
+    """Append one task lifecycle record (receive + opencode result) to logs/tasks_*.jsonl."""
+    path = tasks_log_path(date_str, base_dir)
+    record = {
+        "received_at": received_at,
+        "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "task_id": task_id,
+        "task_ref": task_ref,
+        "date": date_str,
+        "command": command,
+        "status": status,
+        "exit_code": exit_code,
+        "message": message or "",
+        "stdout": stdout_text,
+        "stderr": stderr_text,
+    }
+    _append_jsonl(path, record)
+    clean_old_files(get_logs_dir(base_dir), "tasks_*.jsonl", days=20)
+    return path
+
+
+# Backward-compatible aliases used by older tests/callers during transition.
 def save_task_record(
     task_id: str,
     date_str: str,
@@ -150,34 +216,24 @@ def save_task_record(
     received_at: str,
     stdout: str,
     stderr: str,
-) -> None:
-    """Append received task details to daily JSONL under soldier script directory."""
-    script_dir = Path(__file__).resolve().parent
-    
-    month_day = date_str[5:] if len(date_str) >= 10 else date_str
-    file_name = f"received_task_{month_day}.jsonl"
-    file_path = script_dir / file_name
-
-    record = {
-        "task_id": task_id,
-        "received_at": received_at,
-        "content": content,
-        "stdout": stdout,
-        "stderr": stderr,
-    }
-    
-    with open(file_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    
-    clean_old_files(script_dir, "received_task_*.jsonl", days=20)
-
-
-def _safe_received_at_for_filename(received_at: str) -> str:
-    try:
-        dt = datetime.fromisoformat(received_at.replace("Z", "+00:00"))
-    except ValueError:
-        dt = datetime.now(timezone.utc)
-    return dt.strftime("%Y%m%dT%H%M%S")
+) -> Path:
+    command = ""
+    task_ref = task_id
+    if isinstance(content, dict):
+        command = str(content.get("command") or "")
+        task_ref = str(content.get("task_ref") or task_id)
+    return append_task_execution_log(
+        task_id=task_id,
+        task_ref=task_ref,
+        date_str=date_str,
+        received_at=received_at,
+        command=command,
+        status="unknown",
+        exit_code=-1,
+        stdout_text=stdout,
+        stderr_text=stderr,
+        message="legacy save_task_record",
+    )
 
 
 def save_command_output(
@@ -190,37 +246,21 @@ def save_command_output(
     stdout_text: str,
     stderr_text: str,
 ) -> Path:
-    script_dir = Path(__file__).resolve().parent
-    output_dir = script_dir / OUTPUT_DIR_NAME
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    file_name = f"{_safe_received_at_for_filename(received_at)}_{task_id}.txt"
-    file_path = output_dir / file_name
-
-    content = (
-        f"task_ref: {task_ref}\n"
-        f"task_id: {task_id}\n"
-        f"received_at: {received_at}\n"
-        f"status: {status}\n"
-        f"exit_code: {exit_code}\n"
-        f"command: {command}\n"
-        "\n"
-        "===== STDOUT =====\n"
-        f"{stdout_text}\n"
-        "\n"
-        "===== STDERR =====\n"
-        f"{stderr_text}\n"
+    date_str = task_ref.split("_", 1)[0] if "_" in task_ref else date.today().isoformat()
+    return append_task_execution_log(
+        task_id=task_id,
+        task_ref=task_ref,
+        date_str=date_str,
+        received_at=received_at,
+        command=command,
+        status=status,
+        exit_code=exit_code,
+        stdout_text=stdout_text,
+        stderr_text=stderr_text,
     )
 
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(content)
-
-    clean_old_files(output_dir, "*.txt", days=20)
-    return file_path
-
-
 def task_state_path(date_str: str, base_dir: Path | None = None) -> Path:
-    root = base_dir or Path(__file__).resolve().parent
+    root = get_runtime_dir(base_dir)
     month_day = date_str[5:] if len(date_str) >= 10 else date_str
     return root / f"{TASK_STATE_FILE_PREFIX}_{month_day}.jsonl"
 
@@ -309,7 +349,7 @@ def mark_task_completed(
     command: str,
     received_at: str,
     report: dict,
-    output_file: Path | None,
+    task_log_file: Path | None,
     *,
     base_dir: Path | None = None,
 ) -> None:
@@ -322,24 +362,20 @@ def mark_task_completed(
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "command": command,
         "report": report,
-        "output_file": str(output_file) if output_file is not None else "",
+        "task_log_file": str(task_log_file) if task_log_file is not None else "",
+        # Keep legacy key for older readers.
+        "output_file": str(task_log_file) if task_log_file is not None else "",
     }
     with _TASK_STATE_LOCK:
         _append_jsonl(task_state_path(date_str, base_dir), record)
 
 
 def pending_reports_path(base_dir: Path | None = None) -> Path:
-    root = base_dir or Path(__file__).resolve().parent
-    output_dir = root / OUTPUT_DIR_NAME
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir / PENDING_REPORTS_FILE_NAME
+    return get_runtime_dir(base_dir) / PENDING_REPORTS_FILE_NAME
 
 
 def failed_reports_path(base_dir: Path | None = None) -> Path:
-    root = base_dir or Path(__file__).resolve().parent
-    output_dir = root / OUTPUT_DIR_NAME
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir / FAILED_REPORTS_FILE_NAME
+    return get_runtime_dir(base_dir) / FAILED_REPORTS_FILE_NAME
 
 
 def _append_jsonl(path: Path, record: dict) -> None:
@@ -791,7 +827,7 @@ def handle_dispatch_connection(
     commander_port: int,
     timeout_sec: int,
 ) -> None:
-    logging.info("Dispatch connection accepted")
+    logging.debug("Dispatch connection accepted")
     try:
         conn.settimeout(timeout_sec + RUNNING_STALE_GRACE_SECONDS)
         try:
@@ -898,13 +934,9 @@ def handle_dispatch_connection(
                 return
             date_str = task_date_override.strip()
         full_ref = task_ref_full(date_str, role, task_id)
-        received_at = datetime.now(timezone.utc).isoformat()
-        received_content = {
-            "task_ref": task_ref,
-            "task_date": date_str,
-            "command": command,
-            "payload": payload,
-        }
+        received_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        extras = task_extra(task_id)
+        logging.info("Received — %s", command, extra=extras)
         claim_status, previous_state = claim_task_execution(
             date_str,
             task_id,
@@ -916,7 +948,10 @@ def handle_dispatch_connection(
         if claim_status == "completed":
             previous_report = previous_state.get("report") if isinstance(previous_state, dict) else None
             if not isinstance(previous_report, dict):
-                logging.warning(f"Duplicate task {full_ref} has completed state without report; ignoring")
+                logging.warning(
+                    "Duplicate completed without saved report; ignoring",
+                    extra=extras,
+                )
                 send_dispatch_response(
                     conn,
                     {
@@ -936,17 +971,17 @@ def handle_dispatch_connection(
                     "execution_deadline": str(previous_state.get("execution_deadline") or ""),
                 },
             )
-            logging.info(f"Duplicate task {full_ref} already completed; replaying saved report")
+            logging.info("Duplicate already completed; replaying saved report", extra=extras)
             _, serr = send_report(commander_host, commander_port, previous_report)
             if serr:
-                logging.error(f"Failed to replay completed task {full_ref} to commander: {serr}")
+                logging.error("Failed to replay completed report: %s", serr, extra=extras)
                 try:
                     enqueue_pending_report(commander_host, commander_port, previous_report, serr)
                 except OSError as e:
-                    logging.error(f"Failed to queue replay report for task {full_ref}: {e}")
+                    logging.error("Failed to queue replay report: %s", e, extra=extras)
             return
         if claim_status == "running":
-            logging.info(f"Duplicate task {full_ref} is already running; ignoring")
+            logging.info("Duplicate already running; ignoring", extra=extras)
             send_dispatch_response(
                 conn,
                 {
@@ -971,7 +1006,7 @@ def handle_dispatch_connection(
                 "execution_timeout_seconds": timeout_sec,
             },
         ):
-            logging.error("Task %s was claimed but acknowledgment failed; not executing", full_ref)
+            logging.error("Claimed but acknowledgment failed; not executing", extra=extras)
             return
 
         out, err_out, exit_code, status, msg = execute_command(
@@ -979,18 +1014,6 @@ def handle_dispatch_connection(
             timeout_sec,
             task_ref=full_ref,
         )
-
-        try:
-            save_task_record(
-                task_id,
-                date_str,
-                received_content,
-                received_at,
-                out,
-                err_out,
-            )
-        except OSError as e:
-            logging.error(f"Failed to save received task record for task {full_ref}: {e}")
 
         report = {
             "task_ref": full_ref,
@@ -1002,21 +1025,22 @@ def handle_dispatch_connection(
         if msg is not None:
             report["message"] = msg
 
-        output_file: Path | None = None
+        task_log_file: Path | None = None
         try:
-            output_file = save_command_output(
+            task_log_file = append_task_execution_log(
                 task_id=task_id,
-                received_at=received_at,
                 task_ref=full_ref,
+                date_str=date_str,
+                received_at=received_at,
                 command=command,
                 status=status,
                 exit_code=exit_code,
                 stdout_text=out,
                 stderr_text=err_out,
+                message=msg,
             )
-            logging.info(f"Command output saved to {output_file}")
         except OSError as e:
-            logging.error(f"Failed to save command output for task {full_ref}: {e}")
+            logging.error("Failed to write task log: %s", e, extra=extras)
 
         mark_task_completed(
             date_str,
@@ -1025,19 +1049,28 @@ def handle_dispatch_connection(
             command,
             received_at,
             report,
-            output_file,
+            task_log_file,
         )
-        logging.info(f"Task {full_ref} executed, status={status}, exit_code={exit_code}")
+        logging.info(
+            "Finished — %s — exit_code=%s",
+            status,
+            exit_code,
+            extra=extras,
+        )
+        if out:
+            logging.debug("stdout — %s", out[:500], extra=extras)
+        if err_out:
+            logging.debug("stderr — %s", err_out[:500], extra=extras)
         _, serr = send_report(commander_host, commander_port, report)
         if serr:
-            logging.error(f"Failed to report task {full_ref} to commander: {serr}")
+            logging.error("Failed to report to commander: %s", serr, extra=extras)
             try:
                 enqueue_pending_report(commander_host, commander_port, report, serr)
-                logging.info(f"Task {full_ref} queued for commander report retry")
+                logging.info("Queued for commander report retry", extra=extras)
             except OSError as e:
-                logging.error(f"Failed to queue report retry for task {full_ref}: {e}")
+                logging.error("Failed to queue report retry: %s", e, extra=extras)
             return
-        logging.info(f"Task {full_ref} reported successfully to commander")
+        logging.debug("Reported successfully to commander", extra=extras)
     finally:
         conn.close()
 
@@ -1063,10 +1096,16 @@ def run_listen(
     sock.listen(32)
     sock.settimeout(LOG_DATE_CHECK_INTERVAL_SECONDS)
     logging.info(
-        f"Listening for tasks on {b}:{lp}; reporting to commander {sh}:{sp}; "
-        f"exec timeout={timeout_sec}s; worker_threads={worker_threads}"
+        "Listening for tasks on %s:%s; reporting to commander %s:%s; "
+        "exec timeout=%ss; worker_threads=%s",
+        b,
+        lp,
+        sh,
+        sp,
+        timeout_sec,
+        worker_threads,
     )
-    logs_dir = script_dir / "logs"
+    soldier_logs = get_logs_dir(script_dir)
     current_log_day = date.today()
     start_report_retry_thread(script_dir)
     try:
@@ -1082,9 +1121,11 @@ def run_listen(
         while True:
             new_log_day = date.today()
             if new_log_day != current_log_day:
-                log_file = reattach_soldier_dated_file_handler(logs_dir, logging.INFO, target_day=new_log_day)
+                log_file = reattach_soldier_dated_file_handler(
+                    soldier_logs, logging.INFO, target_day=new_log_day
+                )
                 current_log_day = new_log_day
-                logging.info(f"Soldier log switched to {log_file}")
+                logging.info("Soldier log switched to %s", log_file)
             try:
                 conn, addr = sock.accept()
             except socket.timeout:
@@ -1176,20 +1217,19 @@ Default reads {DEFAULT_CONFIG_NAME} in same directory:
     report_p.add_argument("--stderr", default=None)
     sub.add_parser(
         "replay-failed-reports",
-        help="retry records in output/failed_reports.jsonl once",
+        help="retry records in runtime/failed_reports.jsonl once",
     )
 
     args = parser.parse_args()
-    
+
     script_dir = Path(__file__).resolve().parent
-    logs_dir = Path(__file__).resolve().parent / "logs"
-    output_dir = script_dir / OUTPUT_DIR_NAME
-    output_dir.mkdir(parents=True, exist_ok=True)
-    log_file = configure_soldier_root_logging(logs_dir, logging.INFO)
-    
-    logging.info(f"Soldier starting, logs: {log_file}")
-    logging.info(f"Command output directory: {output_dir}")
-    
+    soldier_logs = get_logs_dir(script_dir)
+    get_runtime_dir(script_dir)
+    log_file = configure_soldier_root_logging(soldier_logs, logging.INFO)
+
+    logging.info("Soldier starting, logs: %s", log_file)
+    logging.info("Runtime state directory: %s", get_runtime_dir(script_dir))
+
     cfg = args.config if getattr(args, "config", None) is not None else default_config_path()
 
     if args.cmd is None or args.cmd == "listen":

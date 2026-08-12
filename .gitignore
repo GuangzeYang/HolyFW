@@ -13,6 +13,10 @@ logs/
 **/logs/
 *.log
 
+# Soldier operational state (pending/failed reports, task idempotency)
+soldier/runtime/
+**/runtime/
+
 # Task data files
 commander/role_task/tasks_*.json
 **/tasks_*.json

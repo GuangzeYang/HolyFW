@@ -446,16 +446,16 @@ Format: `time - LEVEL - role[index] - message`. Production (`INFO`) records task
 
 ### soldier
 
-Logs are stored in `soldier/logs/`. The filename is usually:
+All soldier observability logs live under `soldier/logs/`:
 
-- `soldier_YYYY-MM-DD.log` (switches by calendar day: for long-running processes, the root file logger is reattached to that day's file without using rotated suffixes.)
+- `soldier_YYYY-MM-DD.log` — human-readable execution log (`time - LEVEL - task_id - message`), including receive time/content and finish status
+- `tasks_YYYY-MM-DD.jsonl` — one JSON record per task with `received_at`, `command`, `status`, `exit_code`, `stdout`, and `stderr`
 
-The `soldier` also generates:
+Operational state (not task logs) lives under `soldier/runtime/`:
 
-- `received_task_MM-DD.jsonl`: Task receipt records
-- `output/`: Files containing stdout/stderr from each execution
-- `output/pending_reports.jsonl`: Queue of reports awaiting retry after reporting to `commander` fails
-- `output/failed_reports.jsonl`: Reports that still failed after three retry attempts
+- `task_state_MM-DD.jsonl` — idempotent execution state
+- `pending_reports.jsonl` — reports waiting to retry to commander
+- `failed_reports.jsonl` — reports that still failed after three retries
 
 ## Important Notes
 
