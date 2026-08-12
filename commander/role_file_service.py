@@ -59,6 +59,7 @@ class RoleTaskFileService:
         max_attempts: int | None = None,
         agent_client: AgentRequestABC | None = None,
         domain_resource_file: Path | None = None,
+        constraints_resource_file: Path | None = None,
         logs_dir: Path | None = None,
         repository: DailyTaskRepository | None = None,
     ):
@@ -69,6 +70,7 @@ class RoleTaskFileService:
             or max_attempts is None
             or agent_client is None
             or domain_resource_file is None
+            or constraints_resource_file is None
             or logs_dir is None
         ):
             runtime_config = load_runtime_config()
@@ -86,6 +88,10 @@ class RoleTaskFileService:
                 agent_client = build_deepseek_client(generator_config)
             if domain_resource_file is None:
                 domain_resource_file = resolve_config_relative_path(paths_config["domain_resource_file"])
+            if constraints_resource_file is None:
+                constraints_resource_file = resolve_config_relative_path(
+                    paths_config["task_generation_constraints_file"]
+                )
             if logs_dir is None:
                 logs_dir = resolve_config_relative_path(paths_config["logs_dir"])
 
@@ -97,6 +103,7 @@ class RoleTaskFileService:
         self.max_attempts = max_attempts
         self.agent_client = agent_client
         self.domain_resource_file = domain_resource_file
+        self.constraints_resource_file = constraints_resource_file
         self.logs_dir = logs_dir
         self.repository = repository or DailyTaskRepository(self.data_dir)
         self._generation_lock = threading.Lock()
@@ -262,6 +269,7 @@ class RoleTaskFileService:
                     final_file=role_file,
                     logs_dir=self.logs_dir,
                     domain_resource_path=self.domain_resource_file,
+                    constraints_resource_path=self.constraints_resource_file,
                     roles=self.roles,
                     min_tasks_per_role=self.min_tasks_per_role,
                     max_tasks_per_role=self.max_tasks_per_role,

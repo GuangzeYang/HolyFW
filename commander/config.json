@@ -103,7 +103,9 @@
     "_comment_dispatch_script": "Dispatch script path invoked by commander scanner.",
     "dispatch_script": "dispatch.py",
     "_comment_domain_resource_file": "Domain resource markdown file used for prompt generation.",
-    "domain_resource_file": "../domain_resource.md"
+    "domain_resource_file": "../domain_resource.md",
+    "_comment_task_generation_constraints_file": "Hard-requirement markdown template injected into the task-generation prompt.",
+    "task_generation_constraints_file": "../task_generation_constraints.md"
   },
   "_comment_logging": "Logging behavior for commander. INFO is production start/end only; pass --debug for DEBUG process logs. Interactive AI logs live under agent_responses_*/.",
   "logging": {

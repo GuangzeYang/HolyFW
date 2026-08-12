@@ -51,6 +51,9 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     logs_dir = resolve_config_relative_path(paths_config["logs_dir"])
     domain_resource_path = resolve_config_relative_path(paths_config["domain_resource_file"])
+    constraints_resource_path = resolve_config_relative_path(
+        paths_config["task_generation_constraints_file"]
+    )
 
     interval = generator_config["generation_retry_interval_seconds"]
     agent_client = build_deepseek_client(generator_config)
@@ -64,6 +67,7 @@ def main() -> int:
                 final_file=output_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=constraints_resource_path,
                 roles=roles,
                 min_tasks_per_role=generator_config["min_tasks_per_role"],
                 max_tasks_per_role=generator_config["max_tasks_per_role"],

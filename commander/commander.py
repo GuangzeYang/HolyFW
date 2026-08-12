@@ -210,6 +210,7 @@ class TaskScanner:
         scan_interval_seconds: int,
         generator_config: dict[str, Any],
         domain_resource_file: Path,
+        constraints_resource_file: Path,
         logs_dir: Path,
         log_level_name: str,
         failure_governor: RoleFailureGovernor | None = None,
@@ -245,6 +246,8 @@ class TaskScanner:
             max_attempts=generator_config["max_attempts"],
             agent_client=build_deepseek_client(generator_config),
             domain_resource_file=domain_resource_file,
+            constraints_resource_file=constraints_resource_file,
+            logs_dir=self.logs_dir,
             repository=self.repository,
         )
         self.selection_policy = EarliestPendingSelectionPolicy()
@@ -388,6 +391,7 @@ def serve(
     target_ini_path: Path,
     generator_config: dict[str, Any],
     domain_resource_file: Path,
+    constraints_resource_file: Path,
     dispatch_script: Path,
     logs_dir: Path,
     log_level_name: str,
@@ -419,6 +423,7 @@ def serve(
         scan_interval_seconds=scan_interval_seconds,
         generator_config=generator_config,
         domain_resource_file=domain_resource_file,
+        constraints_resource_file=constraints_resource_file,
         logs_dir=logs_dir,
         log_level_name=log_level_name,
         failure_governor=failure_governor,
@@ -499,6 +504,9 @@ def main() -> None:
     target_ini_path = resolve_config_relative_path(paths_config["target_ini_file"])
     dispatch_script = resolve_config_relative_path(paths_config["dispatch_script"])
     domain_resource_file = resolve_config_relative_path(paths_config["domain_resource_file"])
+    constraints_resource_file = resolve_config_relative_path(
+        paths_config["task_generation_constraints_file"]
+    )
 
     logging.info("Starting commander, logs: %s", log_file)
 
@@ -517,6 +525,7 @@ def main() -> None:
         target_ini_path=target_ini_path,
         generator_config=generator_config,
         domain_resource_file=domain_resource_file,
+        constraints_resource_file=constraints_resource_file,
         dispatch_script=dispatch_script,
         logs_dir=logs_dir,
         log_level_name=log_level_name,

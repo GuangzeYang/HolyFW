@@ -156,6 +156,7 @@ def _validate_schema(data: dict[str, Any]) -> None:
     _read_required(data, "paths.target_ini_file", str)
     _read_required(data, "paths.dispatch_script", str)
     _read_required(data, "paths.domain_resource_file", str)
+    _read_required(data, "paths.task_generation_constraints_file", str)
 
     _read_required(data, "logging.level", str)
     _validate_positive_int(data, "logging.backup_count")
@@ -266,6 +267,9 @@ def get_paths_config(data: dict[str, Any]) -> dict[str, Any]:
         "target_ini_file": _read_required(data, "paths.target_ini_file", str),
         "dispatch_script": _read_required(data, "paths.dispatch_script", str),
         "domain_resource_file": _read_required(data, "paths.domain_resource_file", str),
+        "task_generation_constraints_file": _read_required(
+            data, "paths.task_generation_constraints_file", str
+        ),
     }
 
 

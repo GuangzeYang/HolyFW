@@ -46,11 +46,15 @@ class RoleTaskGenerationResult:
 
 
 
-def _read_domain_context(domain_resource_path: Path) -> str:
-    if not domain_resource_path.exists():
+def _read_text_resource(path: Path) -> str:
+    if not path.exists():
         return ""
-    with open(domain_resource_path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return f.read()
+
+
+def _read_domain_context(domain_resource_path: Path) -> str:
+    return _read_text_resource(domain_resource_path)
 
 
 
@@ -260,6 +264,7 @@ def generate_role_tasks(
     final_file: Path,
     logs_dir: Path,
     domain_resource_path: Path,
+    constraints_resource_path: Path,
     roles: tuple[str, ...] | list[str],
     min_tasks_per_role: int,
     max_tasks_per_role: int,
@@ -274,6 +279,11 @@ def generate_role_tasks(
     domain_context = _read_domain_context(domain_resource_path)
     if not domain_context.strip():
         emit_status(f"Warning: domain resource is empty or missing at {domain_resource_path}")
+    constraints_template = _read_text_resource(constraints_resource_path)
+    if not constraints_template.strip():
+        emit_status(
+            f"Warning: task-generation constraints are empty or missing at {constraints_resource_path}"
+        )
 
     normalized_roles = tuple(roles)
     stats = {
@@ -322,6 +332,7 @@ def generate_role_tasks(
         related_context = _build_optional_dependency_text(dependency_context_builder, persisted_data, role)
         role_prompt = build_role_task_prompt(
             domain_context,
+            constraints_template,
             min_tasks_per_role=min_tasks_per_role,
             max_tasks_per_role=max_tasks_per_role,
             roles=(role,),

@@ -231,8 +231,37 @@ def _normalize_roles(roles: tuple[str, ...] | list[str] | None) -> tuple[str, ..
     return tuple(normalized)
 
 
+def format_task_generation_constraints(
+    constraints_template: str,
+    *,
+    roles: tuple[str, ...] | list[str] | None = None,
+    min_tasks_per_role: int = 18,
+    max_tasks_per_role: int = 18,
+) -> str:
+    """Fill placeholders in the task-generation constraints markdown template."""
+    role_names = _normalize_roles(roles)
+    role_display = ", ".join(role_names)
+    output_format = ", ".join(f'"{role}": [tasks]' for role in role_names)
+    target_tasks = math.ceil((min_tasks_per_role + max_tasks_per_role) / 2)
+    non_five_min = max(1, (min_tasks_per_role * 4) // 5)
+    # Drop authoring-only HTML comments before sending text to the model.
+    template_body = re.sub(
+        r"<!--.*?-->",
+        "",
+        constraints_template,
+        flags=re.DOTALL,
+    ).strip()
+    return template_body.format(
+        role_display=role_display,
+        target_tasks=target_tasks,
+        output_format=output_format,
+        non_five_min=non_five_min,
+    ).strip()
+
+
 def build_role_task_prompt(
     domain_context: str,
+    constraints_template: str,
     min_tasks_per_role: int = 18,
     max_tasks_per_role: int = 18,
     roles: tuple[str, ...] | list[str] | None = None,
@@ -240,14 +269,19 @@ def build_role_task_prompt(
 ) -> str:
     """Build a constrained prompt for role task generation.
 
+    constraints_template is the raw markdown from task_generation_constraints.md
+    (or equivalent), with {role_display}, {target_tasks}, {output_format}, and
+    {non_five_min} placeholders.
+
     dependency_context is inserted between domain_context and the hard-requirements block.
     When empty or whitespace-only, nothing is inserted between domain_context and the hard requirements.
     """
-    role_names = _normalize_roles(roles)
-    role_display = ", ".join(role_names)
-    output_format = ", ".join(f'"{role}": [tasks]' for role in role_names)
-    target_tasks = math.ceil((min_tasks_per_role + max_tasks_per_role) / 2)
-    non_five_min = max(1, (min_tasks_per_role * 4) // 5)
+    hard_requirements = format_task_generation_constraints(
+        constraints_template,
+        roles=roles,
+        min_tasks_per_role=min_tasks_per_role,
+        max_tasks_per_role=max_tasks_per_role,
+    )
 
     dep = dependency_context if isinstance(dependency_context, str) else ""
 
@@ -262,28 +296,8 @@ def build_role_task_prompt(
     if dep.strip():
         lines.append(dep.strip())
         lines.append("")
-    lines.extend(
-        [
-            "Hard requirements (all must be satisfied):",
-            f"1. The output must include every role: {role_display}.",
-            f"2. Generate exactly {target_tasks} tasks for each role. This target is calculated as ceil((min+max)/2) from min_tasks_per_role and max_tasks_per_role.",
-            f"3. The top-level JSON object must use this format: {{{output_format}}}.",
-            '4. Every task item must use this format: {"time":"09:15","is_load":false,"task":"..."}.',
-            "5. Each task's time value is its start time, and only that start time is validated. The valid periods are the two closed intervals "
-            "09:00–12:00 (inclusive) and 13:30–18:00 (inclusive). Times strictly between 12:00 and 13:30, such as 12:01–13:29, are invalid.",
-            "6. Within each role, task times must be strictly increasing in JSON array order. Every later task's time must be strictly greater than the preceding task's time (> only, never equal or earlier).",
-            "7. At least 80% of task minute values must not be divisible by 5. Randomly vary the interval between adjacent tasks from 5 to 15 minutes.",
-            f"8. Do not schedule most tasks at xx:00, xx:05, xx:10, xx:15, xx:20, xx:25, xx:30, xx:35, xx:40, xx:45, xx:50, or xx:55. "
-            f"With {target_tasks} total tasks, at least {non_five_min} task(s) must have a minute value that is not divisible by 5.",
-            "9. Every task must fit the corresponding role's duties and should expose observable network behavior where appropriate, such as Exchange, OA, SMB, FTP, or browser activity.",
-            "10. All task descriptions and all natural-language parameter values must be written in English.",
-            "11. Follow every task-content template and constraint in the domain context when writing task descriptions.",
-            "12. If Related dependency facts are included, use them only to infer implicit relationships and ordering between role tasks. For example, if HR sends the programmer an email at 09:00, the programmer may begin processing it only after 09:00, never before. Do not imitate the facts' quantity, format, wording, or time density.",
-            "13. Do not ask the user questions or request confirmation.",
-            "14. Do not output explanations, Markdown, code blocks, execution instructions, or retry suggestions.",
-            "15. Return only the JSON object itself.",
-        ]
-    )
+    if hard_requirements:
+        lines.append(hard_requirements)
     return "\n".join(lines)
 
 

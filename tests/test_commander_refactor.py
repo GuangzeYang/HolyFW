@@ -35,6 +35,10 @@ from common import (
     validate_generated_task_file,
 )
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CONSTRAINTS_PATH = REPO_ROOT / "task_generation_constraints.md"
+CONSTRAINTS_TEMPLATE = CONSTRAINTS_PATH.read_text(encoding="utf-8")
+
 
 class PolicyTests(unittest.TestCase):
     def test_loaded_without_task_id_is_pending(self) -> None:
@@ -641,6 +645,7 @@ class PromptTests(unittest.TestCase):
         domain_context = "# Task Content Templates\nUse the smb-access template to access the shared directory."
         prompt = build_role_task_prompt(
             domain_context,
+            CONSTRAINTS_TEMPLATE,
             min_tasks_per_role=2,
             max_tasks_per_role=6,
             roles=("hr", "accountancy"),
@@ -666,6 +671,7 @@ class PromptTests(unittest.TestCase):
         dep = "DEPENDENCY_BLOCK"
         prompt = build_role_task_prompt(
             domain_context,
+            CONSTRAINTS_TEMPLATE,
             min_tasks_per_role=2,
             max_tasks_per_role=2,
             roles=("hr",),
@@ -826,6 +832,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 final_file=final_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
                 roles=("hr",),
                 min_tasks_per_role=1,
                 max_tasks_per_role=3,
@@ -870,6 +877,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 final_file=final_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
                 roles=("hr", "programmer"),
                 min_tasks_per_role=1,
                 max_tasks_per_role=3,
@@ -918,6 +926,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 final_file=final_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
                 roles=("hr", "programmer"),
                 min_tasks_per_role=1,
                 max_tasks_per_role=3,
@@ -950,6 +959,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 final_file=final_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
                 roles=("hr", "programmer"),
                 min_tasks_per_role=1,
                 max_tasks_per_role=3,
@@ -1002,6 +1012,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 final_file=final_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
                 roles=("hr", "manager"),
                 min_tasks_per_role=1,
                 max_tasks_per_role=3,
@@ -1045,6 +1056,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 final_file=final_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
                 roles=("hr", "manager"),
                 min_tasks_per_role=1,
                 max_tasks_per_role=3,
@@ -1080,6 +1092,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                     final_file=final_file,
                     logs_dir=logs_dir,
                     domain_resource_path=domain_resource_path,
+                    constraints_resource_path=CONSTRAINTS_PATH,
                     roles=("hr", "manager"),
                     min_tasks_per_role=1,
                     max_tasks_per_role=3,
@@ -1135,6 +1148,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 final_file=final_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
                 roles=("hr", "manager"),
                 min_tasks_per_role=1,
                 max_tasks_per_role=3,
@@ -1167,6 +1181,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 final_file=final_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
                 roles=("hr",),
                 min_tasks_per_role=1,
                 max_tasks_per_role=3,
@@ -1210,6 +1225,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 final_file=final_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
                 roles=("hr",),
                 min_tasks_per_role=1,
                 max_tasks_per_role=3,
@@ -1258,6 +1274,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 final_file=final_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
                 roles=("hr",),
                 min_tasks_per_role=1,
                 max_tasks_per_role=3,
@@ -1313,6 +1330,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 final_file=final_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
                 roles=("hr",),
                 min_tasks_per_role=1,
                 max_tasks_per_role=1,
@@ -1350,6 +1368,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 final_file=final_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
                 roles=("hr",),
                 min_tasks_per_role=1,
                 max_tasks_per_role=3,
@@ -1390,6 +1409,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 final_file=final_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
                 roles=("hr",),
                 min_tasks_per_role=1,
                 max_tasks_per_role=3,
@@ -1421,6 +1441,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 final_file=final_file,
                 logs_dir=logs_dir,
                 domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
                 roles=("hr",),
                 min_tasks_per_role=1,
                 max_tasks_per_role=3,
@@ -1450,6 +1471,8 @@ class RoleTaskFileServiceTests(unittest.TestCase):
             logs_dir = root / "logs"
             domain = root / "domain.md"
             domain.write_text("# x", encoding="utf-8")
+            constraints = root / "constraints.md"
+            constraints.write_text(CONSTRAINTS_TEMPLATE, encoding="utf-8")
             role_file = data_dir / "tasks_01-01.json"
             service = RoleTaskFileService(
                 data_dir,
@@ -1468,6 +1491,7 @@ class RoleTaskFileServiceTests(unittest.TestCase):
                     )
                 ),
                 domain_resource_file=domain,
+                constraints_resource_file=constraints,
                 logs_dir=logs_dir,
             )
             failed = RoleTaskGenerationResult(

@@ -2,7 +2,7 @@
 
 HolyFramework is a distributed task execution framework designed for enterprise intranet scenarios. The project uses `commander` to generate and schedule daily tasks, while `soldier` executes those tasks on different hosts and reports the results, continuously producing observable business traffic that resembles routine office activity.
 
-The task-generation pipeline uses the DeepSeek API by default, but the invocation layer is abstracted in `commander/agent_request_abc.py` so that other model implementations can be added later. Domain scenarios, role responsibilities, and task templates are defined in `domain_resource.md`, which serves both as documentation and as a runtime resource.
+The task-generation pipeline uses the DeepSeek API by default, but the invocation layer is abstracted in `commander/agent_request_abc.py` so that other model implementations can be added later. Domain scenarios, role responsibilities, and task templates are defined in `domain_resource.md`. Hard requirements for the generation prompt live in `task_generation_constraints.md`. Both are runtime resources read when building model prompts.
 
 ## What the Project Does
 
@@ -39,6 +39,7 @@ HolyFramework/
 ├── README.md                              # Main project documentation and current entry point
 ├── common.py                              # Shared validation, path, task-format, and prompt utilities
 ├── domain_resource.md                     # Domain scenarios and task-template resource read at runtime
+├── task_generation_constraints.md         # Hard-requirement prompt template read at runtime
 ├── requirements.txt                       # Python dependencies
 ├── skill/                                 # Per-role Skill bundles installed on role hosts
 │   ├── accountancy-skills/                # Accountancy host Skills
@@ -345,8 +346,9 @@ Controls path resolution. Relative paths are resolved from the `commander/` dire
 - `target_ini_file`
 - `dispatch_script`
 - `domain_resource_file`
+- `task_generation_constraints_file`
 
-For example, `domain_resource_file` currently defaults to `../domain_resource.md`, so the root-level `domain_resource.md` is read during task generation.
+For example, `domain_resource_file` currently defaults to `../domain_resource.md`, and `task_generation_constraints_file` defaults to `../task_generation_constraints.md`, so the root-level markdown resources are read during task generation.
 
 ### logging
 
@@ -423,7 +425,7 @@ Command-line arguments in `soldier.py` take precedence over `soldier.ini`:
 The current task-generation workflow is:
 
 1. `commander/generate_role_task.py` or `RoleTaskFileService` triggers generation.
-2. `commander/role_task_generation.py` reads `domain_resource.md` and constructs the prompt.
+2. `commander/role_task_generation.py` reads `domain_resource.md` and `task_generation_constraints.md`, then constructs the prompt.
 3. `commander/deepseek_client.py` calls the DeepSeek API through `DeepSeekAgentClient`.
 4. The returned content is extracted as JSON, structurally validated, quality-checked, and then persisted as `tasks_MM-DD.json`.
 
@@ -459,7 +461,7 @@ Operational state (not task logs) lives under `soldier/runtime/`:
 
 ## Important Notes
 
-- `domain_resource.md` is a runtime resource; do not delete it as though it were ordinary documentation.
+- `domain_resource.md` and `task_generation_constraints.md` are runtime resources; do not delete them as though they were ordinary documentation.
 - `soldier` executes received commands and should be deployed only in a controlled environment.
 - In distributed deployments, carefully check the listening addresses, report-back addresses, and firewall configuration for `commander` and `soldier`.
 - Task times are based on each host's system clock. Keep clocks synchronized across hosts in distributed deployments.
