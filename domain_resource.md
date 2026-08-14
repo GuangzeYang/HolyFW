@@ -181,7 +181,7 @@ Examples:
 
 Rules for Victim tasks:
 
-- Generate Victim tasks only when the `victim` role is present in `commander.ini`.
+- Do not generate a daily Victim schedule. `victim` is an on-demand role: one technique per dispatched task, driven by campaign state (`last_result` / `next_task`).
 - Every task uses exactly one technique and one approved target.
 - Prefer modes `observe` or `simulate` unless prerequisites for `execute` are explicitly available.
 - Never invent credentials, hashes, tickets, subnets, or unapproved hosts. Use placeholders and treat missing values as blockers.

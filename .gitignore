@@ -26,3 +26,7 @@ skill/
 
 # Local authoring/reference only — never deploy to test machines
 资料库/
+
+# Victim on-demand campaign state
+.holyfw/
+**/campaign_state.json

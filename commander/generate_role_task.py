@@ -11,9 +11,9 @@ from datetime import date
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 try:
-    from target_config import load_all_roles
+    from target_config import load_daily_generation_roles
 except ImportError:
-    from commander.target_config import load_all_roles
+    from commander.target_config import load_daily_generation_roles
 
 try:
     from deepseek_client import build_deepseek_client
@@ -45,7 +45,12 @@ def main() -> int:
     generator_config = get_generator_config(runtime_config)
     paths_config = get_paths_config(runtime_config)
     target_ini_path = resolve_config_relative_path(paths_config["target_ini_file"])
-    roles = load_all_roles(target_ini_path)
+    roles = load_daily_generation_roles(target_ini_path)
+    if not roles:
+        raise ValueError(
+            "No daily-generation roles found in commander.ini "
+            "(on-demand roles such as victim are excluded)"
+        )
 
     output_dir = resolve_config_relative_path(scanner_config["data_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -61,6 +61,7 @@ HolyFramework/
 │   ├── domain.py                          # Task status-transition rules
 │   ├── policies.py                        # Task-selection policies; selects the earliest pending task by default
 │   ├── target_config.py                   # Loads roles and target-host configuration from commander.ini
+│   ├── victim_campaign.py                 # On-demand victim campaign: one technique per step
 │   ├── runtime_config.py                  # Loads and validates config.json
 │   ├── logging_setup.py                   # Commander and dispatch logging setup
 │   ├── config.json                        # Main commander configuration file
@@ -76,7 +77,8 @@ HolyFramework/
     ├── test_commander_refactor.py         # Core commander regression tests
     ├── test_common_work_windows.py        # Shared work-window utility tests
     ├── test_role_dependency_provider.py   # Role dependency-provider tests
-    └── test_soldier_runtime.py             # Soldier runtime tests
+    ├── test_soldier_runtime.py             # Soldier runtime tests
+    └── test_victim_campaign.py            # On-demand victim campaign state tests
 ```
 
 ## Core Concepts
@@ -241,6 +243,21 @@ cd commander
 python dispatch.py --target hr --command "opencode run \"Check email with Exchange\"" --task "Check email with Exchange"
 ```
 
+#### On-demand victim campaign (not daily generation)
+
+`victim` is excluded from the daily 35–42 task quota even if it appears in `commander.ini`. Run one technique at a time. Prefer `step` on the victim host so `~/.holyfw/campaign_state.json` is updated from OpenCode output:
+
+```powershell
+cd commander
+python victim_campaign.py step --task "Use the penetration-test skill on the victim host, run observe for the reconnaissance phase, {run_id: recon-001, approved target: <DC_IP>, technique: domain users and trusts, traffic objective: LDAP queries to the approved DC, success criteria: sanitized user and trust counts saved, cleanup: not applicable}"
+python victim_campaign.py show
+python victim_campaign.py step
+```
+
+The second `step` (no `--task`) uses `next_task` from campaign state when the skill returned one after a privilege block or successful bounded step. From commander you can instead `python victim_campaign.py dispatch --task "..."` after enabling `[victim]` in `commander.ini`; the state file is still written on the victim by the skill.
+
+Replace `<DC_IP>` with an operator-approved domain controller. Do not paste hashes or passwords into the task string.
+
 #### Manually report a result from soldier
 
 ```bash
@@ -365,8 +382,9 @@ Controls logging:
 `load_all_roles()` in `commander/target_config.py` reads every section name as a role, so:
 
 - Adding a section adds a role.
-- Removing a section removes that role from scheduling and task generation.
+- Removing a section removes that role from scheduling.
 - Section names are normalized to lowercase.
+- `victim` remains dispatchable but is omitted from daily task generation (`load_daily_generation_roles()`). Drive it with `victim_campaign.py`.
 
 ## Advanced `soldier.ini` Details
 

@@ -32,7 +32,7 @@ try:
 except ImportError:
     from commander.deepseek_client import build_deepseek_client
 from scanner_service import TaskScanService
-from target_config import load_all_roles
+from target_config import load_all_roles, load_daily_generation_roles
 from common import parse_task_ref
 
 try:
@@ -218,6 +218,7 @@ class TaskScanner:
         max_dispatch_lateness_minutes: int = 6,
         debug: bool = False,
         target_ini_path: Path | None = None,
+        generation_roles: tuple[str, ...] | None = None,
     ):
         self.repository = repository
         self.data_dir = repository.data_dir
@@ -234,12 +235,13 @@ class TaskScanner:
         self.role_pointers = {}  # {"hr": 0, "accountancy": 0, "manager": 0, "programmer": 0, ...}
         self.last_date = None
         self.roles = roles
+        self.generation_roles = generation_roles if generation_roles is not None else roles
         self.scan_interval_seconds = scan_interval_seconds
         self.max_dispatch_lateness_minutes = max_dispatch_lateness_minutes
         self.generation_retry_interval_seconds = generator_config["generation_retry_interval_seconds"]
         self.role_file_service = RoleTaskFileService(
             self.data_dir,
-            self.roles,
+            self.generation_roles,
             min_tasks_per_role=generator_config["min_tasks_per_role"],
             max_tasks_per_role=generator_config["max_tasks_per_role"],
             min_non_five_ratio=generator_config["min_non_five_ratio"],
@@ -365,7 +367,12 @@ class TaskScanner:
                 try:
                     self.ensure_commander_log_file_for_today()
                     role_file = self._get_role_task_file()
-                    self._ensure_role_file(role_file)
+                    if not self.generation_roles:
+                        logging.debug(
+                            "Skipping daily generation; no office roles configured (on-demand only)"
+                        )
+                    else:
+                        self._ensure_role_file(role_file)
                 except Exception as e:
                     logging.error(f"Exception in generation_retry_loop: {e}", exc_info=True)
                 time.sleep(self.generation_retry_interval_seconds)
@@ -408,6 +415,7 @@ def serve(
         max_store_text=max_store_text,
     )
     roles = load_all_roles(target_ini_path)
+    generation_roles = load_daily_generation_roles(target_ini_path)
     failure_governor = RoleFailureGovernor(
         resolve_config_relative_path(failure_policy_config["state_file"]),
         cooldown_seconds=failure_policy_config["cooldown_seconds"],
@@ -430,6 +438,7 @@ def serve(
         max_dispatch_lateness_minutes=max_dispatch_lateness_minutes,
         debug=debug,
         target_ini_path=target_ini_path,
+        generation_roles=generation_roles,
     )
     scanner.start()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

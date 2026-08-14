@@ -8,6 +8,10 @@ from pathlib import Path
 
 DEFAULT_CONFIG_NAME = "commander.ini"
 
+# Roles that remain dispatchable but are never included in the daily
+# office-traffic generation quota (35–42 tasks per role).
+ON_DEMAND_ROLES = frozenset({"victim"})
+
 
 def default_config_path() -> Path:
     """Return default config file path (same directory as script)."""
@@ -35,6 +39,11 @@ def load_all_roles(config_path: Path) -> tuple[str, ...]:
         raise ValueError(f"No role sections found in config file {config_path}")
 
     return tuple(roles)
+
+
+def load_daily_generation_roles(config_path: Path) -> tuple[str, ...]:
+    """Load roles that participate in daily benign-traffic task generation."""
+    return tuple(role for role in load_all_roles(config_path) if role not in ON_DEMAND_ROLES)
 
 
 def load_target_config(config_path: Path, target: str) -> tuple[str, int]:
