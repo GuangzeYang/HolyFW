@@ -74,12 +74,11 @@ def main() -> int:
                 domain_resource_path=domain_resource_path,
                 constraints_resource_path=constraints_resource_path,
                 roles=roles,
-                min_tasks_per_role=generator_config["min_tasks_per_role"],
-                max_tasks_per_role=generator_config["max_tasks_per_role"],
-                min_non_five_ratio=generator_config["min_non_five_ratio"],
                 max_attempts=generator_config["max_attempts"],
                 agent_client=agent_client,
                 emit_status=emit_status,
+                time_model_config=generator_config["time_model"],
+                target_ini_path=target_ini_path,
             )
             if result.success:
                 return 0

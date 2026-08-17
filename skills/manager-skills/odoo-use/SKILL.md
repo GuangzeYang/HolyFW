@@ -1,11 +1,17 @@
 ---
 name: odoo-use
-description: Open a browser with Playwright and sign in to the Odoo system. This skill depends on the 'playwright-browser' skill; read and use the 'playwright-browser' skill before execution.
+description: Use when adding, updating, or deleting employees or recruitment records in Odoo. Depends on playwright-browser. Do not use for Exchange mail or SMB files.
 ---
 
 # Dependency
 
 Load the `playwright-browser` skill before use.
+
+# Anti-patterns
+
+- Do not type into the Job Position field directly under Employee Name. Use the Job Position input beside the lower Job Position label.
+- Do not skip Save. Confirm the cloud Save manually button hides after a successful save.
+- Do not invent a different Odoo URL or password.
 
 # Sign in to Odoo
 

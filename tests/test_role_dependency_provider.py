@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import unittest
 
-from commander.role_dependency_provider import build_dependency_context, validate_dependency_order
+from commander.role_dependency_provider import (
+    build_backward_items,
+    build_dependency_context,
+    validate_dependency_order,
+)
 
 
 class ValidateDependencyOrderMessageTests(unittest.TestCase):
@@ -57,12 +61,15 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
         }
 
         context = build_dependency_context(task_data, "manager")
+        items = build_backward_items(task_data, "manager")
 
-        self.assertEqual(
-            context,
-            "Related dependency facts (for inferring implicit relationships and ordering only): "
-            '{"hr": ["10:01 sent an email to manager"]}',
-        )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["from"], ["hr"])
+        self.assertEqual(items[0]["to"], ["manager"])
+        self.assertEqual(items[0]["time"], "10:01")
+        self.assertIn('"from": ["hr"]', context)
+        self.assertIn('"to": ["manager"]', context)
+        self.assertIn("10:01", context)
 
     def test_recipient_fields_are_case_insensitive_and_accept_regular_commas(self) -> None:
         templates = (
@@ -81,10 +88,9 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
                     ]
                 }
 
-                self.assertIn(
-                    "14:13 sent an email to programmer",
-                    build_dependency_context(task_data, "programmer"),
-                )
+                self.assertIn("14:13", build_dependency_context(task_data, "programmer"))
+                items = build_backward_items(task_data, "programmer")
+                self.assertEqual(items[0]["to"], ["programmer"])
 
     def test_dependency_aliases_use_the_ndrtest_internal_email_domain(self) -> None:
         task_data = {
@@ -99,10 +105,8 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
             ]
         }
 
-        self.assertIn(
-            "10:01 sent an email to manager",
-            build_dependency_context(task_data, "manager"),
-        )
+        self.assertIn("10:01", build_dependency_context(task_data, "manager"))
+        self.assertEqual(build_backward_items(task_data, "manager")[0]["from"], ["hr"])
 
     def test_edrtest_email_domain_is_not_an_internal_role_alias(self) -> None:
         task_data = {
@@ -119,10 +123,9 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
 
         self.assertEqual(build_dependency_context(task_data, "manager"), "")
 
-    def test_non_send_email_actions_do_not_create_dependencies(self) -> None:
+    def test_non_send_email_actions_do_not_create_send_dependencies(self) -> None:
         tasks = (
             "Use exchange-use skill to review email, {to: programmer@ndrtest.local}",
-            "Use exchange-use skill to reply to email, {to: programmer@ndrtest.local}",
             "Use exchange-use skill to send an email, {to: programmer@ndrtest.local}",
         )
         for task_text in tasks:

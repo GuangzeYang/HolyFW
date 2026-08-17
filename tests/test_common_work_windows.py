@@ -17,13 +17,13 @@ class WorkWindowClosedIntervalTests(unittest.TestCase):
     def test_morning_and_afternoon_include_endpoints(self) -> None:
         self.assertTrue(_in_work_window(9 * 60))
         self.assertTrue(_in_work_window(12 * 60))
-        self.assertTrue(_in_work_window(13 * 60 + 30))
+        self.assertTrue(_in_work_window(13 * 60))
         self.assertTrue(_in_work_window(18 * 60))
 
     def test_lunch_gap_excludes_interior(self) -> None:
         self.assertFalse(_in_work_window(12 * 60 + 1))
-        self.assertFalse(_in_work_window(13 * 60 + 29))
-        self.assertFalse(_in_work_window(13 * 60 + 15))
+        self.assertFalse(_in_work_window(12 * 60 + 59))
+        self.assertTrue(_in_work_window(13 * 60))
 
     def test_outside_day_segments(self) -> None:
         self.assertFalse(_in_work_window(8 * 60 + 59))
@@ -108,8 +108,7 @@ class RemediationPromptTests(unittest.TestCase):
             role="hr",
             old_tasks=old,
             bad_indices=[0],
-            min_tasks_per_role=18,
-            max_tasks_per_role=18,
+            tasks_per_role=18,
             validation_reason="test reason",
             prior_feedback="fix it",
         )

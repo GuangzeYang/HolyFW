@@ -1,96 +1,43 @@
 ---
 name: smb-access
-description: Perform operations such as copying, moving, deleting, creating, and viewing items in an SMB shared folder.
+description: Use when creating, copying, moving, deleting, or viewing files on the company SMB share through PowerShell. Do not use a GUI file explorer. Stop immediately on Access Denied.
 ---
 
+# Connect
 
+1. Open PowerShell.
+2. Run `dir \\172.16.24.11\Company_Data`
+3. If the command fails, stop. Do not retry with a different server.
 
+Allowed paths for Accountancy: `\\172.16.24.11\Company_Data\accountancy`, `\\172.16.24.11\Company_Data\Public`, `\\172.16.24.11\Company_Data\Exchange`. Do not write to HR-Private, IT-Dev, or Management.
 
+Map task paths such as `/Company_Data/accountancy/file.csv` to `\\172.16.24.11\Company_Data\accountancy\file.csv`.
 
-## Enter the Shared Directory
+# Create
 
-1. Open PowerShell: Press the Windows logo key and the "R" key on the keyboard at the same time. In the pop-up window, enter "powershell", then press the "Enter" key.
+- Folder: `New-Item -ItemType Directory -Force -Path '<path>'`
+- File: `Set-Content -Path '<path>' -Value '<content>'`
+- If either command throws, stop.
 
-2. Open the shared directory: Enter the following command in the interface.
+# Copy
 
-   ```
-   dir \\172.16.24.11\Company_Data
-   ```
+`Copy-Item -Path '<source>' -Destination '<destination>' -Recurse -Force`
 
-   
+# Move
 
-## Create
+`Move-Item -Path '<source>' -Destination '<destination>' -Force`
 
-1. Enter the folder:
+# Delete
 
-   - If entering succeeds, continue.
-   - If entering fails, end execution of this command.
+`Remove-Item -Path '<path>' -Recurse -Force`
 
-2. If a folder needs to be created:
+# View
 
-   - If creation succeeds, continue.
-   - If creation fails, end execution of this command.
+- Folder: `Get-ChildItem -Path '<path>'`
+- File: `Get-Content -Path '<path>'`
 
-3. If a file needs to be created:
+# Anti-patterns
 
-   - If creation succeeds, continue.
-   - If creation fails, end execution of this command.
-
-4. If content needs to be written:
-
-   - If writing succeeds, continue.
-
-   - If writing fails, end execution of this command.
-
-     
-
-## Copy
-
-1. If a folder needs to be copied:
-
-   - If copying succeeds, continue.
-   - If copying fails, end execution of this command.
-
-2. If a file needs to be copied:
-
-   - If copying succeeds, continue.
-   - If copying fails, end execution of this command.
-
-
-
-
-
-## Move
-
-Move a file or folder:
-
-- If moving succeeds, continue.
-- If moving fails, end execution of this command.
-
-
-
-## Delete
-
-1. If a file needs to be deleted:
-   - If deletion succeeds, continue.
-   - If deletion fails, end execution of this command.
-2. If a folder needs to be deleted:
-   - If deletion succeeds, continue.
-   - If deletion fails, end execution of this command.
-
-
-
-## View
-
-1. If the contents of a folder need to be viewed:
-
-   - If viewing succeeds, continue.
-   - If viewing fails, end execution of this command.
-
-2. If the contents of a file need to be viewed:
-
-   - If viewing succeeds, continue.
-
-   - If viewing fails, end execution of this command.
-
-     
+- Do not use `net use` unless the dir command reports the share is disconnected.
+- Do not continue after Access Denied, path not found, or authentication errors.
+- Do not invent share names or IP addresses.

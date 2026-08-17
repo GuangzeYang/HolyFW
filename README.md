@@ -54,7 +54,10 @@ HolyFramework/
 │   ├── dispatch_client.py                 # Subprocess adapter used by the scanner to invoke dispatch.py
 │   ├── scanner_service.py                 # Main scanning and scheduling workflow
 │   ├── role_file_service.py               # Daily task-file generation, repair, loading, and saving
-│   ├── role_task_generation.py            # Task generation orchestration: prompt, model call, validation, and persistence
+│   ├── time_model.py                      # Thesis 3.4 NHPP schedule generator
+│   ├── prompt_catalog.py                  # Assembles domain/role/skills/context prompts
+│   ├── prompt_resources/                  # Compact generation catalog (not full SKILL.md bodies)
+│   ├── role_task_generation.py            # Task generation: ReAct parse, zip times, validate
 │   ├── agent_request_abc.py               # Abstract model-request interface and common response/exception types
 │   ├── deepseek_client.py                  # Default model implementation: DeepSeek API client
 │   ├── repository.py                      # Task-file repository: I/O, locking, and status updates
@@ -176,6 +179,8 @@ Defines the mapping between roles and target hosts. Each section represents one 
 - `host`
 - `port`
 
+Optional time-model keys overlay `generator.time_model` in `config.json` per role (`tasks_per_role`, peak/width/AR(1) parameters). Omitted keys use the JSON defaults. `avoid_five_minutes` is JSON-only.
+
 #### `soldier/soldier.ini`
 
 Configures the `soldier` listening address, the `commander` address used for reporting, and the execution timeout:
@@ -245,7 +250,7 @@ python dispatch.py --target hr --command "opencode run \"Check email with Exchan
 
 #### On-demand victim campaign (not daily generation)
 
-`victim` is excluded from the daily 35–42 task quota even if it appears in `commander.ini`. Run one technique at a time. Prefer `step` on the victim host so `~/.holyfw/campaign_state.json` is updated from OpenCode output:
+`victim` is excluded from the daily `tasks_per_role` quota even if it appears in `commander.ini`. Run one technique at a time. Prefer `step` on the victim host so `~/.holyfw/campaign_state.json` is updated from OpenCode output:
 
 ```powershell
 cd commander
@@ -346,9 +351,6 @@ By default, the system uses `smtp.qq.com:465` with SSL. Email delivery failures 
 
 Controls task generation:
 
-- `min_tasks_per_role`: Minimum number of tasks per role
-- `max_tasks_per_role`: Maximum number of tasks per role
-- `min_non_five_ratio`: Minimum ratio of task times whose minute value is not a multiple of five
 - `max_attempts`: Number of generation attempts
 - `api_base_url`: Model API URL
 - `api_key`: Model API key
@@ -442,10 +444,12 @@ Command-line arguments in `soldier.py` take precedence over `soldier.ini`:
 
 The current task-generation workflow is:
 
-1. `commander/generate_role_task.py` or `RoleTaskFileService` triggers generation.
-2. `commander/role_task_generation.py` reads `domain_resource.md` and `task_generation_constraints.md`, then constructs the prompt.
-3. `commander/deepseek_client.py` calls the DeepSeek API through `DeepSeekAgentClient`.
-4. The returned content is extracted as JSON, structurally validated, quality-checked, and then persisted as `tasks_MM-DD.json`.
+1. `commander/time_model.py` samples a strictly increasing work-window schedule of length `N` using the thesis 3.4 NHPP (dual Gaussian intensity, lunch mask, AR(1) busyness, time-transformation).
+2. `commander/role_task_generation.py` builds a ReAct prompt from `commander/prompt_resources/` (domain, role skills, env, schedule, backward facts).
+3. The LLM returns exactly `N` English task bodies and must not invent timestamps. Output is `Thought` then `Action: Finish` plus JSON.
+4. Commander zips algorithm times onto the task list, validates content and cross-role response order, and persists `tasks_MM-DD.json`.
+
+Working hours are 09:00-12:00 and 13:00-18:00 (lunch 12:00-13:00). Backward items use `{from, to, time, task}` where exactly one endpoint is the role being generated.
 
 In this design:
 
@@ -504,6 +508,7 @@ When extending the project, start with these entry points:
 - `commander/commander.py`
 - `commander/scanner_service.py`
 - `commander/role_file_service.py`
+- `commander/time_model.py`
 - `commander/role_task_generation.py`
 - `commander/agent_request_abc.py`
 - `soldier/soldier.py`

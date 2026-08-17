@@ -14,12 +14,12 @@ try:
     from agent_request_abc import AgentRequestABC
     from deepseek_client import build_deepseek_client
     from repository import DailyTaskRepository
-    from role_task_generation import generate_role_tasks
+    from role_task_generation import _role_task_count, generate_role_tasks
 except ImportError:
     from commander.agent_request_abc import AgentRequestABC
     from commander.deepseek_client import build_deepseek_client
     from commander.repository import DailyTaskRepository
-    from commander.role_task_generation import generate_role_tasks
+    from commander.role_task_generation import _role_task_count, generate_role_tasks
 
 from common import (
     candidate_task_path,
@@ -53,21 +53,19 @@ class RoleTaskFileService:
         self,
         data_dir: Path,
         roles: tuple[str, ...],
-        min_tasks_per_role: int | None = None,
-        max_tasks_per_role: int | None = None,
-        min_non_five_ratio: float | None = None,
+        tasks_per_role: int | None = None,
         max_attempts: int | None = None,
         agent_client: AgentRequestABC | None = None,
         domain_resource_file: Path | None = None,
         constraints_resource_file: Path | None = None,
         logs_dir: Path | None = None,
         repository: DailyTaskRepository | None = None,
+        time_model_config: dict[str, Any] | None = None,
+        target_ini_path: Path | None = None,
+        prompt_resources_dir: Path | None = None,
     ):
         if (
-            min_tasks_per_role is None
-            or max_tasks_per_role is None
-            or min_non_five_ratio is None
-            or max_attempts is None
+            max_attempts is None
             or agent_client is None
             or domain_resource_file is None
             or constraints_resource_file is None
@@ -76,12 +74,6 @@ class RoleTaskFileService:
             runtime_config = load_runtime_config()
             generator_config = get_generator_config(runtime_config)
             paths_config = get_paths_config(runtime_config)
-            if min_tasks_per_role is None:
-                min_tasks_per_role = generator_config["min_tasks_per_role"]
-            if max_tasks_per_role is None:
-                max_tasks_per_role = generator_config["max_tasks_per_role"]
-            if min_non_five_ratio is None:
-                min_non_five_ratio = generator_config["min_non_five_ratio"]
             if max_attempts is None:
                 max_attempts = generator_config["max_attempts"]
             if agent_client is None:
@@ -94,19 +86,30 @@ class RoleTaskFileService:
                 )
             if logs_dir is None:
                 logs_dir = resolve_config_relative_path(paths_config["logs_dir"])
+            if time_model_config is None:
+                time_model_config = generator_config["time_model"]
+            if target_ini_path is None:
+                target_ini_path = resolve_config_relative_path(paths_config["target_ini_file"])
 
         self.data_dir = data_dir
         self.roles = roles
-        self.min_tasks_per_role = min_tasks_per_role
-        self.max_tasks_per_role = max_tasks_per_role
-        self.min_non_five_ratio = min_non_five_ratio
+        self.tasks_per_role = tasks_per_role
         self.max_attempts = max_attempts
         self.agent_client = agent_client
         self.domain_resource_file = domain_resource_file
         self.constraints_resource_file = constraints_resource_file
         self.logs_dir = logs_dir
+        self.time_model_config = time_model_config
+        self.target_ini_path = target_ini_path
+        self.prompt_resources_dir = prompt_resources_dir
         self.repository = repository or DailyTaskRepository(self.data_dir)
         self._generation_lock = threading.Lock()
+
+    def _expected_count(self, role: str) -> int:
+        return _role_task_count(role, self.time_model_config, self.target_ini_path, self.tasks_per_role)
+
+    def _expected_counts(self) -> dict[str, int]:
+        return {role: self._expected_count(role) for role in self.roles}
 
     def get_today_role_task_file(self) -> Path:
         return self.repository.day_path(date.today().isoformat())
@@ -210,9 +213,7 @@ class RoleTaskFileService:
                     if role_tasks_are_complete(
                         data,
                         role,
-                        min_tasks_per_role=self.min_tasks_per_role,
-                        max_tasks_per_role=self.max_tasks_per_role,
-                        min_non_five_ratio=self.min_non_five_ratio,
+                        tasks_per_role=self._expected_count(role),
                     )
                 ]
                 if len(completed_roles) == len(self.roles):
@@ -226,23 +227,18 @@ class RoleTaskFileService:
 
                 valid, reason = validate_role_tasks(
                     data,
-                    min_tasks_per_role=self.min_tasks_per_role,
-                    max_tasks_per_role=self.max_tasks_per_role,
-                    min_non_five_ratio=self.min_non_five_ratio,
+                    tasks_per_role=self._expected_counts(),
                     roles=self.roles,
                 )
                 if not valid:
                     logging.warning(f"Role file {role_file} quality check failed: {reason}")
                     normalized = normalize_role_tasks(
                         data,
-                        min_tasks_per_role=self.min_tasks_per_role,
                         roles=self.roles,
                     )
                     valid_after_fix, reason_after_fix = validate_role_tasks(
                         normalized,
-                        min_tasks_per_role=self.min_tasks_per_role,
-                        max_tasks_per_role=self.max_tasks_per_role,
-                        min_non_five_ratio=self.min_non_five_ratio,
+                        tasks_per_role=self._expected_counts(),
                         roles=self.roles,
                     )
                     if not valid_after_fix:
@@ -271,13 +267,14 @@ class RoleTaskFileService:
                     domain_resource_path=self.domain_resource_file,
                     constraints_resource_path=self.constraints_resource_file,
                     roles=self.roles,
-                    min_tasks_per_role=self.min_tasks_per_role,
-                    max_tasks_per_role=self.max_tasks_per_role,
-                    min_non_five_ratio=self.min_non_five_ratio,
+                    tasks_per_role=self.tasks_per_role,
                     max_attempts=self.max_attempts,
                     agent_client=self.agent_client,
                     emit_status=logging.info,
                     save_final_file=self.repository.save_path,
+                    time_model_config=self.time_model_config,
+                    target_ini_path=self.target_ini_path,
+                    prompt_resources_dir=self.prompt_resources_dir,
                 )
                 if result.success:
                     return True

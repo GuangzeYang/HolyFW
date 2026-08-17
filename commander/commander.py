@@ -242,15 +242,14 @@ class TaskScanner:
         self.role_file_service = RoleTaskFileService(
             self.data_dir,
             self.generation_roles,
-            min_tasks_per_role=generator_config["min_tasks_per_role"],
-            max_tasks_per_role=generator_config["max_tasks_per_role"],
-            min_non_five_ratio=generator_config["min_non_five_ratio"],
             max_attempts=generator_config["max_attempts"],
             agent_client=build_deepseek_client(generator_config),
             domain_resource_file=domain_resource_file,
             constraints_resource_file=constraints_resource_file,
             logs_dir=self.logs_dir,
             repository=self.repository,
+            time_model_config=generator_config["time_model"],
+            target_ini_path=target_ini_path,
         )
         self.selection_policy = EarliestPendingSelectionPolicy()
         self.scan_service = TaskScanService(

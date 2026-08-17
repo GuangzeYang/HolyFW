@@ -5,11 +5,24 @@ from __future__ import annotations
 
 import configparser
 from pathlib import Path
+from typing import Any
 
 DEFAULT_CONFIG_NAME = "commander.ini"
 
+TIME_MODEL_INI_KEYS = (
+    "tasks_per_role",
+    "mu_am_minutes",
+    "mu_pm_minutes",
+    "sigma_am_minutes",
+    "sigma_pm_minutes",
+    "a_am",
+    "a_pm",
+    "phi",
+    "sigma_eta",
+)
+
 # Roles that remain dispatchable but are never included in the daily
-# office-traffic generation quota (35–42 tasks per role).
+# office-traffic generation quota (tasks_per_role in time-model defaults / INI).
 ON_DEMAND_ROLES = frozenset({"victim"})
 
 
@@ -75,3 +88,61 @@ def load_target_config(config_path: Path, target: str) -> tuple[str, int]:
         raise ValueError(f"Invalid port '{port_str}' for target '{target}': {e}")
 
     return host, port
+
+
+def _parse_time_model_float(raw: str, *, role: str, key: str) -> float:
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid number '{raw}' for {key} on role '{role}'") from exc
+
+
+def _parse_time_model_int(raw: str, *, role: str, key: str) -> int:
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid number '{raw}' for {key} on role '{role}'") from exc
+    if value <= 0 or not value.is_integer():
+        raise ValueError(f"Invalid integer '{raw}' for {key} on role '{role}'")
+    return int(value)
+
+
+def load_role_time_model(
+    config_path: Path,
+    role: str,
+    defaults: dict[str, Any],
+) -> dict[str, Any]:
+    """Return time-model params for a role: INI overlay on config.json defaults.
+
+    Each key in ``TIME_MODEL_INI_KEYS`` uses the INI value when that option is
+    present and non-empty; otherwise the matching ``defaults`` value is kept.
+    ``avoid_five_minutes`` is JSON-only and is never taken from INI.
+    """
+    missing = [key for key in TIME_MODEL_INI_KEYS if key not in defaults]
+    if missing:
+        raise ValueError(f"Time-model defaults missing keys: {', '.join(missing)}")
+    if "avoid_five_minutes" not in defaults:
+        raise ValueError("Time-model defaults missing keys: avoid_five_minutes")
+
+    merged: dict[str, Any] = dict(defaults)
+    if not config_path.is_file():
+        return merged
+
+    cp = configparser.ConfigParser()
+    cp.read(config_path, encoding="utf-8")
+    target_lower = role.strip().lower()
+    if target_lower not in cp:
+        return merged
+
+    sec = cp[target_lower]
+    for key in TIME_MODEL_INI_KEYS:
+        if key not in sec:
+            continue
+        raw = (sec.get(key) or "").strip()
+        if not raw:
+            continue
+        if key == "tasks_per_role":
+            merged[key] = _parse_time_model_int(raw, role=role, key=key)
+        else:
+            merged[key] = _parse_time_model_float(raw, role=role, key=key)
+    return merged

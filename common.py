@@ -2,19 +2,18 @@
 """Common utilities for HolyFramework commander and soldier components."""
 
 import json
-import math
 import os
 import re
 import random
 import time
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 DATE_FULL = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DATE_MD = re.compile(r"^\d{2}-\d{2}$")
 UUID_HEX_NO_HYPHEN = re.compile(r"^[0-9a-fA-F]{8,32}$")
-WORK_WINDOWS = ((9 * 60, 12 * 60), (13 * 60 + 30, 18 * 60))
+WORK_WINDOWS = ((9 * 60, 12 * 60), (13 * 60, 18 * 60))
 
 
 def clean_old_files(dir_path: Path, pattern: str, days: int = 20) -> None:
@@ -137,13 +136,19 @@ def load_task_file(path: Path) -> dict[str, Any]:
     return parsed
 
 
+def _expected_task_count(tasks_per_role: int | Mapping[str, int], role: str) -> int:
+    if isinstance(tasks_per_role, Mapping):
+        if role not in tasks_per_role:
+            raise ValueError(f"Missing expected task count for role '{role}'")
+        return int(tasks_per_role[role])
+    return int(tasks_per_role)
+
+
 def role_tasks_are_complete(
     data: dict[str, Any],
     role: str,
     *,
-    min_tasks_per_role: int,
-    max_tasks_per_role: int,
-    min_non_five_ratio: float,
+    tasks_per_role: int,
 ) -> bool:
     """Return True when a role entry is already a complete, valid stored task list."""
     tasks = data.get(role)
@@ -151,9 +156,7 @@ def role_tasks_are_complete(
         return False
     valid, _ = validate_role_tasks(
         {role: tasks},
-        min_tasks_per_role=min_tasks_per_role,
-        max_tasks_per_role=max_tasks_per_role,
-        min_non_five_ratio=min_non_five_ratio,
+        tasks_per_role=tasks_per_role,
         roles=(role,),
     )
     return valid
@@ -161,9 +164,7 @@ def role_tasks_are_complete(
 
 def validate_generated_task_file(
     file_path: Path,
-    min_tasks_per_role: int,
-    max_tasks_per_role: int,
-    min_non_five_ratio: float,
+    tasks_per_role: int | Mapping[str, int],
     roles: tuple[str, ...] | list[str],
     preserve_generated_times: bool = False,
 ) -> tuple[str | None, str | None, dict[str, Any] | None, int]:
@@ -186,15 +187,12 @@ def validate_generated_task_file(
 
     normalized = normalize_role_tasks(
         parsed,
-        min_tasks_per_role=min_tasks_per_role,
         roles=roles,
         preserve_generated_times=preserve_generated_times,
     )
     valid, reason = validate_role_tasks(
         normalized,
-        min_tasks_per_role=min_tasks_per_role,
-        max_tasks_per_role=max_tasks_per_role,
-        min_non_five_ratio=min_non_five_ratio,
+        tasks_per_role=tasks_per_role,
         roles=roles,
     )
     if not valid:
@@ -235,15 +233,12 @@ def format_task_generation_constraints(
     constraints_template: str,
     *,
     roles: tuple[str, ...] | list[str] | None = None,
-    min_tasks_per_role: int = 18,
-    max_tasks_per_role: int = 18,
+    tasks_per_role: int = 18,
 ) -> str:
     """Fill placeholders in the task-generation constraints markdown template."""
     role_names = _normalize_roles(roles)
     role_display = ", ".join(role_names)
     output_format = ", ".join(f'"{role}": [tasks]' for role in role_names)
-    target_tasks = math.ceil((min_tasks_per_role + max_tasks_per_role) / 2)
-    non_five_min = max(1, (min_tasks_per_role * 4) // 5)
     # Drop authoring-only HTML comments before sending text to the model.
     template_body = re.sub(
         r"<!--.*?-->",
@@ -253,51 +248,52 @@ def format_task_generation_constraints(
     ).strip()
     return template_body.format(
         role_display=role_display,
-        target_tasks=target_tasks,
+        target_tasks=tasks_per_role,
         output_format=output_format,
-        non_five_min=non_five_min,
+        output_format_example=output_format,
     ).strip()
+
+
+def repair_json_text(text: str) -> str:
+    """Strip fences and trailing commas that commonly break model JSON."""
+    if not text:
+        return ""
+    stripped = text.strip()
+    stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
+    stripped = re.sub(r"\s*```$", "", stripped)
+    stripped = re.sub(r",\s*([}\]])", r"\1", stripped)
+    return stripped.strip()
+
+
+def extract_react_finish_json(text: str) -> dict[str, Any] | None:
+    """Extract the Finish JSON object from a ReAct completion."""
+    if not text:
+        return None
+    match = re.search(r"Action:\s*Finish\s*", text, re.IGNORECASE)
+    payload = text[match.end():] if match else text
+    parsed = extract_json_object(repair_json_text(payload))
+    if parsed is not None:
+        return parsed
+    return extract_json_object(repair_json_text(text))
 
 
 def build_role_task_prompt(
     domain_context: str,
     constraints_template: str,
-    min_tasks_per_role: int = 18,
-    max_tasks_per_role: int = 18,
+    tasks_per_role: int = 18,
     roles: tuple[str, ...] | list[str] | None = None,
     dependency_context: str = "",
 ) -> str:
-    """Build a constrained prompt for role task generation.
-
-    constraints_template is the raw markdown from task_generation_constraints.md
-    (or equivalent), with {role_display}, {target_tasks}, {output_format}, and
-    {non_five_min} placeholders.
-
-    dependency_context is inserted between domain_context and the hard-requirements block.
-    When empty or whitespace-only, nothing is inserted between domain_context and the hard requirements.
-    """
+    """Build a ReAct system+user prompt string for tests and fallback callers."""
     hard_requirements = format_task_generation_constraints(
         constraints_template,
         roles=roles,
-        min_tasks_per_role=min_tasks_per_role,
-        max_tasks_per_role=max_tasks_per_role,
+        tasks_per_role=tasks_per_role,
     )
-
     dep = dependency_context if isinstance(dependency_context, str) else ""
-
-    lines: list[str] = [
-        "Using the domain context below, generate a full-day sequence of work tasks for every role.",
-        "All required context has already been provided. Do not ask for more background or clarification.",
-        "Return exactly one JSON object. Do not output anything else or wrap the response in a Markdown code block.",
-        "",
-        domain_context,
-        "",
-    ]
+    lines = [hard_requirements, "", domain_context]
     if dep.strip():
-        lines.append(dep.strip())
-        lines.append("")
-    if hard_requirements:
-        lines.append(hard_requirements)
+        lines.extend(["", dep.strip()])
     return "\n".join(lines)
 
 
@@ -414,27 +410,23 @@ def build_role_task_time_remediation_prompt(
     role: str,
     old_tasks: list[dict[str, Any]],
     bad_indices: list[int],
-    min_tasks_per_role: int,
-    max_tasks_per_role: int,
+    tasks_per_role: int,
     validation_reason: str = "",
     prior_feedback: str = "",
 ) -> str:
     """Prompt for LLM to fix only times (for bad indices) or delete bad rows; other rows unchanged."""
-    target_tasks = math.ceil((min_tasks_per_role + max_tasks_per_role) / 2)
-    non_five_min = max(1, (min_tasks_per_role * 4) // 5)
     bad_set = sorted(set(bad_indices))
     lines: list[str] = [
         "You are a task schedule correction assistant. Below is one role's full-day task array; each item includes its array index, time, is_load, and task.",
         "The previous complete array failed automatic validation because some task start-time values are outside the allowed working periods.",
         "",
-        "The allowed working periods are the closed intervals 09:00–12:00 (including 12:00) and 13:30–18:00 (including 18:00).",
-        "Times strictly between 12:00 and 13:30 are invalid.",
+        "The allowed working periods are the closed intervals 09:00–12:00 (including 12:00) and 13:00–18:00 (including 18:00).",
+        "Times strictly between 12:00 and 13:00 are invalid.",
         "",
         f"Role: {role}",
-        f"After correction, this role must contain exactly {target_tasks} tasks, matching ceil((min_tasks_per_role + max_tasks_per_role) / 2).",
+        f"After correction, this role must contain exactly {tasks_per_role} tasks.",
         "Delete as few items as possible. If deletion leaves too few tasks, the correction fails; prefer changing time values to preserve the required count.",
-        "The corrected list must still have strictly increasing time values in array order, and at least 80% of task minute values must not be divisible by 5 (at least "
-        f"{non_five_min} such tasks).",
+        "The corrected list must still have strictly increasing time values in array order.",
         "",
         "Hard constraints (must be followed):",
         "1. For an item whose index is in the invalid-index set, you may only change that item's time or delete the entire item from the array.",
@@ -552,11 +544,10 @@ def _build_schedule(count: int, seed: int | None = None) -> list[int]:
 
 def normalize_role_tasks(
     data: dict[str, Any],
-    min_tasks_per_role: int = 18,
     roles: tuple[str, ...] | list[str] | None = None,
     preserve_generated_times: bool = False,
 ) -> dict[str, Any]:
-    """Normalize role tasks with deterministic structure, count floor, and jittered times."""
+    """Normalize role tasks with deterministic structure and jittered times."""
     role_names = _normalize_roles(roles)
     normalized: dict[str, Any] = {}
 
@@ -639,9 +630,7 @@ def normalize_role_tasks(
 
 def validate_role_tasks(
     data: dict[str, Any],
-    min_tasks_per_role: int = 18,
-    max_tasks_per_role: int = 18,
-    min_non_five_ratio: float = 0.8,
+    tasks_per_role: int | Mapping[str, int],
     roles: tuple[str, ...] | list[str] | None = None,
 ) -> tuple[bool, str | None]:
     """Validate role tasks against structure and quality constraints."""
@@ -672,12 +661,12 @@ def validate_role_tasks(
         tasks = data.get(role)
         if not isinstance(tasks, list):
             return False, f"Role '{role}' data is not a list"
-        if len(tasks) < min_tasks_per_role:
-            return False, f"Role '{role}' has too few tasks: {len(tasks)} < {min_tasks_per_role}"
-        if len(tasks) > max_tasks_per_role:
-            return False, f"Role '{role}' has too many tasks: {len(tasks)} > {max_tasks_per_role}"
+        expected = _expected_task_count(tasks_per_role, role)
+        if len(tasks) != expected:
+            return False, (
+                f"Role '{role}' has {len(tasks)} tasks, expected {expected}"
+            )
 
-        non_five = 0
         prev_minute: int | None = None
         for index, task in enumerate(tasks):
             if not isinstance(task, dict):
@@ -699,14 +688,5 @@ def validate_role_tasks(
             if prev_minute is not None and minute <= prev_minute:
                 return False, f"Role '{role}' tasks are not strictly increasing"
             prev_minute = minute
-
-            if minute % 5 != 0:
-                non_five += 1
-
-        ratio = non_five / len(tasks) if tasks else 0.0
-        if ratio < min_non_five_ratio:
-            return False, (
-                f"Role '{role}' random minute ratio too low: {ratio:.2f} < {min_non_five_ratio:.2f}"
-            )
 
     return True, None

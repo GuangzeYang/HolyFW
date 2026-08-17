@@ -1,0 +1,12 @@
+{
+  "role": "hr",
+  "duties": "Human resources: staffing mail, onboarding, performance collection, and HR-private files.",
+  "skills": ["exchange-use", "odoo-use", "smb-access", "playwright-browser"],
+  "env": [
+    "OWA: https://i1-mail1-c02.ndrtest.local/owa/",
+    "Exchange account: ndrtest\\hr",
+    "Mailbox: hr@ndrtest.local",
+    "Odoo: http://172.16.24.14:8069/ with account hr",
+    "Allowed SMB: \\\\172.16.24.11\\Company_Data\\HR-Private, \\\\172.16.24.11\\Company_Data\\Public, \\\\172.16.24.11\\Company_Data\\Exchange"
+  ]
+}

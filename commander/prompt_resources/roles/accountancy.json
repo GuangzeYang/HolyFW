@@ -1,0 +1,12 @@
+{
+  "role": "accountancy",
+  "duties": "Accounting and finance: workbooks, invoices, and finance-private files.",
+  "skills": ["exchange-use", "odoo-use", "smb-access", "playwright-browser"],
+  "env": [
+    "OWA: https://i1-mail1-c02.ndrtest.local/owa/",
+    "Exchange account: ndrtest\\accountancy",
+    "Mailbox: accountancy@ndrtest.local",
+    "Odoo: http://172.16.24.14:8069/ with account accountancy",
+    "Allowed SMB: \\\\172.16.24.11\\Company_Data\\accountancy, \\\\172.16.24.11\\Company_Data\\Public, \\\\172.16.24.11\\Company_Data\\Exchange"
+  ]
+}

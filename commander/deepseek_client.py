@@ -44,14 +44,23 @@ class DeepSeekAgentClient(AgentRequestABC):
     def request_timeout_seconds(self) -> int:
         return self.config.request_timeout_seconds
 
-    def request_completion(self, prompt: str) -> AgentResponse:
+    def request_completion(
+        self,
+        prompt: str = "",
+        *,
+        messages: list[dict[str, str]] | None = None,
+        response_format: dict[str, Any] | None = None,
+    ) -> AgentResponse:
         endpoint = _normalize_endpoint(self.config.api_base_url)
-        payload = {
+        chat_messages = messages if messages else [{"role": "user", "content": prompt}]
+        payload: dict[str, Any] = {
             "model": self.config.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": chat_messages,
             "stream": False,
             "max_tokens": self.config.max_tokens,
         }
+        if response_format:
+            payload["response_format"] = response_format
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             endpoint,

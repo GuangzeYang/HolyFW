@@ -4,12 +4,11 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 from pathlib import Path
 from typing import Any
 
-WORKDAY_MINUTES = 7 * 60
+WORKDAY_MINUTES = 8 * 60
 
 CONFIG_FILE_NAME = "config.json"
 
@@ -48,24 +47,6 @@ def _read_required(data: dict[str, Any], dot_path: str, expected_type: type | tu
         )
         raise ValueError(f"Config key {dot_path} must be {type_name}, got {type(value).__name__}")
     return value
-
-
-def _validate_comment_pairs(node: dict[str, Any], path: str = "") -> None:
-    for key, value in node.items():
-        if key.startswith("_comment"):
-            if not isinstance(value, str) or not value.strip():
-                where = path or "root"
-                raise ValueError(f"Comment key {where}.{key} must be a non-empty string")
-            continue
-
-        comment_key = f"_comment_{key}"
-        comment_value = node.get(comment_key)
-        where = f"{path}.{key}" if path else key
-        if not isinstance(comment_value, str) or not comment_value.strip():
-            raise ValueError(f"Missing non-empty comment key {comment_key} for config key {where}")
-
-        if isinstance(value, dict):
-            _validate_comment_pairs(value, where)
 
 
 def _validate_positive_int(data: dict[str, Any], dot_path: str) -> int:
@@ -121,36 +102,26 @@ def _validate_schema(data: dict[str, Any]) -> None:
             "Enabled email alerts require email_alert.sender and at least one recipient"
         )
 
-    min_tasks_per_role = _validate_positive_int(data, "generator.min_tasks_per_role")
-    max_tasks_per_role = _validate_positive_int(data, "generator.max_tasks_per_role")
-    if max_tasks_per_role < min_tasks_per_role:
-        raise ValueError("Config key generator.max_tasks_per_role must be >= generator.min_tasks_per_role")
-    ratio = _read_required(data, "generator.min_non_five_ratio", (int, float))
-    if ratio <= 0 or ratio > 1:
-        raise ValueError("Config key generator.min_non_five_ratio must be in (0, 1]")
+    tasks_per_role = _validate_positive_int(data, "generator.time_model.tasks_per_role")
     _validate_positive_int(data, "generator.max_attempts")
     _validate_positive_int(data, "generator.generation_retry_interval_seconds")
     min_internal = _read_required(data, "generator.min_internal", int)
     if min_internal < 10:
         raise ValueError("Config key generator.min_internal must be >= 10")
     max_feasible_tasks = WORKDAY_MINUTES // min_internal
-    target_tasks = math.ceil((min_tasks_per_role + max_tasks_per_role) / 2)
-    if (
-        min_tasks_per_role > max_feasible_tasks
-        or max_tasks_per_role > max_feasible_tasks
-        or target_tasks > max_feasible_tasks
-    ):
+    if tasks_per_role > max_feasible_tasks:
         raise ValueError(
-            "Generator task count and interval are not feasible: using a 7-hour (420-minute) workday "
+            "Generator task count and interval are not feasible: using an 8-hour (480-minute) workday "
             f"and min_internal={min_internal} minutes, each role can have at most about {max_feasible_tasks} tasks per day. "
-            f"The configured min_tasks_per_role={min_tasks_per_role}, max_tasks_per_role={max_tasks_per_role}, "
-            f"and ceil((min+max)/2)={target_tasks} exceed that limit. Reduce the task counts or lower generator.min_internal."
+            f"The configured generator.time_model.tasks_per_role={tasks_per_role} exceeds that limit. "
+            "Reduce generator.time_model.tasks_per_role or lower generator.min_internal."
         )
     _read_required(data, "generator.api_base_url", str)
     _read_required(data, "generator.api_key", str)
     _read_required(data, "generator.model", str)
     _validate_positive_int(data, "generator.request_timeout_seconds")
     _validate_positive_int(data, "generator.max_tokens")
+    _validate_time_model(data)
 
     _read_required(data, "paths.logs_dir", str)
     _read_required(data, "paths.target_ini_file", str)
@@ -161,6 +132,25 @@ def _validate_schema(data: dict[str, Any]) -> None:
     _read_required(data, "logging.level", str)
     _validate_positive_int(data, "logging.backup_count")
     _validate_positive_int(data, "logging.rotation_interval_days")
+
+
+def _validate_time_model(data: dict[str, Any]) -> None:
+    _validate_positive_int(data, "generator.time_model.tasks_per_role")
+    _read_required(data, "generator.time_model.mu_am_minutes", (int, float))
+    _read_required(data, "generator.time_model.mu_pm_minutes", (int, float))
+    sigma_am = _read_required(data, "generator.time_model.sigma_am_minutes", (int, float))
+    sigma_pm = _read_required(data, "generator.time_model.sigma_pm_minutes", (int, float))
+    if sigma_am <= 0 or sigma_pm <= 0:
+        raise ValueError("Config keys generator.time_model.sigma_*_minutes must be > 0")
+    _read_required(data, "generator.time_model.a_am", (int, float))
+    _read_required(data, "generator.time_model.a_pm", (int, float))
+    phi = _read_required(data, "generator.time_model.phi", (int, float))
+    if abs(float(phi)) >= 1:
+        raise ValueError("Config key generator.time_model.phi must satisfy |phi| < 1")
+    sigma_eta = _read_required(data, "generator.time_model.sigma_eta", (int, float))
+    if float(sigma_eta) <= 0:
+        raise ValueError("Config key generator.time_model.sigma_eta must be > 0")
+    _read_required(data, "generator.time_model.avoid_five_minutes", bool)
 
 
 def load_runtime_config(config_path: Path | None = None) -> dict[str, Any]:
@@ -178,7 +168,6 @@ def load_runtime_config(config_path: Path | None = None) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("Runtime config root must be a JSON object")
 
-    _validate_comment_pairs(data)
     _validate_schema(data)
     return data
 
@@ -245,9 +234,6 @@ def get_email_alert_config(data: dict[str, Any]) -> dict[str, Any]:
 
 def get_generator_config(data: dict[str, Any]) -> dict[str, Any]:
     return {
-        "min_tasks_per_role": _read_required(data, "generator.min_tasks_per_role", int),
-        "max_tasks_per_role": _read_required(data, "generator.max_tasks_per_role", int),
-        "min_non_five_ratio": float(_read_required(data, "generator.min_non_five_ratio", (int, float))),
         "max_attempts": _read_required(data, "generator.max_attempts", int),
         "generation_retry_interval_seconds": _read_required(
             data, "generator.generation_retry_interval_seconds", int
@@ -258,6 +244,18 @@ def get_generator_config(data: dict[str, Any]) -> dict[str, Any]:
         "model": _read_required(data, "generator.model", str),
         "request_timeout_seconds": _read_required(data, "generator.request_timeout_seconds", int),
         "max_tokens": _read_required(data, "generator.max_tokens", int),
+        "time_model": {
+            "tasks_per_role": int(_read_required(data, "generator.time_model.tasks_per_role", int)),
+            "mu_am_minutes": float(_read_required(data, "generator.time_model.mu_am_minutes", (int, float))),
+            "mu_pm_minutes": float(_read_required(data, "generator.time_model.mu_pm_minutes", (int, float))),
+            "sigma_am_minutes": float(_read_required(data, "generator.time_model.sigma_am_minutes", (int, float))),
+            "sigma_pm_minutes": float(_read_required(data, "generator.time_model.sigma_pm_minutes", (int, float))),
+            "a_am": float(_read_required(data, "generator.time_model.a_am", (int, float))),
+            "a_pm": float(_read_required(data, "generator.time_model.a_pm", (int, float))),
+            "phi": float(_read_required(data, "generator.time_model.phi", (int, float))),
+            "sigma_eta": float(_read_required(data, "generator.time_model.sigma_eta", (int, float))),
+            "avoid_five_minutes": bool(_read_required(data, "generator.time_model.avoid_five_minutes", bool)),
+        },
     }
 
 

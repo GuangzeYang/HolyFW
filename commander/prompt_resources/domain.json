@@ -1,0 +1,14 @@
+{
+  "company": "A small Windows Active Directory company that generates realistic office traffic.",
+  "working_days": "Monday through Friday",
+  "working_hours": "09:00-12:00 and 13:00-18:00",
+  "lunch": "12:00-13:00",
+  "language": "All task descriptions and natural-language parameter values must be written in English.",
+  "servers": [
+    "Exchange email at https://i1-mail1-c02.ndrtest.local/owa/",
+    "Odoo OA at http://172.16.24.14:8069/",
+    "SMB share \\\\172.16.24.11\\Company_Data with Public, Exchange, HR-Private, accountancy, IT-Dev, and Management folders"
+  ],
+  "email_domain": "ndrtest.local",
+  "roles": ["manager", "hr", "accountancy", "programmer"]
+}

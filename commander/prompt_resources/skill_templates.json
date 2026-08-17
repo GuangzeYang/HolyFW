@@ -1,0 +1,85 @@
+{
+  "exchange-use": {
+    "name": "exchange-use",
+    "when": "Use when the role must send, view, or reply to Exchange email.",
+    "template": "Use the exchange-use skill, open the Exchange mailbox, <action>[, {parameters}]",
+    "actions": [
+      {
+        "name": "send email",
+        "fields": ["recipient", "cc", "subject", "body"],
+        "example": "Use the exchange-use skill, open the Exchange mailbox, send email, {recipient: manager@ndrtest.local, subject: Weekly staffing update, body: Please review the attached headcount notes.}"
+      },
+      {
+        "name": "view email",
+        "fields": ["target"],
+        "example": "Use the exchange-use skill, open the Exchange mailbox, view email, {target: first email}"
+      },
+      {
+        "name": "reply to email",
+        "fields": ["cc", "body"],
+        "example": "Use the exchange-use skill, open the Exchange mailbox, reply to email, {body: Received. I will handle this after the related work is complete.}"
+      }
+    ]
+  },
+  "odoo-use": {
+    "name": "odoo-use",
+    "when": "Use when the role must manage employees or recruitment in Odoo.",
+    "template": "Use the playwright-browser and odoo-use skills, open the browser, log in to the Odoo system, use the <module> module, <operation>[, {parameters}]",
+    "actions": [
+      {
+        "name": "Employees add",
+        "fields": ["name", "job position", "work email"],
+        "example": "Use the playwright-browser and odoo-use skills, open the browser, log in to the Odoo system, use the Employees module, add employee, {name: DemoNew1, job position: Sales, work email: demonew1@ndrtest.local}"
+      },
+      {
+        "name": "Employees update",
+        "fields": ["name", "job position", "work email"],
+        "example": "Use the playwright-browser and odoo-use skills, open the browser, log in to the Odoo system, use the Employees module, update employee, {name: DemoNew1, job position: Support}"
+      },
+      {
+        "name": "Recruitment create",
+        "fields": ["job position", "department", "email address", "work location"],
+        "example": "Use the playwright-browser and odoo-use skills, open the browser, log in to the Odoo system, use the Recruitment module, create a job posting, {job position: Human Resources Manager, department: Human Resources, email address: jobs@ndrtest.local, work location: Nanjing}"
+      }
+    ]
+  },
+  "smb-access": {
+    "name": "smb-access",
+    "when": "Use when the role must create, copy, move, delete, or view files on the SMB share.",
+    "template": "Use the smb-access skill, connect to the SMB shared directory, use <operation type> to <specific operation>[, {parameters}]",
+    "actions": [
+      {
+        "name": "create",
+        "fields": ["path", "content"],
+        "example": "Use the smb-access skill, connect to the SMB shared directory, use create to create a file, {path: /Company_Data/Public/notice.txt, content: Please complete the weekly checklist.}"
+      },
+      {
+        "name": "copy",
+        "fields": ["source path", "destination path"],
+        "example": "Use the smb-access skill, connect to the SMB shared directory, use copy to copy a file, {source path: /Company_Data/Public/notice.txt, destination path: /Company_Data/Exchange/notice.txt}"
+      },
+      {
+        "name": "view",
+        "fields": ["path"],
+        "example": "Use the smb-access skill, connect to the SMB shared directory, use view to view a file, {path: /Company_Data/Public/}"
+      }
+    ]
+  },
+  "playwright-browser": {
+    "name": "playwright-browser",
+    "when": "Use when the role must browse the web, search Bing, or visit an internal URL without Exchange or Odoo.",
+    "template": "Use the playwright-browser skill, open the browser, <action>.",
+    "actions": [
+      {
+        "name": "visit",
+        "fields": [],
+        "example": "Use the playwright-browser skill, open the browser, visit the company intranet notice page."
+      },
+      {
+        "name": "search",
+        "fields": [],
+        "example": "Use the playwright-browser skill, open the browser, search for the Windows Active Directory backup keyword, randomly select a relevant page, and browse its content for 20 seconds."
+      }
+    ]
+  }
+}

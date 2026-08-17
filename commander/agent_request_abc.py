@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -57,5 +58,11 @@ class AgentRequestABC(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def request_completion(self, prompt: str) -> AgentResponse:
+    def request_completion(
+        self,
+        prompt: str = "",
+        *,
+        messages: list[dict[str, str]] | None = None,
+        response_format: dict[str, Any] | None = None,
+    ) -> AgentResponse:
         raise NotImplementedError

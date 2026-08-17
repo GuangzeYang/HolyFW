@@ -53,7 +53,8 @@ We use agents to define a set of roles, with each role assigned to a separate ho
 # Working Hours
 
 - Working days: Monday through Friday
-- Working hours: 9:00-12:00 and 13:30-18:00
+- Working hours: 9:00-12:00 and 13:00-18:00
+- Lunch: 12:00-13:00
 
 # Task Description Templates
 

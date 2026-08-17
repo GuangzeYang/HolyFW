@@ -5,26 +5,32 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
 from common import (
-    build_role_task_prompt,
-    build_role_task_time_remediation_prompt,
     candidate_task_path,
-    collect_task_indices_outside_work_windows,
-    extract_json_object,
+    extract_react_finish_json,
+    format_task_generation_constraints,
     load_task_file,
     normalize_role_tasks,
     role_tasks_are_complete,
     save_json_atomic,
     validate_generated_task_file,
-    verify_time_remediation_payload,
 )
 try:
     from agent_request_abc import AgentRequestABC, AgentRequestError, AgentTimeoutError
+    from prompt_catalog import assemble_generation_payload, build_react_generation_messages, load_prompt_catalog
+    from role_dependency_provider import build_backward_items
+    from target_config import load_role_time_model
+    from time_model import TimeModelConfig, generate_schedule, zip_tasks_with_schedule
 except ImportError:
     from commander.agent_request_abc import AgentRequestABC, AgentRequestError, AgentTimeoutError
+    from commander.prompt_catalog import assemble_generation_payload, build_react_generation_messages, load_prompt_catalog
+    from commander.role_dependency_provider import build_backward_items
+    from commander.target_config import load_role_time_model
+    from commander.time_model import TimeModelConfig, generate_schedule, zip_tasks_with_schedule
 
 try:
     from logging_setup import write_interactive_log
@@ -33,6 +39,7 @@ except ImportError:
 
 
 StatusCallback = Callable[[str], None]
+ScheduleBuilder = Callable[[str, int], list[str]]
 DependencyContextBuilder = Callable[[dict[str, Any], str], str]
 DependencyOrderValidator = Callable[[dict[str, Any], str, list[dict[str, Any]]], tuple[bool, str | None]]
 
@@ -45,17 +52,11 @@ class RoleTaskGenerationResult:
     stats: dict[str, int]
 
 
-
 def _read_text_resource(path: Path) -> str:
     if not path.exists():
         return ""
-    with open(path, encoding="utf-8") as f:
-        return f.read()
-
-
-def _read_domain_context(domain_resource_path: Path) -> str:
-    return _read_text_resource(domain_resource_path)
-
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
 
 
 def _cleanup_file(path: Path) -> None:
@@ -67,10 +68,8 @@ def _cleanup_file(path: Path) -> None:
         pass
 
 
-
 def _role_candidate_path(candidate_file: Path, role: str) -> Path:
     return candidate_file.with_name(f"{candidate_file.stem}_{role}{candidate_file.suffix}")
-
 
 
 def _truncation_reason(role: str, finish_reason: str | None) -> str:
@@ -78,139 +77,27 @@ def _truncation_reason(role: str, finish_reason: str | None) -> str:
     return f"Model response for role '{role}' was truncated by provider{suffix}"
 
 
-
 def _parse_failure_reason(role: str) -> str:
     return f"Model response for role '{role}' did not contain a valid JSON object"
-
 
 
 def _build_retry_feedback(reason: str | None) -> str:
     if not reason:
         return ""
-
     lines = [
         "The previous output failed validation. Regenerate the complete JSON using the failure reason below.",
         f"Failure reason: {reason}",
-        "Create a new complete time sequence; do not reuse the previous minute distribution.",
+        "Do not invent timestamps. Return exactly task_count items. Put responses in later schedule slots.",
     ]
     lowered = reason.lower()
-    if "random minute ratio too low" in lowered:
+    if "does not match schedule" in lowered or "too few" in lowered or "too many" in lowered:
+        lines.append("The number of task items must equal task_count and the schedule length.")
+    if "cross-role dependency" in lowered or "strictly later" in lowered:
         lines.append(
-            "At least 80% of task minute values must not be divisible by 5. Avoid excessive use of xx:00, xx:05, xx:10, xx:15, xx:20, xx:25, xx:30, xx:35, xx:40, xx:45, xx:50, and xx:55."
-        )
-    if "strictly increasing" in lowered:
-        lines.append(
-            "Within a role, task times must be strictly increasing in JSON array order. Every later task's time must be strictly later than the preceding task; times cannot repeat, move backward, or be equal."
+            "A response to a backward item must use a schedule slot strictly later than that item's time. "
+            "Use independent in-role work for earlier slots."
         )
     return "\n".join(lines)
-
-
-TIME_REMEDIATION_MAX_SUB_ATTEMPTS = 3
-
-
-def _try_time_remediation_for_role(
-    *,
-    agent_client: AgentRequestABC,
-    role: str,
-    role_rows: list[dict[str, Any]],
-    bad_indices: list[int],
-    initial_failure_reason: str,
-    min_tasks_per_role: int,
-    max_tasks_per_role: int,
-    min_non_five_ratio: float,
-    role_candidate_file: Path,
-    logs_dir: Path,
-    source: str,
-    attempt: int,
-    emit_status: StatusCallback,
-) -> tuple[str | None, str | None, dict[str, Any] | None, int, float]:
-    """Re-validate after up to TIME_REMEDIATION_MAX_SUB_ATTEMPTS LLM fixes for out-of-window times."""
-    prior_fb = ""
-    current_rows = list(role_rows)
-    current_bad = list(bad_indices)
-    last_reason = initial_failure_reason
-    last_size = 0
-    extra_elapsed = 0.0
-
-    for sub_k in range(1, TIME_REMEDIATION_MAX_SUB_ATTEMPTS + 1):
-        if not current_bad:
-            break
-        fix_prompt = build_role_task_time_remediation_prompt(
-            role=role,
-            old_tasks=current_rows,
-            bad_indices=current_bad,
-            min_tasks_per_role=min_tasks_per_role,
-            max_tasks_per_role=max_tasks_per_role,
-            validation_reason=last_reason,
-            prior_feedback=prior_fb,
-        )
-        emit_status(f"Time remediation sub-attempt {sub_k}/{TIME_REMEDIATION_MAX_SUB_ATTEMPTS} for role '{role}'")
-        try:
-            resp2 = agent_client.request_completion(fix_prompt)
-        except AgentTimeoutError as exc:
-            prior_fb = f"Request timed out: {exc}"
-            continue
-        except AgentRequestError as exc:
-            prior_fb = f"Request failed: {exc}"
-            continue
-
-        extra_elapsed += resp2.elapsed_seconds
-        write_interactive_log(
-            logs_dir,
-            role=role,
-            attempt=attempt,
-            provider=agent_client.provider_name,
-            model=resp2.model,
-            status_code=resp2.status_code,
-            finish_reason=resp2.finish_reason,
-            response_text=resp2.response_text,
-            raw_response_text=resp2.raw_response_text,
-            request_state="finished",
-            caller=source,
-        )
-        if not resp2.response_text.strip():
-            prior_fb = "The model returned an empty response"
-            continue
-        if resp2.finish_reason == "length":
-            prior_fb = _truncation_reason(role, resp2.finish_reason)
-            continue
-        parsed2 = extract_json_object(resp2.response_text)
-        if parsed2 is None:
-            prior_fb = "Could not parse JSON from the model output"
-            continue
-        new_tasks = parsed2.get(role)
-        ok_merge, merge_err = verify_time_remediation_payload(current_rows, new_tasks, current_bad)
-        if not ok_merge:
-            prior_fb = merge_err or "Merge validation failed"
-            continue
-
-        padded = normalize_role_tasks(
-            {role: new_tasks},
-            min_tasks_per_role=min_tasks_per_role,
-            roles=(role,),
-            preserve_generated_times=True,
-        )
-        save_json_atomic(role_candidate_file, padded)
-        failure_type, reason, data, validated_file_size = validate_generated_task_file(
-            role_candidate_file,
-            min_tasks_per_role=min_tasks_per_role,
-            max_tasks_per_role=max_tasks_per_role,
-            min_non_five_ratio=min_non_five_ratio,
-            roles=(role,),
-            preserve_generated_times=True,
-        )
-        last_size = validated_file_size
-        if failure_type is None and data is not None:
-            emit_status(f"Time remediation succeeded for role '{role}' on sub-attempt {sub_k}")
-            return None, None, data, validated_file_size, extra_elapsed
-        last_reason = reason or failure_type or "validation failed"
-        prior_fb = last_reason
-        pr = padded.get(role, [])
-        if isinstance(pr, list):
-            current_rows = [dict(x) for x in pr if isinstance(x, dict)]
-        current_bad = collect_task_indices_outside_work_windows(current_rows)
-
-    return "quality_fail", last_reason, None, last_size, extra_elapsed
 
 
 def _load_dependency_provider() -> tuple[DependencyContextBuilder | None, DependencyOrderValidator | None]:
@@ -223,7 +110,6 @@ def _load_dependency_provider() -> tuple[DependencyContextBuilder | None, Depend
             continue
     if module is None:
         return None, None
-
     context_builder = getattr(module, "build_dependency_context", None)
     order_validator = getattr(module, "validate_dependency_order", None)
     if not callable(context_builder):
@@ -231,19 +117,6 @@ def _load_dependency_provider() -> tuple[DependencyContextBuilder | None, Depend
     if not callable(order_validator):
         order_validator = None
     return context_builder, order_validator
-
-
-
-def _build_optional_dependency_text(
-    context_builder: DependencyContextBuilder | None,
-    persisted_data: dict[str, Any],
-    role: str,
-) -> str:
-    if context_builder is None:
-        return ""
-    text = context_builder(persisted_data, role)
-    return text if isinstance(text, str) else ""
-
 
 
 def _validate_cross_role_dependencies(
@@ -257,6 +130,60 @@ def _validate_cross_role_dependencies(
     return order_validator(persisted_data, role, candidate_tasks)
 
 
+def _json_time_model_defaults() -> dict[str, Any]:
+    try:
+        from runtime_config import get_generator_config, load_runtime_config
+    except ImportError:
+        from commander.runtime_config import get_generator_config, load_runtime_config
+    return get_generator_config(load_runtime_config())["time_model"]
+
+
+def _resolved_time_model_mapping(
+    role: str,
+    time_model_config: dict[str, Any] | None,
+    target_ini_path: Path | None,
+) -> dict[str, Any]:
+    defaults = time_model_config if time_model_config is not None else _json_time_model_defaults()
+    if target_ini_path is None:
+        return dict(defaults)
+    return load_role_time_model(target_ini_path, role, defaults)
+
+
+def _schedule_time_model(
+    role: str,
+    time_model_config: dict[str, Any] | None,
+    target_ini_path: Path | None,
+) -> TimeModelConfig:
+    return TimeModelConfig.from_mapping(
+        _resolved_time_model_mapping(role, time_model_config, target_ini_path)
+    )
+
+
+def _role_task_count(
+    role: str,
+    time_model_config: dict[str, Any] | None,
+    target_ini_path: Path | None,
+    override: int | None,
+) -> int:
+    if override is not None:
+        return int(override)
+    mapping = _resolved_time_model_mapping(role, time_model_config, target_ini_path)
+    return int(mapping["tasks_per_role"])
+
+
+def _default_schedule(
+    role: str,
+    count: int,
+    time_model_config: dict[str, Any] | None,
+    target_ini_path: Path | None,
+) -> list[str]:
+    return generate_schedule(
+        count,
+        role=role,
+        day=date.today(),
+        config=_schedule_time_model(role, time_model_config, target_ini_path),
+    )
+
 
 def generate_role_tasks(
     *,
@@ -266,18 +193,20 @@ def generate_role_tasks(
     domain_resource_path: Path,
     constraints_resource_path: Path,
     roles: tuple[str, ...] | list[str],
-    min_tasks_per_role: int,
-    max_tasks_per_role: int,
-    min_non_five_ratio: float,
     max_attempts: int,
     agent_client: AgentRequestABC,
     emit_status: StatusCallback,
     save_final_file: Callable[[Path, dict[str, Any]], None] = save_json_atomic,
+    prompt_resources_dir: Path | None = None,
+    tasks_per_role: int | None = None,
+    time_model_config: dict[str, Any] | None = None,
+    target_ini_path: Path | None = None,
+    schedule_builder: ScheduleBuilder | None = None,
 ) -> RoleTaskGenerationResult:
     candidate_file = candidate_task_path(final_file)
     _cleanup_file(candidate_file)
-    domain_context = _read_domain_context(domain_resource_path)
-    if not domain_context.strip():
+    domain_fallback = _read_text_resource(domain_resource_path)
+    if not domain_fallback.strip():
         emit_status(f"Warning: domain resource is empty or missing at {domain_resource_path}")
     constraints_template = _read_text_resource(constraints_resource_path)
     if not constraints_template.strip():
@@ -285,7 +214,12 @@ def generate_role_tasks(
             f"Warning: task-generation constraints are empty or missing at {constraints_resource_path}"
         )
 
+    catalog = load_prompt_catalog(prompt_resources_dir)
     normalized_roles = tuple(roles)
+    role_counts = {
+        role: _role_task_count(role, time_model_config, target_ini_path, tasks_per_role)
+        for role in normalized_roles
+    }
     stats = {
         "api_timeout": 0,
         "api_error": 0,
@@ -296,7 +230,6 @@ def generate_role_tasks(
         "runtime_error": 0,
     }
     last_failure_reason: str | None = None
-    total_elapsed_seconds = 0.0
 
     try:
         persisted_data = load_task_file(final_file)
@@ -312,16 +245,14 @@ def generate_role_tasks(
         if role_tasks_are_complete(
             persisted_data,
             role,
-            min_tasks_per_role=min_tasks_per_role,
-            max_tasks_per_role=max_tasks_per_role,
-            min_non_five_ratio=min_non_five_ratio,
+            tasks_per_role=role_counts[role],
         )
     }
     if len(completed_roles) == len(normalized_roles) and normalized_roles:
         emit_status(f"Unified task file already exists: {final_file}")
         return RoleTaskGenerationResult(True, final_file, None, stats)
 
-    dependency_context_builder, dependency_order_validator = _load_dependency_provider()
+    _, dependency_order_validator = _load_dependency_provider()
 
     for role in normalized_roles:
         role_candidate_file = _role_candidate_path(candidate_file, role)
@@ -329,29 +260,62 @@ def generate_role_tasks(
             emit_status(f"Skipping role '{role}' because valid tasks already exist")
             continue
 
-        related_context = _build_optional_dependency_text(dependency_context_builder, persisted_data, role)
-        role_prompt = build_role_task_prompt(
-            domain_context,
-            constraints_template,
-            min_tasks_per_role=min_tasks_per_role,
-            max_tasks_per_role=max_tasks_per_role,
-            roles=(role,),
-            dependency_context=related_context if isinstance(related_context, str) else "",
+        task_count = role_counts[role]
+        schedule = (
+            schedule_builder(role, task_count)
+            if schedule_builder is not None
+            else _default_schedule(role, task_count, time_model_config, target_ini_path)
         )
+        if len(schedule) != task_count:
+            last_failure_reason = (
+                f"Time model produced {len(schedule)} times for role '{role}', expected {task_count}"
+            )
+            emit_status(last_failure_reason)
+            stats["runtime_error"] += 1
+            return RoleTaskGenerationResult(False, None, last_failure_reason, stats)
 
+        backward = build_backward_items(persisted_data, role)
+        payload = assemble_generation_payload(
+            role=role,
+            task_count=task_count,
+            schedule=schedule,
+            backward=backward,
+            catalog=catalog,
+            domain_fallback=domain_fallback,
+        )
+        system_prompt = format_task_generation_constraints(
+            constraints_template,
+            roles=(role,),
+            tasks_per_role=task_count,
+        )
         role_succeeded = False
         retry_feedback = ""
         emit_status(f"Generating tasks for role '{role}'")
 
         for attempt in range(1, max_attempts + 1):
-            attempt_prompt = role_prompt
-            if retry_feedback:
-                attempt_prompt = f"{role_prompt}\n\n# Previous correction requirements\n{retry_feedback}"
+            system_text, user_text = build_react_generation_messages(
+                constraints_template=system_prompt,
+                payload=payload,
+                retry_feedback=retry_feedback,
+            )
+            use_json_object = attempt == max_attempts and max_attempts > 1
+            if use_json_object:
+                user_text = (
+                    user_text
+                    + "\n\nReturn only the JSON object. Do not include Thought or Action lines."
+                )
+            messages = [
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text},
+            ]
             emit_status(f"Generation attempt {attempt}/{max_attempts} for role '{role}'")
             try:
                 _cleanup_file(role_candidate_file)
-                response = agent_client.request_completion(attempt_prompt)
-                total_elapsed_seconds += response.elapsed_seconds
+                response = agent_client.request_completion(
+                    user_text,
+                    messages=messages,
+                    response_format={"type": "json_object"} if use_json_object else None,
+                )
                 write_interactive_log(
                     logs_dir,
                     role=role,
@@ -377,58 +341,48 @@ def generate_role_tasks(
                     emit_status(last_failure_reason)
                     continue
 
-                parsed = extract_json_object(response.response_text)
+                parsed = extract_react_finish_json(response.response_text)
                 if parsed is None:
                     stats["parse_fail"] += 1
                     last_failure_reason = _parse_failure_reason(role)
                     emit_status(last_failure_reason)
                     continue
 
-                save_json_atomic(role_candidate_file, parsed)
-                normalized_for_scan = normalize_role_tasks(
-                    parsed,
-                    min_tasks_per_role=min_tasks_per_role,
-                    roles=(role,),
-                    preserve_generated_times=True,
-                )
-                raw_rows = normalized_for_scan.get(role, [])
-                role_rows_snapshot: list[dict[str, Any]] = [
-                    x for x in raw_rows if isinstance(x, dict)
-                ] if isinstance(raw_rows, list) else []
+                raw_rows = parsed.get(role)
+                if not isinstance(raw_rows, list):
+                    stats["schema_fail"] += 1
+                    last_failure_reason = f"Role '{role}' data is not a list"
+                    retry_feedback = _build_retry_feedback(last_failure_reason)
+                    emit_status(last_failure_reason)
+                    continue
+                if len(raw_rows) != task_count:
+                    stats["schema_fail"] += 1
+                    last_failure_reason = (
+                        f"Role '{role}' task count {len(raw_rows)} does not match schedule length {task_count}"
+                    )
+                    retry_feedback = _build_retry_feedback(last_failure_reason)
+                    emit_status(last_failure_reason)
+                    continue
 
-                failure_type, reason, data, validated_file_size = validate_generated_task_file(
+                try:
+                    zipped = zip_tasks_with_schedule(
+                        [item if isinstance(item, dict) else {} for item in raw_rows],
+                        schedule,
+                    )
+                except ValueError as exc:
+                    stats["schema_fail"] += 1
+                    last_failure_reason = str(exc)
+                    retry_feedback = _build_retry_feedback(last_failure_reason)
+                    emit_status(last_failure_reason)
+                    continue
+
+                save_json_atomic(role_candidate_file, {role: zipped})
+                failure_type, reason, data, _validated_file_size = validate_generated_task_file(
                     role_candidate_file,
-                    min_tasks_per_role=min_tasks_per_role,
-                    max_tasks_per_role=max_tasks_per_role,
-                    min_non_five_ratio=min_non_five_ratio,
+                    tasks_per_role=task_count,
                     roles=(role,),
                     preserve_generated_times=True,
                 )
-                if failure_type is not None:
-                    bad_idx = collect_task_indices_outside_work_windows(role_rows_snapshot)
-                    if bad_idx:
-                        (
-                            failure_type,
-                            reason,
-                            data,
-                            validated_file_size,
-                            remediation_elapsed,
-                        ) = _try_time_remediation_for_role(
-                            agent_client=agent_client,
-                            role=role,
-                            role_rows=role_rows_snapshot,
-                            bad_indices=bad_idx,
-                            initial_failure_reason=reason or failure_type or "",
-                            min_tasks_per_role=min_tasks_per_role,
-                            max_tasks_per_role=max_tasks_per_role,
-                            min_non_five_ratio=min_non_five_ratio,
-                            role_candidate_file=role_candidate_file,
-                            logs_dir=logs_dir,
-                            source=source,
-                            attempt=attempt,
-                            emit_status=emit_status,
-                        )
-                        total_elapsed_seconds += remediation_elapsed
                 if failure_type is None and data is not None:
                     dependency_ok, dependency_reason = _validate_cross_role_dependencies(
                         dependency_order_validator,
@@ -503,11 +457,9 @@ def generate_role_tasks(
             return RoleTaskGenerationResult(False, None, last_failure_reason, stats)
 
     try:
-        failure_type, reason, data, validated_file_size = validate_generated_task_file(
+        failure_type, reason, data, _validated_file_size = validate_generated_task_file(
             final_file,
-            min_tasks_per_role=min_tasks_per_role,
-            max_tasks_per_role=max_tasks_per_role,
-            min_non_five_ratio=min_non_five_ratio,
+            tasks_per_role=role_counts,
             roles=normalized_roles,
             preserve_generated_times=True,
         )
