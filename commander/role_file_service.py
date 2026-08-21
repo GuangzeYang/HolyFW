@@ -64,6 +64,7 @@ class RoleTaskFileService:
         target_ini_path: Path | None = None,
         prompt_resources_dir: Path | None = None,
         statistic_output_dir: Path | None = None,
+        base_time: int = 9,
     ):
         if (
             max_attempts is None
@@ -104,12 +105,52 @@ class RoleTaskFileService:
         self.target_ini_path = target_ini_path
         self.prompt_resources_dir = prompt_resources_dir
         self.statistic_output_dir = statistic_output_dir
+        self.base_time = int(base_time)
         self.repository = repository or DailyTaskRepository(self.data_dir)
         self._generation_lock = threading.Lock()
         self._statistic_written_date: str | None = None
 
     def get_today_role_task_file(self) -> Path:
-        return self.repository.day_path(date.today().isoformat())
+        return self.get_role_task_file(date.today())
+
+    def get_role_task_file(self, day: date | str) -> Path:
+        iso = day.isoformat() if isinstance(day, date) else str(day).strip()
+        return self.repository.day_path(iso)
+
+    def apply_base_time_shift(self, role_file: Path) -> bool:
+        """Rewrite task times for testing. No-op when base_time is 9 and unstamped."""
+        if not role_file.exists():
+            return False
+        try:
+            from schedule_shift import apply_base_time_shift, file_day_from_tasks_path
+        except ImportError:
+            from commander.schedule_shift import apply_base_time_shift, file_day_from_tasks_path
+        try:
+            data = self.repository.load_path(role_file)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            logging.warning("Skipping schedule base_time shift; failed to load %s: %s", role_file, exc)
+            return False
+        if not isinstance(data, dict) or not data:
+            return False
+        file_day = file_day_from_tasks_path(role_file)
+        try:
+            shifted, changed = apply_base_time_shift(
+                data,
+                self.base_time,
+                file_day=file_day,
+            )
+        except ValueError as exc:
+            logging.warning("Skipping schedule base_time shift: %s", exc)
+            return False
+        if not changed:
+            return True
+        self.repository.save_path(role_file, shifted)
+        logging.info(
+            "Applied schedule base_time=%s to %s",
+            self.base_time,
+            role_file,
+        )
+        return True
 
     def _maybe_write_schedule_statistics(self, role_file: Path) -> None:
         if self.statistic_output_dir is None:
@@ -125,12 +166,20 @@ class RoleTaskFileService:
         if not isinstance(data, dict):
             return
         try:
+            from schedule_shift import ORIGIN_HOUR, apply_base_time_shift
+        except ImportError:
+            from commander.schedule_shift import ORIGIN_HOUR, apply_base_time_shift
+        try:
+            chart_data, _changed = apply_base_time_shift(data, ORIGIN_HOUR)
+        except ValueError:
+            chart_data = data
+        try:
             from time_model import format_statistic_report, write_role_schedule_statistics_from_tasks
         except ImportError:
             from commander.time_model import format_statistic_report, write_role_schedule_statistics_from_tasks
         try:
             payload = write_role_schedule_statistics_from_tasks(
-                data,
+                chart_data,
                 roles=self.roles,
                 day=today,
                 output_dir=self.statistic_output_dir,
@@ -146,6 +195,7 @@ class RoleTaskFileService:
         ok = self._ensure_role_file_core(role_file)
         if ok:
             self._maybe_write_schedule_statistics(role_file)
+            self.apply_base_time_shift(role_file)
         return ok
 
     def _ensure_role_file_core(self, role_file: Path) -> bool:
@@ -241,6 +291,17 @@ class RoleTaskFileService:
                     logging.info(f"Role file {role_file} exists and contains runtime fields")
                     return True
 
+                try:
+                    from schedule_shift import ORIGIN_HOUR, stamp_base_time
+                except ImportError:
+                    from commander.schedule_shift import ORIGIN_HOUR, stamp_base_time
+                if stamp_base_time(data, ORIGIN_HOUR) != ORIGIN_HOUR:
+                    logging.info(
+                        "Role file %s already has a schedule base_time shift; skipping work-window validation",
+                        role_file,
+                    )
+                    return True
+
                 completed_roles = [
                     role
                     for role in self.roles
@@ -319,6 +380,7 @@ class RoleTaskFileService:
                 )
                 if result.success:
                     self._maybe_write_schedule_statistics(role_file)
+                    self.apply_base_time_shift(role_file)
                     return True
 
                 logging.error(

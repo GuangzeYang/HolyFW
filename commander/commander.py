@@ -235,6 +235,7 @@ class TaskScanner:
         target_ini_path: Path | None = None,
         generation_roles: tuple[str, ...] | None = None,
         statistic_output_dir: Path | None = None,
+        base_time: int = 9,
     ):
         self.repository = repository
         self.data_dir = repository.data_dir
@@ -254,6 +255,7 @@ class TaskScanner:
         self.generation_roles = generation_roles if generation_roles is not None else roles
         self.scan_interval_seconds = scan_interval_seconds
         self.max_dispatch_lateness_minutes = max_dispatch_lateness_minutes
+        self.base_time = int(base_time)
         self.generation_retry_interval_seconds = generator_config["generation_retry_interval_seconds"]
         self.role_file_service = RoleTaskFileService(
             self.data_dir,
@@ -267,6 +269,7 @@ class TaskScanner:
             time_model_config=generator_config["time_model"],
             target_ini_path=target_ini_path,
             statistic_output_dir=statistic_output_dir,
+            base_time=self.base_time,
         )
         self.selection_policy = EarliestPendingSelectionPolicy()
         self.scan_service = TaskScanService(
@@ -278,9 +281,17 @@ class TaskScanner:
             debug=debug,
         )
     
+    def _active_task_date(self) -> str:
+        """ISO date of the task file to generate/scan, pinned across midnight wrap."""
+        try:
+            from schedule_shift import resolve_active_task_day
+        except ImportError:
+            from commander.schedule_shift import resolve_active_task_day
+        return resolve_active_task_day(self.repository.load_day)
+
     def _get_role_task_file(self) -> Path:
-        """Return path to unified daily tasks file tasks_MM-DD.json."""
-        return self.role_file_service.get_today_role_task_file()
+        """Return path to the active unified daily tasks file."""
+        return self.role_file_service.get_role_task_file(self._active_task_date())
     
     def _ensure_role_file(self, role_file: Path) -> bool:
         """Ensure unified role task file exists, generate if missing."""
@@ -312,8 +323,8 @@ class TaskScanner:
         logging.info(f"Switched commander file log to {new_path}")
 
     def sync_role_pointers_for_calendar_date(self) -> str:
-        """Clear per-role scan pointers when the local calendar date changes. Returns today ISO."""
-        current_date = date.today().isoformat()
+        """Clear per-role scan pointers when the active task day changes. Returns that ISO date."""
+        current_date = self._active_task_date()
         if current_date != self.last_date:
             logging.info(f"Date changed to {current_date}, clearing role pointers")
             self.role_pointers.clear()
@@ -325,11 +336,13 @@ class TaskScanner:
 
         Task file generation is driven by the generation retry thread, not each scan.
         """
-        role_file = self._get_role_task_file()
+        role_file = self.role_file_service.get_role_task_file(date_str)
         logging.debug(f"Checking role task file: {role_file}")
         if not role_file.exists():
             logging.debug(f"Role task file not present yet, skipping scan cycle: {role_file}")
             return
+
+        self.role_file_service.apply_base_time_shift(role_file)
 
         for expired in self.repository.expire_waiting_tasks(date_str):
             role = expired["role"]
@@ -424,6 +437,7 @@ def serve(
     max_dispatch_lateness_minutes: int = 6,
     debug: bool = False,
     statistic_output_dir: Path | None = None,
+    base_time: int = 9,
 ) -> None:
     data_dir = data_dir.resolve()
     repository = DailyTaskRepository(
@@ -457,6 +471,7 @@ def serve(
         target_ini_path=target_ini_path,
         generation_roles=generation_roles,
         statistic_output_dir=statistic_output_dir,
+        base_time=base_time,
     )
     scanner.start()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -513,7 +528,23 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Directory for --statistic artifacts (default: repository root).",
     )
+    parser.add_argument(
+        "--base-time",
+        type=_parse_base_time_arg,
+        default=None,
+        help="Hour (0-23) when the generated 09:00 workday should start. Default from config (9).",
+    )
     return parser
+
+
+def _parse_base_time_arg(value: str) -> int:
+    try:
+        hour = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("base_time must be an integer 0..23") from exc
+    if not 0 <= hour <= 23:
+        raise argparse.ArgumentTypeError("base_time must be an integer 0..23")
+    return hour
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -548,6 +579,8 @@ def main(argv: list[str] | None = None) -> None:
     logging.info("Starting commander, logs: %s", log_file)
     logging.info("Commander workspace: %s", logs_dir.parent)
     logging.info("Task file directory: %s", data_dir.resolve())
+    resolved_base_time = args.base_time if args.base_time is not None else scanner_config["base_time"]
+    logging.info("Schedule base_time: %s", resolved_base_time)
 
     statistic_output_dir = None
     if args.statistic:
@@ -583,6 +616,7 @@ def main(argv: list[str] | None = None) -> None:
         max_dispatch_lateness_minutes=scanner_config["max_dispatch_lateness_minutes"],
         debug=args.debug,
         statistic_output_dir=statistic_output_dir,
+        base_time=resolved_base_time,
     )
 
 

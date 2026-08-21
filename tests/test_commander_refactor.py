@@ -1678,6 +1678,7 @@ class CommanderParserTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--statistic", result.stdout)
         self.assertIn("--output-dir", result.stdout)
+        self.assertIn("--base-time", result.stdout)
 
 
 if __name__ == "__main__":

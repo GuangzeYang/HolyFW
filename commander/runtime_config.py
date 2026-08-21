@@ -78,6 +78,13 @@ def _validate_positive_int(data: dict[str, Any], dot_path: str) -> int:
     return value
 
 
+def _validate_hour_of_day(data: dict[str, Any], dot_path: str) -> int:
+    value = _read_required(data, dot_path, int)
+    if isinstance(value, bool) or not 0 <= value <= 23:
+        raise ValueError(f"Config key {dot_path} must be an integer 0..23")
+    return value
+
+
 def _validate_schema(data: dict[str, Any]) -> None:
     _read_required(data, "server.host", str)
     _validate_positive_int(data, "server.port")
@@ -90,6 +97,7 @@ def _validate_schema(data: dict[str, Any]) -> None:
     _read_required(data, "scanner.data_dir", str)
     _validate_positive_int(data, "scanner.scan_interval_seconds")
     _validate_positive_int(data, "scanner.max_dispatch_lateness_minutes")
+    _validate_hour_of_day(data, "scanner.base_time")
 
     _validate_positive_int(data, "storage.lock_timeout_seconds")
     _validate_positive_int(data, "storage.max_store_text")
@@ -213,6 +221,7 @@ def get_scanner_config(data: dict[str, Any]) -> dict[str, Any]:
         "max_dispatch_lateness_minutes": _read_required(
             data, "scanner.max_dispatch_lateness_minutes", int
         ),
+        "base_time": _read_required(data, "scanner.base_time", int),
     }
 
 

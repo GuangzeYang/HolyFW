@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Protocol
 
 try:
@@ -81,6 +81,11 @@ class TaskScanService:
             if pointer >= len(tasks):
                 continue
 
+            try:
+                file_day = date.fromisoformat(date_str)
+            except ValueError:
+                file_day = date.today()
+
             while pointer < len(tasks):
                 pointer = self._rewind_pointer_if_earlier_pending(role_key, tasks, pointer, role_pointers)
                 if pointer >= len(tasks):
@@ -110,7 +115,11 @@ class TaskScanService:
 
                 now = datetime.now()
                 task_time_raw = task.get("time")
-                task_time = self._parse_task_datetime(task_time_raw if isinstance(task_time_raw, str) else "", now)
+                task_time = self._parse_task_datetime(
+                    task_time_raw if isinstance(task_time_raw, str) else "",
+                    file_day=file_day,
+                    day_offset=self._clock_wrap_day_offset(tasks, pointer),
+                )
                 if task_time is None:
                     logging.debug(
                         "Invalid task time, skipping",
@@ -239,12 +248,33 @@ class TaskScanService:
                     )
                 break
 
-    def _parse_task_datetime(self, task_time_str: str, now: datetime) -> datetime | None:
+    def _clock_wrap_day_offset(self, tasks: list[dict[str, Any]], index: int) -> int:
+        try:
+            from schedule_shift import clock_wrap_day_offset
+        except ImportError:
+            from commander.schedule_shift import clock_wrap_day_offset
+        return clock_wrap_day_offset(tasks, index)
+
+    def _parse_task_datetime(
+        self,
+        task_time_str: str,
+        now: datetime | None = None,
+        *,
+        file_day: date | None = None,
+        day_offset: int = 0,
+    ) -> datetime | None:
         if not isinstance(task_time_str, str) or ":" not in task_time_str:
             return None
         try:
             hour, minute = map(int, task_time_str.split(":", 1))
-            return datetime(now.year, now.month, now.day, hour, minute)
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                return None
+            if file_day is None:
+                anchor = (now or datetime.now()).date()
+            else:
+                anchor = file_day
+            day = anchor + timedelta(days=int(day_offset))
+            return datetime(day.year, day.month, day.day, hour, minute)
         except (ValueError, AttributeError):
             return None
 
