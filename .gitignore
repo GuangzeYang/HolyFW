@@ -3,6 +3,11 @@
 venv/
 env/
 
+# Packaging
+dist/
+build/
+*.egg-info/
+
 # Python cache
 __pycache__/
 **/__pycache__/

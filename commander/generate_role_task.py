@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 import time
@@ -36,10 +37,26 @@ except ImportError:
         resolve_config_relative_path,
     )
 
-from common import build_controlled_task_file_paths
+from common import build_controlled_task_file_paths, load_task_file
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate daily HolyFW office-role task files.")
+    parser.add_argument(
+        "--statistic",
+        action="store_true",
+        help="After generation succeeds, print time lists and write a 30-minute bin chart.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="",
+        help="Directory for --statistic artifacts (default: repository root).",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
     runtime_config = load_runtime_config()
     scanner_config = get_scanner_config(runtime_config)
     generator_config = get_generator_config(runtime_config)
@@ -81,6 +98,26 @@ def main() -> int:
                 target_ini_path=target_ini_path,
             )
             if result.success:
+                if args.statistic:
+                    try:
+                        from time_model import (
+                            _statistic_output_dir,
+                            format_statistic_report,
+                            write_role_schedule_statistics_from_tasks,
+                        )
+                    except ImportError:
+                        from commander.time_model import (
+                            _statistic_output_dir,
+                            format_statistic_report,
+                            write_role_schedule_statistics_from_tasks,
+                        )
+                    payload = write_role_schedule_statistics_from_tasks(
+                        load_task_file(output_file),
+                        roles=roles,
+                        day=date.today().isoformat(),
+                        output_dir=_statistic_output_dir(args.output_dir),
+                    )
+                    print(format_statistic_report(payload), flush=True)
                 return 0
             print(
                 f"Generation did not succeed; retrying in {interval} seconds. "

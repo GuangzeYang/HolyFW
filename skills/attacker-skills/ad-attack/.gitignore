@@ -1,0 +1,6 @@
+# Runtime artifacts produced by the attacker skill must stay untracked.
+output/
+*.pcap
+*.pcapng
+*.evtx
+*.tmp

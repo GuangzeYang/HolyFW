@@ -1,27 +1,22 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-		
-		"github": {
-		  "type": "local",
-		  "command": ["npx", "-y", "@modelcontextprotocol/server-github"],
-		},
-		
-		"playwright": {
-		  "type": "local",
-		  "command": [
-			"npx",
-			"@playwright/mcp@latest"
-		  ],
-		  "enabled": true
-		},
-		"excel": {
-		  "type": "local",
-		  "command": ["cmd", "/c", "npx", "--yes", "@negokaz/excel-mcp-server"],
-		  "enabled": true,
-		  "environment": {
-			"EXCEL_MCP_PAGING_CELLS_LIMIT": "4000"
-		  }
-		}
-	}
+    "github": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-github"]
+    },
+    "playwright": {
+      "type": "local",
+      "command": ["npx", "@playwright/mcp@latest"],
+      "enabled": true
+    },
+    "excel": {
+      "type": "local",
+      "command": ["cmd", "/c", "npx", "--yes", "@negokaz/excel-mcp-server"],
+      "enabled": true,
+      "environment": {
+        "EXCEL_MCP_PAGING_CELLS_LIMIT": "4000"
+      }
+    }
+  }
 }

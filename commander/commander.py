@@ -21,19 +21,34 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
-from dispatch_client import DispatchClient
-from failure_governor import EmailAlerter, RoleFailureGovernor
-from logging_setup import configure_commander_root_logging, log_extra, reattach_commander_dated_file_handler
-from policies import EarliestPendingSelectionPolicy
-from repository import DailyTaskRepository
-from role_file_service import RoleTaskFileService
 try:
-    from deepseek_client import build_deepseek_client
+    from commander.dispatch_client import DispatchClient
+    from commander.failure_governor import EmailAlerter, RoleFailureGovernor
+    from commander.logging_setup import (
+        configure_commander_root_logging,
+        log_extra,
+        reattach_commander_dated_file_handler,
+    )
+    from commander.policies import EarliestPendingSelectionPolicy
+    from commander.repository import DailyTaskRepository
+    from commander.role_file_service import RoleTaskFileService
+    from commander.scanner_service import TaskScanService
+    from commander.target_config import load_all_roles, load_daily_generation_roles
 except ImportError:
-    from commander.deepseek_client import build_deepseek_client
-from scanner_service import TaskScanService
-from target_config import load_all_roles, load_daily_generation_roles
+    from dispatch_client import DispatchClient
+    from failure_governor import EmailAlerter, RoleFailureGovernor
+    from logging_setup import configure_commander_root_logging, log_extra, reattach_commander_dated_file_handler
+    from policies import EarliestPendingSelectionPolicy
+    from repository import DailyTaskRepository
+    from role_file_service import RoleTaskFileService
+    from scanner_service import TaskScanService
+    from target_config import load_all_roles, load_daily_generation_roles
 from common import parse_task_ref
+
+try:
+    from commander.deepseek_client import build_deepseek_client
+except ImportError:
+    from deepseek_client import build_deepseek_client
 
 try:
     from runtime_config import (
@@ -219,6 +234,7 @@ class TaskScanner:
         debug: bool = False,
         target_ini_path: Path | None = None,
         generation_roles: tuple[str, ...] | None = None,
+        statistic_output_dir: Path | None = None,
     ):
         self.repository = repository
         self.data_dir = repository.data_dir
@@ -250,6 +266,7 @@ class TaskScanner:
             repository=self.repository,
             time_model_config=generator_config["time_model"],
             target_ini_path=target_ini_path,
+            statistic_output_dir=statistic_output_dir,
         )
         self.selection_policy = EarliestPendingSelectionPolicy()
         self.scan_service = TaskScanService(
@@ -406,6 +423,7 @@ def serve(
     email_alert_config: dict[str, Any],
     max_dispatch_lateness_minutes: int = 6,
     debug: bool = False,
+    statistic_output_dir: Path | None = None,
 ) -> None:
     data_dir = data_dir.resolve()
     repository = DailyTaskRepository(
@@ -438,6 +456,7 @@ def serve(
         debug=debug,
         target_ini_path=target_ini_path,
         generation_roles=generation_roles,
+        statistic_output_dir=statistic_output_dir,
     )
     scanner.start()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -484,11 +503,21 @@ def build_parser() -> argparse.ArgumentParser:
             "the configured dispatch window"
         ),
     )
+    parser.add_argument(
+        "--statistic",
+        action="store_true",
+        help="After today's role task file is ready, print time lists and write a 30-minute bin chart.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="",
+        help="Directory for --statistic artifacts (default: repository root).",
+    )
     return parser
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
 
     runtime_config = load_runtime_config()
     server_config = get_server_config(runtime_config)
@@ -518,6 +547,15 @@ def main() -> None:
 
     logging.info("Starting commander, logs: %s", log_file)
 
+    statistic_output_dir = None
+    if args.statistic:
+        try:
+            from time_model import _statistic_output_dir
+        except ImportError:
+            from commander.time_model import _statistic_output_dir
+        statistic_output_dir = _statistic_output_dir(args.output_dir)
+        logging.info("Schedule statistics enabled; artifacts under %s", statistic_output_dir)
+
     serve(
         host,
         port,
@@ -542,6 +580,7 @@ def main() -> None:
         email_alert_config=email_alert_config,
         max_dispatch_lateness_minutes=scanner_config["max_dispatch_lateness_minutes"],
         debug=args.debug,
+        statistic_output_dir=statistic_output_dir,
     )
 
 

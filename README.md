@@ -137,20 +137,24 @@ This means:
 
 ### 1. Environment Requirements
 
-Install the base dependencies from `requirements.txt`:
+Install the project from the repository root (dependencies are declared in `pyproject.toml`):
 
 ```bash
-pip install -r requirements.txt
+pip install .
 ```
 
-The current Python dependencies are:
+For local development, use an editable install:
 
-- `filelock>=3.13.0`
-- `colorlog>=6.8.2`
+```bash
+pip install -e .
+```
+
+This provides the `commander` and `soldier` commands. Python dependencies are `filelock`, `colorlog`, and `matplotlib`.
 
 You also need:
 
 - Python 3.10+
+- Node.js / `npx` on each soldier host (`soldier build` installs Playwright through npx)
 - An executable `opencode` command available on the system
 - Network connectivity between `commander` and every `soldier`
 
@@ -200,32 +204,47 @@ timeout = 900
 
 ### 3. Startup Order
 
-Start `soldier` first, then start `commander`.
+Start `soldier` first, then start `commander`. After `pip install .` the commands are:
+
+#### Install OpenCode skills/MCP on a soldier host
+
+Run once per role host. Copies that role's skills into `~/.config/opencode/skill/` (overwriting existing skill directories), merges MCP servers into `~/.config/opencode/opencode.json`, and installs Playwright Chromium if `npx playwright` is missing.
+
+```bash
+soldier build hr
+```
+
+Roles: `hr`, `accountancy`, `manager`, `programmer`, `attacker`, `victim`.
 
 #### Start soldier
 
 ```bash
-cd soldier
-python soldier.py listen
+soldier listen
 ```
 
 Optional arguments:
 
 ```bash
-python soldier.py listen --bind 0.0.0.0 --listen-port 38472 --commander-host 127.0.0.1 --commander-port 38471
+soldier listen --bind 0.0.0.0 --listen-port 38472 --commander-host 127.0.0.1 --commander-port 38471
 ```
 
 #### Start commander
 
 ```bash
-cd commander
-python commander.py
+commander
 ```
 
 Optional arguments:
 
 ```bash
-python commander.py --host 0.0.0.0 --port 38471 --data-dir ./role_task --debug
+commander --host 0.0.0.0 --port 38471 --data-dir ./role_task --debug
+```
+
+Without installing, from the repository root:
+
+```bash
+python soldier/soldier.py listen
+python commander/commander.py
 ```
 
 By default, tasks wait until their planned time and are then dispatched in generated order,
@@ -237,15 +256,13 @@ regardless of how late they are. With `--debug`, tasks more than
 #### Manually generate the daily task file
 
 ```bash
-cd commander
-python generate_role_task.py
+commander generate
 ```
 
 #### Manually dispatch a task
 
 ```bash
-cd commander
-python dispatch.py --target hr --command "opencode run \"Check email with Exchange\"" --task "Check email with Exchange"
+commander dispatch --target hr --command "opencode run \"Check email with Exchange\"" --task "Check email with Exchange"
 ```
 
 #### On-demand victim campaign (not daily generation)
@@ -253,36 +270,32 @@ python dispatch.py --target hr --command "opencode run \"Check email with Exchan
 `victim` is excluded from the daily `tasks_per_role` quota even if it appears in `commander.ini`. Run one technique at a time. Prefer `step` on the victim host so `~/.holyfw/campaign_state.json` is updated from OpenCode output:
 
 ```powershell
-cd commander
-python victim_campaign.py step --task "Use the penetration-test skill on the victim host, run observe for the reconnaissance phase, {run_id: recon-001, approved target: <DC_IP>, technique: domain users and trusts, traffic objective: LDAP queries to the approved DC, success criteria: sanitized user and trust counts saved, cleanup: not applicable}"
-python victim_campaign.py show
-python victim_campaign.py step
+commander victim step --task "Use the penetration-test skill on the victim host, run observe for the reconnaissance phase, {run_id: recon-001, approved target: <DC_IP>, technique: domain users and trusts, traffic objective: LDAP queries to the approved DC, success criteria: sanitized user and trust counts saved, cleanup: not applicable}"
+commander victim show
+commander victim step
 ```
 
-The second `step` (no `--task`) uses `next_task` from campaign state when the skill returned one after a privilege block or successful bounded step. From commander you can instead `python victim_campaign.py dispatch --task "..."` after enabling `[victim]` in `commander.ini`; the state file is still written on the victim by the skill.
+The second `step` (no `--task`) uses `next_task` from campaign state when the skill returned one after a privilege block or successful bounded step. From commander you can instead `commander victim dispatch --task "..."` after enabling `[victim]` in `commander.ini`; the state file is still written on the victim by the skill.
 
 Replace `<DC_IP>` with an operator-approved domain controller. Do not paste hashes or passwords into the task string.
 
 #### Manually report a result from soldier
 
 ```bash
-cd soldier
-python soldier.py report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status successed --exit-code 0
+soldier report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status successed --exit-code 0
 ```
 
 #### View or lift character circuit breaker status
 
 ```powershell
-cd commander
-python breaker_control.py status
-python breaker_control.py reset --role hr
+commander breaker status
+commander breaker reset --role hr
 ```
 
 #### Manually retry records that ultimately failed to report.
 
 ```powershell
-cd soldier
-python soldier.py replay-failed-reports
+soldier replay-failed-reports
 ```
 
 ## Advanced Usage
@@ -444,9 +457,9 @@ Command-line arguments in `soldier.py` take precedence over `soldier.ini`:
 
 The current task-generation workflow is:
 
-1. `commander/time_model.py` samples a strictly increasing work-window schedule of length `N` using the thesis 3.4 NHPP (dual Gaussian intensity, lunch mask, AR(1) busyness, time-transformation).
-2. `commander/role_task_generation.py` builds a ReAct prompt from `commander/prompt_resources/` (domain, role skills, env, schedule, backward facts).
-3. The LLM returns exactly `N` English task bodies and must not invent timestamps. Output is `Thought` then `Action: Finish` plus JSON.
+1. `commander/time_model.py` samples a strictly increasing work-window schedule from the thesis 3.4 NHPP (dual Gaussian intensity, lunch mask, AR(1) busyness). `tasks_per_role` is the expected daily count E[N]; the realized list length is random.
+2. `commander/role_task_generation.py` counts that list, then builds a ReAct prompt from `commander/prompt_resources/` (domain, role skills, env, schedule, backward facts) with `task_count = len(schedule)`.
+3. The LLM returns exactly that many English task bodies and must not invent timestamps. Output is `Thought` then `Action: Finish` plus JSON.
 4. Commander zips algorithm times onto the task list, validates content and cross-role response order, and persists `tasks_MM-DD.json`.
 
 Working hours are 09:00-12:00 and 13:00-18:00 (lunch 12:00-13:00). Backward items use `{from, to, time, task}` where exactly one endpoint is the role being generated.

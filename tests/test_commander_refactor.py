@@ -644,6 +644,69 @@ class PromptTests(unittest.TestCase):
         self.assertIn('"hr": [tasks]', prompt)
         self.assertNotIn("TASK_FILE_READY", prompt)
 
+    def test_constraints_use_current_skill_grammar(self) -> None:
+        prompt = format_task_generation_constraints(
+            CONSTRAINTS_TEMPLATE,
+            roles=("hr",),
+            tasks_per_role=2,
+        )
+        self.assertNotIn("reply to email", prompt)
+        self.assertIn("open the Exchange mailbox, reply,", prompt)
+        self.assertIn("use view to view a folder", prompt)
+        self.assertIn("opencode run", prompt)
+
+    def test_generation_payload_strips_skill_examples(self) -> None:
+        catalog = {
+            "domain": {"company": "lab"},
+            "skill_templates": {
+                "exchange-use": {
+                    "name": "exchange-use",
+                    "example": "opencode run leftover",
+                    "actions": [{"name": "reply", "example": "Use reply to email"}],
+                }
+            },
+            "roles": {
+                "hr": {
+                    "role": "hr",
+                    "skills": ["exchange-use"],
+                    "env": [],
+                    "duties": "",
+                }
+            },
+        }
+        payload = assemble_generation_payload(
+            role="hr",
+            task_count=1,
+            schedule=["09:00"],
+            catalog=catalog,
+        )
+        skill = payload["skills"][0]
+        self.assertNotIn("example", skill)
+        self.assertNotIn("example", skill["actions"][0])
+        self.assertEqual(skill["actions"][0]["name"], "reply")
+
+    def test_live_payload_has_grammar_templates_without_examples(self) -> None:
+        payload = assemble_generation_payload(
+            role="hr",
+            task_count=2,
+            schedule=["09:07", "10:13"],
+        )
+        by_name = {item.get("name"): item for item in payload["skills"]}
+        for skill in payload["skills"]:
+            self.assertNotIn("example", skill)
+            for action in skill.get("actions") or []:
+                if isinstance(action, dict):
+                    self.assertNotIn("example", action)
+        self.assertIn(
+            "log in to the Odoo system",
+            by_name["odoo-use"]["template"],
+        )
+        self.assertNotIn("playwright-browser and odoo-use", by_name["odoo-use"]["template"])
+        self.assertIn("then execute:", by_name["playwright-browser"]["template"])
+        self.assertIn("create file", [action["name"] for action in by_name["smb-access"]["actions"]])
+        env_text = " ".join(payload["context"]["env"])
+        self.assertIn("/Company_Data/HR-Private", env_text)
+
     def test_react_user_payload_contains_domain_skills_and_backward(self) -> None:
         payload = assemble_generation_payload(
             role="hr",
@@ -883,6 +946,50 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertIn("--- RESPONSE_TEXT ---", response_log_text)
             self.assertNotIn("--- PROMPT_TEXT ---", response_log_text)
             self.assertTrue(any("Successfully generated unified tasks" in item for item in statuses))
+
+    def test_generate_role_tasks_uses_realized_schedule_length(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            final_file = root / "role_task" / "tasks_04-21.json"
+            domain_resource_path = root / "domain_resource.md"
+            domain_resource_path.write_text("# template\nrole tasks", encoding="utf-8")
+            body = json.dumps(
+                {"hr": [{"is_load": False, "task": f"task-{index}"} for index in range(3)]},
+                ensure_ascii=False,
+            )
+            client = FakeAgentClient(
+                response=AgentResponse(
+                    model="deepseek-chat",
+                    response_text=f"Thought: plan\nAction: Finish\n{body}",
+                    status_code=200,
+                    elapsed_seconds=1.0,
+                    raw_response_text=body,
+                    finish_reason="stop",
+                )
+            )
+
+            result = role_task_generation.generate_role_tasks(
+                source="generate_role_task",
+                final_file=final_file,
+                logs_dir=logs_dir,
+                domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
+                roles=("hr",),
+                tasks_per_role=9,
+                max_attempts=1,
+                schedule_builder=lambda _role, _count: ["09:01", "09:17", "10:03"],
+                agent_client=client,
+                emit_status=lambda _message: None,
+            )
+
+            self.assertTrue(result.success)
+            saved = json.loads(final_file.read_text(encoding="utf-8"))
+            self.assertEqual(len(saved["hr"]), 3)
+            prompt = client.prompts[0]
+            self.assertIn("Generate exactly 3 English task bodies", prompt)
+            self.assertIn('"task_count": 3', prompt)
+            self.assertIn("exactly 3 task items", prompt)
 
     def test_generate_role_tasks_merges_single_role_responses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1454,6 +1561,83 @@ class RoleTaskFileServiceTests(unittest.TestCase):
                     ok = service.generate_role_tasks(role_file)
             self.assertFalse(ok)
             mock_gen.assert_called_once()
+
+    def test_ensure_writes_statistics_from_ready_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            data_dir.mkdir()
+            logs_dir = root / "logs"
+            domain = root / "domain.md"
+            domain.write_text("# x", encoding="utf-8")
+            constraints = root / "constraints.md"
+            constraints.write_text(CONSTRAINTS_TEMPLATE, encoding="utf-8")
+            role_file = data_dir / "tasks_01-01.json"
+            role_file.write_text(
+                json.dumps(
+                    {
+                        "hr": [
+                            {
+                                "time": "09:14",
+                                "is_load": False,
+                                "task": "a",
+                                "task_id": "abc",
+                                "status": "waiting",
+                            },
+                            {
+                                "time": "15:02",
+                                "is_load": False,
+                                "task": "b",
+                                "task_id": "def",
+                                "status": "planned",
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stat_dir = root / "stat"
+            service = RoleTaskFileService(
+                data_dir,
+                ("hr",),
+                tasks_per_role=2,
+                max_attempts=1,
+                agent_client=FakeAgentClient(
+                    response=AgentResponse(
+                        model="m",
+                        response_text="{}",
+                        status_code=200,
+                        elapsed_seconds=1.0,
+                        raw_response_text="{}",
+                    )
+                ),
+                domain_resource_file=domain,
+                constraints_resource_file=constraints,
+                logs_dir=logs_dir,
+                statistic_output_dir=stat_dir,
+            )
+            self.assertTrue(service.ensure_role_file(role_file))
+            self.assertTrue((stat_dir / "role_schedule_30min.png").is_file())
+            payload = json.loads((stat_dir / "role_schedule_times.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["roles"]["hr"]["half_hour"]["09:00"], 0)
+            self.assertEqual(payload["roles"]["hr"]["count"], 2)
+
+
+class CommanderParserTests(unittest.TestCase):
+    def test_parser_accepts_statistic_flag(self) -> None:
+        import subprocess
+
+        repo = Path(__file__).resolve().parent.parent
+        result = subprocess.run(
+            [sys.executable, str(repo / "commander" / "commander.py"), "--help"],
+            cwd=str(repo / "commander"),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--statistic", result.stdout)
+        self.assertIn("--output-dir", result.stdout)
 
 
 if __name__ == "__main__":

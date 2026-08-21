@@ -134,6 +134,47 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
 
                 self.assertEqual(build_dependency_context(task_data, "programmer"), "")
 
+    def test_independent_send_email_is_not_a_response_to_inbound_mail(self) -> None:
+        task_data = {
+            "manager": [
+                {
+                    "time": "11:29",
+                    "task": (
+                        "Use the exchange-use skill, open the Exchange mailbox, send email, "
+                        "{recipient: hr, subject: Staffing check}"
+                    ),
+                }
+            ]
+        }
+        candidate_tasks = [
+            {
+                "time": "10:22",
+                "task": (
+                    "Use the exchange-use skill, open the Exchange mailbox, send email, "
+                    "{recipient: manager, subject: Weekly headcount}"
+                ),
+            }
+        ]
+
+        ok, reason = validate_dependency_order(task_data, "hr", candidate_tasks)
+        self.assertTrue(ok, reason)
+
+    def test_odoo_job_alias_is_not_a_named_role_dependency(self) -> None:
+        task_data = {
+            "manager": [
+                {
+                    "time": "14:59",
+                    "task": (
+                        "Use the odoo-use skill, log in to the Odoo system, use the Recruitment "
+                        "module, create job posting, {job position: Quality Assurance Analyst, "
+                        "email address: hr@ndrtest.local}"
+                    ),
+                }
+            ]
+        }
+
+        self.assertEqual(build_backward_items(task_data, "hr"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

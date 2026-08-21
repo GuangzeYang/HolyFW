@@ -1,96 +1,181 @@
 ---
 name: odoo-use
-description: Use when adding, updating, or deleting employees or recruitment records in Odoo. Depends on playwright-browser. Do not use for Exchange mail or SMB files.
+description: Use when the manager role must work in Odoo 17 (Employees, Recruitment, Discuss, Calendar, Contacts, Surveys, and other Home Menu apps). Depends on playwright-browser. Do not use for Exchange mail or SMB files.
 ---
 
-# Dependency
+Load and follow `playwright-browser` before any browser step. Use Playwright MCP only.
 
-Load the `playwright-browser` skill before use.
+If Discuss or another Odoo app chrome is already visible (Home Menu button present), skip Sign in.
+
+# Endpoints (frozen)
+
+- URL: `http://172.16.24.14:8069/` (login form is `/web/login`)
+- Email field: `manager`
+- Password: `Njupt@241`
+- Do not invent another URL or password. Do not open the **Apps** installer.
+
+# Sign in
+
+1. Navigate to `http://172.16.24.14:8069/web/login`.
+2. Fill `#login` (label **Email**, placeholder Email) with `manager`.
+3. Fill `#password` (label **Password**) with the password above.
+4. Click the button **Log in**.
+5. Wait until the URL contains `/web` and the purple navbar shows **Discuss** (or another app name) with a waffle/grid icon on the far left. Default landing is **Discuss**. If `#login` is still shown, stop. Do not wait for an accessible name `Home Menu`; Playwright `getByRole('button', { name: 'Home Menu' })` is often **false** even when the waffle is on screen.
+
+# Home Menu
+
+1. Click the **waffle / 3×3 grid** at the far left of the purple navbar (left of the current app name, e.g. Discuss). Prefer `button[title='Home Menu']` or `.o_navbar_apps_menu`. Do not require `getByRole('button', { name: 'Home Menu' })`.
+2. A left app list appears. Click the app named in the prompt. Known apps: **Discuss**, **To-do**, **Calendar**, **Contacts**, **Project**, **Email Marketing**, **Surveys**, **Employees**, **Recruitment**.
+3. Wait for that app’s action header (often a purple **New** button or Inbox).
+4. If already in the requested app (navbar shows that name), skip this section.
+
+# Shared form rules
+
+- Many2one (Department, Job Position record, Manager, Coach): click the input, type the value, wait for the dropdown. Click the matching row. If the only row is **Create ...**, click that **Create** row. Do not press Enter blindly.
+- After a create/update, click **Save manually** (cloud icon, accessible name contains `Save manually`) in the action header next to **New**. Success: that button **disappears**. If it stays visible, a required field is missing (empty **Employee's Name**, incomplete applicant, etc.). Stop. Click **Discard changes**. Do **not** click `.o_cp_action_menus` — that gear stays **disabled** until the record is saved, and the click times out.
+- Unwanted new form: click **Discard changes**, never **Save manually**.
+- Saving a blank employee shows a notification/modal. Dismiss it and **Discard**. Do not retry Save in a loop.
+- Search: click the header **Search...** input, type the query, press Enter. Wait for kanban/list to refresh.
+- Open a kanban record: click the card `div` whose title matches the name. Scroll until it is in view.
+- `getByRole('button', { name: 'Home Menu' })` is **false** after login. Always use `button[title='Home Menu']` / `.o_navbar_apps_menu`.
+
+# Employees
+
+Navbar: **Employees** | **Departments** | Reporting | Configuration.
+
+Kanban of employee cards; left sidebar **DEPARTMENT**.
+
+## search employee
+
+`{name: ...}` or `{query: ...}`
+
+1. Open **Employees**.
+2. Type the name into **Search...**. Press Enter.
+3. Confirm a card showing that name, or an empty kanban. Stop if missing when the prompt required a hit.
+
+## open employee
+
+`{name: ...}`
+
+1. Search if needed, then click the card whose **name** matches.
+2. Wait for the form (large **Employee's Name** input). Confirm the name field value.
+
+## add employee
+
+`{name: ...}` required. Optional: `job position`, `work email`, `work phone`, `work mobile`, `department`, `manager`, `tags`.
+
+1. Open **Employees**. Click **New**. Wait for breadcrumb `Employees / New`.
+2. **Employee's Name**: `#name_0`, placeholder `Employee's Name`. Fill `name`.
+3. **Do not** type the job into `#job_title_0` (placeholder **Job Position** directly under the name). That is a free-text title, not the job record.
+4. **Job Position (record)**: on the right column, input beside the **lower** Job Position label (header row with Department / Job Position / Manager / Coach). Type `job position`, then pick or **Create ...** as in Shared form rules.
+5. **Work Email**: input to the right of **Work Email** (`#work_email_0`). Fill `work email`.
+6. Fill any other provided fields by their labels: **Work Mobile**, **Work Phone**, **Department**, **Manager**, **Tags**.
+7. Click **Save manually**. Confirm it hides. Confirm the breadcrumb no longer says `New`.
+
+## update employee
+
+`{name: ...}` required, plus any fields to change from add employee.
+
+1. Open the employee.
+2. Change only the provided fields (same locators as add). Still skip `#job_title_0` unless the prompt explicitly says job title text.
+3. Click **Save manually**. Confirm it hides.
+
+## delete employee
+
+`{name: ...}` required.
+
+1. Open the employee.
+2. Click `.o_cp_action_menus button` (gear / ⋮ in the action header beside **New**).
+3. Click **Delete**. In the dialog click **Delete** again.
+4. Success: search for the name returns no kanban card. If the card is already gone, treat delete as done (idempotent).
+
+## departments
+
+1. Open **Employees**. Click navbar **Departments**.
+2. To inspect: click a department row/card.
+3. To add only if the prompt has `{name: ...}`: click **New**, fill the department name, **Save manually**. Otherwise stay read-only.
+
+# Recruitment
+
+Navbar: **Recruitment** | **Applications** | Reporting | Configuration.
+
+Kanban title **Job Positions**. Each card: job title, star, **⋮**, button **N New Applications**, link **N To Recruit**.
+
+## create job posting
+
+`{job position: ...}` required. Optional: `email address` (application alias).
+
+1. Open **Recruitment**. Click **New**. Dialog **Create a Job Position**.
+2. **Job Position**: `#name_0`, placeholder `e.g. Sales Manager`. Fill `job position`.
+3. If `email address` is set: split at `@`. Prefix → `#alias_name_0` (`e.g. sales-manager`). Domain → `#alias_domain_id_0` (`e.g. domain.com`). If there is no `@`, type the whole value in the prefix box.
+4. Click **Create** (not Discard, not the page-level New).
+5. Confirm a kanban card titled with `job position`. If the dialog is still open, Create failed; stop.
+
+## update job posting
+
+`{job position: ...}` plus fields to change: `department`, `email address`, new title.
+
+1. Open **Recruitment**. Click the **N To Recruit** link (`a[name=edit_job]`) on the card whose title matches `job position` (or click the job title).
+2. Edit **Job Position** (clear first if replacing). **Department**: many2one to the right of Department. **Email Alias**: two inputs split at `@`.
+3. **Save manually**. Confirm it hides.
+
+## delete job posting
+
+`{job position: ...}` required.
+
+1. Open **Recruitment**. Click **N To Recruit** (`a[name=edit_job]`) on the matching card.
+2. Click `.o_cp_action_menus button`, then **Delete**, then dialog **Delete**.
+3. Search for the job title. Success: no kanban card. If already gone, stop successfully.
+
+## view applications
+
+Optional `{job position: ...}`.
+
+1. Open **Recruitment**.
+2. On the matching card (or the first card if omitted), click **N New Applications** (`button[name=324]`).
+3. Wait for the application kanban/list. Do not create an applicant unless the prompt has applicant fields.
+
+## create applicant
+
+`{name: ...}` required. Optional: `job position`, `email`, `phone`.
+
+1. Navbar **Applications** or **view applications** first.
+2. Click **New**. Fill the applicant **name** and any provided email/phone/job. Name-only is often **not** enough: **Save manually** stays visible and the Actions gear stays **disabled**. Fill every required field shown with a red/invalid marker, then Save until the cloud icon **hides**.
+3. **Save manually**. Confirm it hides. If it does not hide, **Discard** — do not click Delete.
+
+# Discuss
+
+1. Open **Discuss** (often already open after login).
+2. **read inbox**: click **Inbox**. Read the empty state or the first thread. Optional **Mark all read**.
+3. **post message**: click channel **general** (or `{channel: ...}`). Click the composer at the bottom, type `{body: ...}`, press Enter or click Send.
+4. **search messages**: click **Search Messages**, type `{query: ...}`.
+
+# Calendar
+
+1. Open **Calendar**.
+2. **view**: confirm Week/Today chrome. Stop if the prompt is view-only.
+3. **create event** when `{title: ...}` is set: click **New**. Fill the title / attendees (`+ Add Attendees`) from the prompt. Save if a Save/Close control appears. Do not save an empty event.
+
+# Contacts
+
+1. Open **Contacts**.
+2. Search or click **New** only when `{name: ...}` is set. Fill **Name** and optional **Email** / **Phone**. **Save manually**.
+
+# Surveys / To-do / Project / Email Marketing
+
+Open the app from Home Menu. Use **Search...** or click a card. Click **New** only when the prompt supplies a title/name. For Surveys, **Try It** is allowed for read-only traffic. Do not uninstall modules. Do not open **Apps**.
 
 # Anti-patterns
 
-- Do not type into the Job Position field directly under Employee Name. Use the Job Position input beside the lower Job Position label.
-- Do not skip Save. Confirm the cloud Save manually button hides after a successful save.
-- Do not invent a different Odoo URL or password.
+- Do not type the job record into the Job Position box **under** Employee's Name (`#job_title_0`).
+- Do not skip **Save manually** after a real create/update.
+- Do not click **Create** on a discarded recruitment dialog leftover.
+- Do not invent Odoo URLs, databases, or passwords.
+- Do not block on `getByRole('button', { name: 'Home Menu' })`; use the waffle `title='Home Menu'`.
 
-# Sign in to Odoo
+# Idempotency
 
-Follow the "Sign in to Odoo" steps only when sign-in is required; otherwise, skip these steps.
-
-1. Use the 'playwright-browser' skill to start the browser and navigate to http://172.16.24.14:8069/.
-2. Enter `manager` in the input below the “Email” text.
-3. Enter `Njupt@241` in the input below the “Password” text.
-4. Click the “Log in” button.
-
-# Employees module
-
-Employee information is defined in a **JSON-like format**, for example: {name: DemoNew1, position: Sales, work email: 123987@demo.com}.
-
-## Add an employee
-
-1. **Open the module**: Click the nine-dot icon (Home Menu) to the left of “Discuss” in the upper-left corner of the page.
-2. **Select the application**: Click “Employees” in the list to open the employees page.
-3. **Start creating**: Click the “New” button in the upper-left corner of the employees page.
-4. **Fill in the form**:
-
-   - Name: Enter the new employee's name in the “Employee Name” input.
-   - Position: Enter the new employee's position in the input next to the “Job Position” label.
-     - Note: There is also a “Job Position” directly below “Employee Name”, but it is not where information should be entered. The correct input is next to the lower “Job Position” label.
-     - After entering the position, if the drop-down list contains only an item with the “Create” keyword, click the first item, namely “Create xxx”.
-   - Work email: Enter the new employee's email address in the input to the right of “Work Email”.
-5. **Save**: Click the “Save” icon (cloud- or disk-shaped) at the top of the page. It is a `button` element whose label contains the “Save manually” keyword.
-
-## Delete an employee
-
-1. **Open the module**: Click the nine-dot icon (Home Menu) to the left of “Discuss” in the upper-left corner of the page.
-2. **Select the application**: Click “Employees” in the list to open the employees page.
-3. **Select the employee**: Find the name of the employee to delete in the employee table displayed on the page, hover over the employee's `div`, and click it to open the employee information page.
-   - Note: If the employee is not displayed when searching by name, scroll the page until the employee is within the viewport, then locate the employee.
-4. **Delete the employee**:
-   - Open the employee settings: Click the gear icon next to the “New” button at the top. The gear icon is a `button` element. A drop-down list appears.
-   - Open the deletion dialog: Click the “Delete” button in the newly displayed drop-down list. In the DOM, it is a `span` element. A dialog then appears.
-   - Delete: Click the “Delete” button in the dialog.
-5. **Verify the result**: If the name shown in the employee information after deletion is not the deleted employee's name, consider the deletion successful.
-
-## Modify employee information
-
-1. **Open the module**: Click the nine-dot icon (Home Menu) to the left of “Discuss” in the upper-left corner of the page.
-2. **Select the application**: Click “Employees” in the list to open the employees page.
-3. **Select the employee**: Find the name of the employee to modify in the employee table displayed on the page, hover over the employee's `div`, and click it to open the employee information page.
-   - Note: If the employee is not displayed when searching by name, scroll the page until the employee is within the viewport, then locate the employee.
-4. **Modify the information**: The information page contains a group of form-like `div` elements. Modify the corresponding fields based on the provided information. Refer to “Add an employee” for the locations of the information-editing controls.
-
-# Recruitment module
-
-Recruitment information is defined in a **JSON-like format**, for example: {job position: Human Resources Manager, department: Human Resources Department, email address: 123987@demo.com, work location: Nanjing}.
-
-## Create a recruitment position
-
-1. **Open the module**: Click the nine-dot icon (Home Menu) to the left of “Discuss” in the upper-left corner of the page.
-2. **Select the application**: Click “Recruitment” in the list to open the recruitment page.
-3. **Start creating**: Click the “New” button in the upper-left corner of the recruitment page. A dialog appears.
-4. **Fill in the recruitment information**:
-   - Job position: Enter the job position name in the input to the right of the “Job Position” text label.
-   - Email: Enter the email address in the input to the right of the “Application Email” text label.
-5. **Create**: Click the “Create” button at the bottom of the dialog to create the recruitment position.
-6. **Verify the result**: Confirm that the newly created position name appears in the recruitment information table on the recruitment page.
-
-## Modify recruitment information
-
-1. **Open the module**: Click the nine-dot icon (Home Menu) to the left of “Discuss” in the upper-left corner of the page.
-2. **Select the application**: Click “Recruitment” in the list to open the recruitment page.
-3. **Open the recruitment details**: The recruitment page displays a recruitment information table. Each cell in the table has a hyperlink containing the “Recruitment” keyword. Find the corresponding cell based on the recruitment information, then click the hyperlink to open the recruitment details.
-4. **Modify the information**:
-   - Job position: Enter the job position in the text area below the “Job Position” text label.
-     - Note: If the text area contains existing content, clear it before entering the new content.
-   - Department: Enter the department in the input to the right of the “Department” label.
-   - Email address: Enter the email address in the input to the right of the “Email Alias” text label.
-     - Note: The email address input is divided into two inputs at the “@” symbol. Split the address accordingly when entering it.
-5. **Save the changes**: Click the “Save manually” button next to the “New” button at the top. It is a cloud-shaped icon.
-6. **Verify the result**: Confirm that the “Save manually” button next to the “New” button at the top, which is a cloud-shaped icon, is hidden and no longer visible on the page.
-
-## View recruitment applications
-
-1. **Open the module**: Click the nine-dot icon (Home Menu) to the left of “Discuss” in the upper-left corner of the page.
-2. **Select the application**: Click “Recruitment” in the list to open the recruitment page.
-3. **View applications**: The recruitment page displays a recruitment information table. Each cell in the table has a button containing the “New Applications” keyword. Find the corresponding cell based on the recruitment information, then click the button to open the application view.
+- Search + open the same employee twice is safe.
+- Add/create is **not** idempotent: use a unique `{name}` / `{job position}` from the prompt. Do not create a second record because the first save looked slow.
+- Update: writing the same field values again is safe.
+- Delete: if search returns no card, the delete already succeeded.

@@ -1,0 +1,39 @@
+{
+  "schema_version": 2,
+  "last_updated": "",
+
+  "domain": {
+    "name": "",
+    "netbios": "",
+    "dc_fqdn": "",
+    "dc_ip": "",
+    "dcs": [],
+    "domain_sid": "",
+    "user_count": 0,
+    "computer_count": 0,
+    "usernames": [],
+    "spns": [],
+    "delegation": [],
+    "updated_at": ""
+  },
+
+  "hosts": [],
+
+  "users": [],
+
+  "wordlists": {
+    "usernames": "wordlists/usernames.txt",
+    "passwords": "wordlists/passwords.txt"
+  },
+
+  "tickets": {
+    "tgt": [],
+    "service": [],
+    "golden": [],
+    "silver": []
+  },
+
+  "files": [],
+  "techniques": {},
+  "notes": []
+}

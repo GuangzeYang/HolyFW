@@ -25,7 +25,17 @@ def resolve_config_relative_path(raw_path: str) -> Path:
     expanded = Path(os.path.expanduser(raw_path.strip()))
     if expanded.is_absolute():
         return expanded.resolve()
-    return (Path(__file__).resolve().parent / expanded).resolve()
+    candidate = (Path(__file__).resolve().parent / expanded).resolve()
+    if candidate.exists():
+        return candidate
+    try:
+        from holyfw_assets import bundled_file
+    except ImportError:
+        return candidate
+    fallback = bundled_file(Path(raw_path.strip()).name)
+    if fallback is not None:
+        return fallback.resolve()
+    return candidate
 
 
 def _dot_get(data: dict[str, Any], dot_path: str) -> Any:

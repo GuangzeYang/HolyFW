@@ -14,12 +14,12 @@ try:
     from agent_request_abc import AgentRequestABC
     from deepseek_client import build_deepseek_client
     from repository import DailyTaskRepository
-    from role_task_generation import _role_task_count, generate_role_tasks
+    from role_task_generation import generate_role_tasks
 except ImportError:
     from commander.agent_request_abc import AgentRequestABC
     from commander.deepseek_client import build_deepseek_client
     from commander.repository import DailyTaskRepository
-    from commander.role_task_generation import _role_task_count, generate_role_tasks
+    from commander.role_task_generation import generate_role_tasks
 
 from common import (
     candidate_task_path,
@@ -63,6 +63,7 @@ class RoleTaskFileService:
         time_model_config: dict[str, Any] | None = None,
         target_ini_path: Path | None = None,
         prompt_resources_dir: Path | None = None,
+        statistic_output_dir: Path | None = None,
     ):
         if (
             max_attempts is None
@@ -102,19 +103,52 @@ class RoleTaskFileService:
         self.time_model_config = time_model_config
         self.target_ini_path = target_ini_path
         self.prompt_resources_dir = prompt_resources_dir
+        self.statistic_output_dir = statistic_output_dir
         self.repository = repository or DailyTaskRepository(self.data_dir)
         self._generation_lock = threading.Lock()
-
-    def _expected_count(self, role: str) -> int:
-        return _role_task_count(role, self.time_model_config, self.target_ini_path, self.tasks_per_role)
-
-    def _expected_counts(self) -> dict[str, int]:
-        return {role: self._expected_count(role) for role in self.roles}
+        self._statistic_written_date: str | None = None
 
     def get_today_role_task_file(self) -> Path:
         return self.repository.day_path(date.today().isoformat())
 
+    def _maybe_write_schedule_statistics(self, role_file: Path) -> None:
+        if self.statistic_output_dir is None:
+            return
+        today = date.today().isoformat()
+        if self._statistic_written_date == today:
+            return
+        try:
+            data = self.repository.load_path(role_file)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            logging.warning("Skipping schedule statistics; failed to load %s: %s", role_file, exc)
+            return
+        if not isinstance(data, dict):
+            return
+        try:
+            from time_model import format_statistic_report, write_role_schedule_statistics_from_tasks
+        except ImportError:
+            from commander.time_model import format_statistic_report, write_role_schedule_statistics_from_tasks
+        try:
+            payload = write_role_schedule_statistics_from_tasks(
+                data,
+                roles=self.roles,
+                day=today,
+                output_dir=self.statistic_output_dir,
+            )
+        except (ValueError, RuntimeError, OSError) as exc:
+            logging.warning("Skipping schedule statistics: %s", exc)
+            return
+        self._statistic_written_date = today
+        logging.info("Wrote schedule statistics:\n%s", format_statistic_report(payload))
+
     def ensure_role_file(self, role_file: Path) -> bool:
+        """Ensure unified role task file exists, generate if missing."""
+        ok = self._ensure_role_file_core(role_file)
+        if ok:
+            self._maybe_write_schedule_statistics(role_file)
+        return ok
+
+    def _ensure_role_file_core(self, role_file: Path) -> bool:
         """Ensure unified role task file exists, generate if missing."""
         if role_file.exists():
             try:
@@ -213,7 +247,7 @@ class RoleTaskFileService:
                     if role_tasks_are_complete(
                         data,
                         role,
-                        tasks_per_role=self._expected_count(role),
+                        tasks_per_role=len(data[role]) if isinstance(data.get(role), list) else 0,
                     )
                 ]
                 if len(completed_roles) == len(self.roles):
@@ -225,9 +259,13 @@ class RoleTaskFileService:
                     )
                     return self.generate_role_tasks(role_file)
 
+                actual_counts = {
+                    role: len(data[role]) if isinstance(data.get(role), list) else 0
+                    for role in self.roles
+                }
                 valid, reason = validate_role_tasks(
                     data,
-                    tasks_per_role=self._expected_counts(),
+                    tasks_per_role=actual_counts,
                     roles=self.roles,
                 )
                 if not valid:
@@ -238,7 +276,10 @@ class RoleTaskFileService:
                     )
                     valid_after_fix, reason_after_fix = validate_role_tasks(
                         normalized,
-                        tasks_per_role=self._expected_counts(),
+                        tasks_per_role={
+                            role: len(normalized[role]) if isinstance(normalized.get(role), list) else 0
+                            for role in self.roles
+                        },
                         roles=self.roles,
                     )
                     if not valid_after_fix:
@@ -277,6 +318,7 @@ class RoleTaskFileService:
                     prompt_resources_dir=self.prompt_resources_dir,
                 )
                 if result.success:
+                    self._maybe_write_schedule_statistics(role_file)
                     return True
 
                 logging.error(

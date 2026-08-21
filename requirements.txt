@@ -1,2 +1,5 @@
+# Python dependencies are declared in pyproject.toml.
+# Install the project with: pip install .
 filelock>=3.13.0
 colorlog>=6.8.2
+matplotlib>=3.8.0

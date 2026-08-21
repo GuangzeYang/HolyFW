@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "holyfw"
+version = "0.1.0"
+description = "HolyFramework: commander/soldier office-traffic simulation"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "filelock>=3.13.0",
+  "colorlog>=6.8.2",
+  "matplotlib>=3.8.0",
+]
+
+[project.scripts]
+commander = "commander.cli:main"
+soldier = "soldier.soldier:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["commander", "soldier", "holyfw_assets"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"common.py" = "common.py"
+"skills" = "holyfw_assets/skills"
+"mcp" = "holyfw_assets/mcp"
+"domain_resource.md" = "holyfw_assets/domain_resource.md"
+"task_generation_constraints.md" = "holyfw_assets/task_generation_constraints.md"
+"commander/config.json" = "commander/config.json"
+"commander/commander.ini" = "commander/commander.ini"
+"commander/prompt_resources" = "commander/prompt_resources"
+"soldier/soldier.ini" = "soldier/soldier.ini"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/commander",
+  "/soldier",
+  "/holyfw_assets",
+  "/common.py",
+  "/skills",
+  "/mcp",
+  "/domain_resource.md",
+  "/task_generation_constraints.md",
+  "/tests",
+  "/README.md",
+  "/pyproject.toml",
+]

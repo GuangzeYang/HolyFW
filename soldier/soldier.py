@@ -1180,7 +1180,7 @@ def run_report(args: argparse.Namespace, config_path: Path) -> int:
     return 0 if resp.get("ok") is True else 1
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Soldier: listen for dispatched tasks by default and execute; can use report subcommand to manually report",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1219,8 +1219,20 @@ Default reads {DEFAULT_CONFIG_NAME} in same directory:
         "replay-failed-reports",
         help="retry records in runtime/failed_reports.jsonl once",
     )
+    build_p = sub.add_parser(
+        "build",
+        help="install this role's OpenCode skills and MCP into ~/.config/opencode",
+    )
+    build_p.add_argument("role", help="role name (hr, accountancy, manager, programmer, attacker, victim)")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.cmd == "build":
+        try:
+            from soldier.host_build import run_build
+        except ImportError:
+            from host_build import run_build
+
+        return run_build(args.role)
 
     script_dir = Path(__file__).resolve().parent
     soldier_logs = get_logs_dir(script_dir)

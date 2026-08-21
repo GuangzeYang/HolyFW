@@ -171,18 +171,33 @@ def _role_task_count(
     return int(mapping["tasks_per_role"])
 
 
+def _max_schedule_count() -> int:
+    try:
+        from runtime_config import WORKDAY_MINUTES, get_generator_config, load_runtime_config
+    except ImportError:
+        from commander.runtime_config import WORKDAY_MINUTES, get_generator_config, load_runtime_config
+    min_internal = int(get_generator_config(load_runtime_config())["min_internal"])
+    return max(1, WORKDAY_MINUTES // min_internal)
+
+
 def _default_schedule(
     role: str,
-    count: int,
+    expected_count: int,
     time_model_config: dict[str, Any] | None,
     target_ini_path: Path | None,
 ) -> list[str]:
     return generate_schedule(
-        count,
+        expected_count,
         role=role,
         day=date.today(),
         config=_schedule_time_model(role, time_model_config, target_ini_path),
+        max_count=_max_schedule_count(),
     )
+
+
+def _stored_role_count(data: dict[str, Any], role: str) -> int:
+    tasks = data.get(role)
+    return len(tasks) if isinstance(tasks, list) else 0
 
 
 def generate_role_tasks(
@@ -216,7 +231,7 @@ def generate_role_tasks(
 
     catalog = load_prompt_catalog(prompt_resources_dir)
     normalized_roles = tuple(roles)
-    role_counts = {
+    expected_counts = {
         role: _role_task_count(role, time_model_config, target_ini_path, tasks_per_role)
         for role in normalized_roles
     }
@@ -245,7 +260,7 @@ def generate_role_tasks(
         if role_tasks_are_complete(
             persisted_data,
             role,
-            tasks_per_role=role_counts[role],
+            tasks_per_role=_stored_role_count(persisted_data, role),
         )
     }
     if len(completed_roles) == len(normalized_roles) and normalized_roles:
@@ -260,19 +275,21 @@ def generate_role_tasks(
             emit_status(f"Skipping role '{role}' because valid tasks already exist")
             continue
 
-        task_count = role_counts[role]
+        expected_count = expected_counts[role]
         schedule = (
-            schedule_builder(role, task_count)
+            schedule_builder(role, expected_count)
             if schedule_builder is not None
-            else _default_schedule(role, task_count, time_model_config, target_ini_path)
+            else _default_schedule(role, expected_count, time_model_config, target_ini_path)
         )
-        if len(schedule) != task_count:
-            last_failure_reason = (
-                f"Time model produced {len(schedule)} times for role '{role}', expected {task_count}"
-            )
+        task_count = len(schedule)
+        if task_count <= 0:
+            last_failure_reason = f"Time model produced no time nodes for role '{role}'"
             emit_status(last_failure_reason)
             stats["runtime_error"] += 1
             return RoleTaskGenerationResult(False, None, last_failure_reason, stats)
+        emit_status(
+            f"Sampled {task_count} time nodes for role '{role}' (expected {expected_count})"
+        )
 
         backward = build_backward_items(persisted_data, role)
         payload = assemble_generation_payload(
@@ -457,9 +474,12 @@ def generate_role_tasks(
             return RoleTaskGenerationResult(False, None, last_failure_reason, stats)
 
     try:
+        realized_counts = {
+            role: _stored_role_count(persisted_data, role) for role in normalized_roles
+        }
         failure_type, reason, data, _validated_file_size = validate_generated_task_file(
             final_file,
-            tasks_per_role=role_counts,
+            tasks_per_role=realized_counts,
             roles=normalized_roles,
             preserve_generated_times=True,
         )

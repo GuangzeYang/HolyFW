@@ -1,84 +1,342 @@
 {
   "exchange-use": {
     "name": "exchange-use",
-    "when": "Use when the role must send, view, or reply to Exchange email.",
-    "template": "Use the exchange-use skill, open the Exchange mailbox, <action>[, {parameters}]",
+    "when": "Use when the role must send, view, reply, forward, search, or file Exchange mail.",
+    "template": "Use the exchange-use skill, open the Exchange mailbox, <action>, {<field>: <value>, ...}",
+    "params": "JSON-like object: no quotation marks around keys or values. Omit unused keys. Omit the {...} block when the action has no fields.",
+    "rules": [
+      "target defaults to first email when omitted on view, reply, reply all, forward, delete, or flag.",
+      "recipient, cc, and bcc must be a lab role short name (manager, hr, accountancy, programmer) or the matching *@ndrtest.local address. Do not send to the current role.",
+      "Do not invent mailboxes outside the four lab roles."
+    ],
     "actions": [
       {
         "name": "send email",
-        "fields": ["recipient", "cc", "subject", "body"],
-        "example": "Use the exchange-use skill, open the Exchange mailbox, send email, {recipient: manager@ndrtest.local, subject: Weekly staffing update, body: Please review the attached headcount notes.}"
+        "required": ["recipient", "subject", "body"],
+        "optional": ["cc", "bcc", "attachment"]
       },
       {
         "name": "view email",
-        "fields": ["target"],
-        "example": "Use the exchange-use skill, open the Exchange mailbox, view email, {target: first email}"
+        "required": [],
+        "optional": ["target", "folder"]
       },
       {
-        "name": "reply to email",
-        "fields": ["cc", "body"],
-        "example": "Use the exchange-use skill, open the Exchange mailbox, reply to email, {body: Received. I will handle this after the related work is complete.}"
+        "name": "reply",
+        "required": ["body"],
+        "optional": ["target", "cc"]
+      },
+      {
+        "name": "reply all",
+        "required": ["body"],
+        "optional": ["target", "cc"]
+      },
+      {
+        "name": "forward",
+        "required": ["recipient"],
+        "optional": ["target", "body", "cc"]
+      },
+      {
+        "name": "search",
+        "required": ["query"],
+        "optional": ["target"]
+      },
+      {
+        "name": "delete",
+        "required": [],
+        "optional": ["target", "folder"]
+      },
+      {
+        "name": "move",
+        "required": ["folder"],
+        "optional": ["target"]
+      },
+      {
+        "name": "flag",
+        "required": [],
+        "optional": ["target"]
+      },
+      {
+        "name": "mark unread",
+        "required": [],
+        "optional": ["target"]
+      },
+      {
+        "name": "save draft",
+        "required": ["body"],
+        "optional": ["recipient", "subject"]
+      },
+      {
+        "name": "open calendar",
+        "required": [],
+        "optional": []
+      },
+      {
+        "name": "open people",
+        "required": [],
+        "optional": []
+      },
+      {
+        "name": "open tasks",
+        "required": [],
+        "optional": []
       }
     ]
   },
   "odoo-use": {
     "name": "odoo-use",
-    "when": "Use when the role must manage employees or recruitment in Odoo.",
-    "template": "Use the playwright-browser and odoo-use skills, open the browser, log in to the Odoo system, use the <module> module, <operation>[, {parameters}]",
+    "when": "Use when the role must work in Odoo (Employees, Recruitment, Discuss, Calendar, Contacts, Surveys, To-do).",
+    "template": "Use the odoo-use skill, log in to the Odoo system, use the <module> module, <operation>, {<field>: <value>, ...}",
+    "params": "JSON-like object: no quotation marks around keys or values. Omit unused keys. Omit the {...} block when the operation has no fields.",
+    "rules": [
+      "Do not mention playwright-browser in the task string; the odoo-use skill loads it.",
+      "Use only listed module and operation names.",
+      "Create and add operations need a unique name or job position; do not reuse a fixed demo name."
+    ],
     "actions": [
       {
-        "name": "Employees add",
-        "fields": ["name", "job position", "work email"],
-        "example": "Use the playwright-browser and odoo-use skills, open the browser, log in to the Odoo system, use the Employees module, add employee, {name: DemoNew1, job position: Sales, work email: demonew1@ndrtest.local}"
+        "module": "Employees",
+        "name": "search employee",
+        "required": [],
+        "optional": ["name", "query"]
       },
       {
-        "name": "Employees update",
-        "fields": ["name", "job position", "work email"],
-        "example": "Use the playwright-browser and odoo-use skills, open the browser, log in to the Odoo system, use the Employees module, update employee, {name: DemoNew1, job position: Support}"
+        "module": "Employees",
+        "name": "open employee",
+        "required": ["name"],
+        "optional": []
       },
       {
-        "name": "Recruitment create",
-        "fields": ["job position", "department", "email address", "work location"],
-        "example": "Use the playwright-browser and odoo-use skills, open the browser, log in to the Odoo system, use the Recruitment module, create a job posting, {job position: Human Resources Manager, department: Human Resources, email address: jobs@ndrtest.local, work location: Nanjing}"
+        "module": "Employees",
+        "name": "add employee",
+        "required": ["name"],
+        "optional": ["job position", "work email", "work phone", "work mobile", "department", "manager", "tags"]
+      },
+      {
+        "module": "Employees",
+        "name": "update employee",
+        "required": ["name"],
+        "optional": ["job position", "work email", "work phone", "work mobile", "department", "manager", "tags"]
+      },
+      {
+        "module": "Employees",
+        "name": "delete employee",
+        "required": ["name"],
+        "optional": []
+      },
+      {
+        "module": "Employees",
+        "name": "view departments",
+        "required": [],
+        "optional": []
+      },
+      {
+        "module": "Recruitment",
+        "name": "create job posting",
+        "required": ["job position"],
+        "optional": ["email address"]
+      },
+      {
+        "module": "Recruitment",
+        "name": "update job posting",
+        "required": ["job position"],
+        "optional": ["department", "email address"]
+      },
+      {
+        "module": "Recruitment",
+        "name": "delete job posting",
+        "required": ["job position"],
+        "optional": []
+      },
+      {
+        "module": "Recruitment",
+        "name": "view applications",
+        "required": [],
+        "optional": ["job position"]
+      },
+      {
+        "module": "Recruitment",
+        "name": "create applicant",
+        "required": ["name"],
+        "optional": ["job position", "email", "phone"]
+      },
+      {
+        "module": "Discuss",
+        "name": "read inbox",
+        "required": [],
+        "optional": []
+      },
+      {
+        "module": "Discuss",
+        "name": "post message",
+        "required": [],
+        "optional": ["body", "channel"]
+      },
+      {
+        "module": "Calendar",
+        "name": "view calendar",
+        "required": [],
+        "optional": []
+      },
+      {
+        "module": "Calendar",
+        "name": "create event",
+        "required": [],
+        "optional": ["title", "attendee"]
+      },
+      {
+        "module": "Contacts",
+        "name": "add contact",
+        "required": [],
+        "optional": ["name", "email", "phone"]
+      },
+      {
+        "module": "Surveys",
+        "name": "view surveys",
+        "required": [],
+        "optional": []
+      },
+      {
+        "module": "To-do",
+        "name": "view tasks",
+        "required": [],
+        "optional": []
       }
     ]
   },
   "smb-access": {
     "name": "smb-access",
-    "when": "Use when the role must create, copy, move, delete, or view files on the SMB share.",
-    "template": "Use the smb-access skill, connect to the SMB shared directory, use <operation type> to <specific operation>[, {parameters}]",
+    "when": "Use when the role must create, view, update, copy, move, rename, or delete files on the company SMB share.",
+    "template": "Use the smb-access skill, connect to the SMB shared directory, use <op> to <detail>, {<field>: <value>, ...}",
+    "params": "JSON-like object: no quotation marks around keys or values. Omit unused keys.",
+    "rules": [
+      "Use POSIX paths that start with /Company_Data/. Do not emit UNC paths in the task string.",
+      "Every path must stay under an Allowed SMB tree or SMB task path listed in context.env for this role.",
+      "Do not write to another role's private folder.",
+      "<detail> is a short phrase that restates the op (view a folder, create a file, copy a file). Do not add extra semantics."
+    ],
     "actions": [
       {
-        "name": "create",
-        "fields": ["path", "content"],
-        "example": "Use the smb-access skill, connect to the SMB shared directory, use create to create a file, {path: /Company_Data/Public/notice.txt, content: Please complete the weekly checklist.}"
+        "name": "view",
+        "required": ["path"],
+        "optional": []
+      },
+      {
+        "name": "create folder",
+        "required": ["path"],
+        "optional": []
+      },
+      {
+        "name": "create file",
+        "required": ["path", "content"],
+        "optional": []
+      },
+      {
+        "name": "append",
+        "required": ["path", "content"],
+        "optional": []
+      },
+      {
+        "name": "update file",
+        "required": ["path", "content"],
+        "optional": []
       },
       {
         "name": "copy",
-        "fields": ["source path", "destination path"],
-        "example": "Use the smb-access skill, connect to the SMB shared directory, use copy to copy a file, {source path: /Company_Data/Public/notice.txt, destination path: /Company_Data/Exchange/notice.txt}"
+        "required": ["source path", "destination path"],
+        "optional": []
       },
       {
-        "name": "view",
-        "fields": ["path"],
-        "example": "Use the smb-access skill, connect to the SMB shared directory, use view to view a file, {path: /Company_Data/Public/}"
+        "name": "move",
+        "required": ["source path", "destination path"],
+        "optional": []
+      },
+      {
+        "name": "rename",
+        "required": ["path", "new name"],
+        "optional": []
+      },
+      {
+        "name": "delete",
+        "required": ["path"],
+        "optional": []
       }
     ]
   },
   "playwright-browser": {
     "name": "playwright-browser",
-    "when": "Use when the role must browse the web, search Bing, or visit an internal URL without Exchange or Odoo.",
-    "template": "Use the playwright-browser skill, open the browser, <action>.",
+    "when": "Use when the role must browse the public web or visit a non-OWA, non-Odoo URL. Do not use for Exchange or Odoo.",
+    "template": "Use the playwright-browser skill, open the browser, then execute: 1. <op>[, {key: value}] 2. <op>[, {key: value}] ... Verify: <observable result> Close the browser after verification.",
+    "params": "JSON-like objects: no quotation marks around keys or values. Shared optional fields: name, role, nth, url, query, text, key, path, direction, amount, timeout_seconds.",
+    "rules": [
+      "Write the entire numbered list on one line inside the task string. Do not insert raw newlines.",
+      "Every playwright task must include numbered ops, a Verify: clause, and Close the browser after verification.",
+      "Never use Google. Never open OWA or Odoo URLs with this skill.",
+      "After search, prefer follow with nth, then scroll, extract, wait, or back.",
+      "Do not invent in-page control names for unknown public sites.",
+      "Do not emit REPLACE_ tokens or other placeholders."
+    ],
+    "ops": [
+      "goto",
+      "search",
+      "click",
+      "type",
+      "fill",
+      "scroll",
+      "wait",
+      "select",
+      "press",
+      "check",
+      "uncheck",
+      "upload",
+      "download",
+      "extract",
+      "follow",
+      "hover",
+      "back",
+      "forward",
+      "reload",
+      "new tab"
+    ],
     "actions": [
       {
-        "name": "visit",
-        "fields": [],
-        "example": "Use the playwright-browser skill, open the browser, visit the company intranet notice page."
+        "name": "goto",
+        "required": ["url"],
+        "optional": []
       },
       {
         "name": "search",
-        "fields": [],
-        "example": "Use the playwright-browser skill, open the browser, search for the Windows Active Directory backup keyword, randomly select a relevant page, and browse its content for 20 seconds."
+        "required": ["query"],
+        "optional": ["nth"]
+      },
+      {
+        "name": "follow",
+        "required": [],
+        "optional": ["nth", "name", "query"]
+      },
+      {
+        "name": "scroll",
+        "required": [],
+        "optional": ["direction", "amount", "name"]
+      },
+      {
+        "name": "extract",
+        "required": [],
+        "optional": ["name"]
+      },
+      {
+        "name": "wait",
+        "required": [],
+        "optional": ["timeout_seconds", "name"]
+      },
+      {
+        "name": "back",
+        "required": [],
+        "optional": []
+      },
+      {
+        "name": "click",
+        "required": [],
+        "optional": ["name", "role", "nth"]
       }
     ]
   }

@@ -33,6 +33,15 @@ def load_prompt_catalog(resources_dir: Path | None = None) -> dict[str, Any]:
     return {"domain": domain, "skill_templates": templates, "roles": roles}
 
 
+def _strip_examples(value: Any) -> Any:
+    """Drop human-debug `example` keys so they never reach the generation LLM."""
+    if isinstance(value, dict):
+        return {key: _strip_examples(item) for key, item in value.items() if key != "example"}
+    if isinstance(value, list):
+        return [_strip_examples(item) for item in value]
+    return value
+
+
 def _skills_for_role(catalog: dict[str, Any], role: str) -> list[dict[str, Any]]:
     templates = catalog.get("skill_templates")
     if not isinstance(templates, dict):
@@ -47,7 +56,8 @@ def _skills_for_role(catalog: dict[str, Any], role: str) -> list[dict[str, Any]]
             continue
         item = templates.get(name)
         if isinstance(item, dict):
-            skills.append(item)
+            stripped = _strip_examples(item)
+            skills.append(stripped if isinstance(stripped, dict) else {"name": name})
         else:
             skills.append({"name": name})
     return skills

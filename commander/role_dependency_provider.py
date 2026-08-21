@@ -21,7 +21,18 @@ FIELD_PATTERNS = {
     for field_name in ("recipient", "to", "cc")
 }
 SEND_EMAIL_ACTION_PATTERN = re.compile(r"\bsend\s+email\b", re.IGNORECASE)
-REPLY_OR_VIEW_EMAIL_PATTERN = re.compile(r"\b(reply to email|view email)\b", re.IGNORECASE)
+REPLY_OR_VIEW_EMAIL_PATTERN = re.compile(
+    r"\b(reply(?:\s+to\s+email|\s+all)?|view email|forward)\b",
+    re.IGNORECASE,
+)
+EMAIL_RESPONSE_PATTERN = re.compile(
+    r"\b(reply(?:\s+to\s+email|\s+all)?|view email|review email|forward)\b",
+    re.IGNORECASE,
+)
+ODOO_EMAIL_ADDRESS_FIELD_PATTERN = re.compile(
+    r"\bemail address\s*:\s*[^,}]+",
+    re.IGNORECASE,
+)
 SMB_PUBLIC_OR_EXCHANGE_PATTERN = re.compile(
     r"Company_Data\\(Public|Exchange)|/Company_Data/(Public|Exchange)",
     re.IGNORECASE,
@@ -267,9 +278,11 @@ def _one_endpoint_is_target(from_roles: list[str], to_roles: list[str], target_r
 
 def _mentioned_roles(task_text: str) -> set[str]:
     found: set[str] = set()
-    lowered = task_text.lower()
+    # Odoo "email address" is an application alias, not a message to that mailbox.
+    scanned = ODOO_EMAIL_ADDRESS_FIELD_PATTERN.sub(" ", task_text)
+    lowered = scanned.lower()
     for role, pattern in ROLE_TOKEN_PATTERN.items():
-        if pattern.search(task_text) or f"{role}@ndrtest.local" in lowered:
+        if pattern.search(scanned) or f"{role}@ndrtest.local" in lowered:
             found.add(role)
     return found
 
@@ -277,14 +290,21 @@ def _mentioned_roles(task_text: str) -> set[str]:
 def _candidate_task_matches_event(task_text: str, event: dict[str, Any]) -> bool:
     lowered = task_text.lower()
     relation = event.get("relation")
+    aliases = event.get("aliases", ())
+    has_source_alias = any(alias in lowered for alias in aliases)
     if relation == "email":
         if "exchange-use skill" not in lowered:
             return False
-        return any(alias in lowered for alias in event.get("aliases", ()))
+        if EMAIL_RESPONSE_PATTERN.search(task_text) is None:
+            return False
+        if re.search(r"\b(reply(?:\s+to\s+email|\s+all)?|forward)\b", task_text, re.IGNORECASE):
+            return True
+        return has_source_alias
     if relation == "smb":
         return "smb-access skill" in lowered
-    aliases = event.get("aliases", ())
-    return any(alias in lowered for alias in aliases)
+    if "odoo-use" not in lowered:
+        return False
+    return has_source_alias
 
 
 def _extract_field_values(task_text: str, field_name: str) -> list[str]:

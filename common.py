@@ -152,7 +152,9 @@ def role_tasks_are_complete(
 ) -> bool:
     """Return True when a role entry is already a complete, valid stored task list."""
     tasks = data.get(role)
-    if not isinstance(tasks, list):
+    if not isinstance(tasks, list) or not tasks:
+        return False
+    if tasks_per_role <= 0:
         return False
     valid, _ = validate_role_tasks(
         {role: tasks},

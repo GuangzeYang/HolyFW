@@ -60,113 +60,91 @@ We use agents to define a set of roles, with each role assigned to a separate ho
 
 **All generated task descriptions must be written entirely in English.** This requirement applies to actions, parameter names, subjects, message bodies, document contents, and all other generated free text.
 
-When a generated task uses a domain resource, its description must follow the corresponding invocation template below.
+When a generated task uses a domain resource, its description must follow the corresponding invocation grammar below. Parameter blocks are JSON-like: no quotation marks around keys or values. Omit unused keys. Omit the `{...}` block when the action or operation has no fields. The task string is the invocation only (never wrap it with `opencode run`).
 
 ## Exchange Email
 
 Template:
 
-`Use the exchange-use skill, open the Exchange mailbox, <action>[, {parameters}]`
+`Use the exchange-use skill, open the Exchange mailbox, <action>, {<field>: <value>, ...}`
 
-Examples:
+`target` defaults to `first email` when omitted on view, reply, reply all, forward, delete, or flag. `recipient`, `cc`, and `bcc` must be a lab role short name (`manager`, `hr`, `accountancy`, `programmer`) or the matching `*@ndrtest.local` address, and must not be the current role.
 
-- `Use the exchange-use skill, open the Exchange mailbox, send email, {recipient: admin@example.com, cc: boss@example.com, subject: Project status report, body: Please review the latest project progress.}`
-- `Use the exchange-use skill, open the Exchange mailbox, view email, {target: first email}`
-- `Use the exchange-use skill, open the Exchange mailbox, reply to email, {cc: team@example.com, body: Received. I will handle it shortly.}`
-
-The Exchange mailbox supports the following three core actions:
-
-1. `send email`
-   - Parameters contain the recipient, carbon-copy recipient, subject, and message body.
-   - Use a JSON-like format without quotation marks. The supported fields are `recipient`, `cc`, `subject`, and `body`.
-   - Example: `{recipient: admin@example.com, cc: boss@example.com, subject: Project status report, body: Please review the progress.}`
-   - **Important:** Values for `recipient` and `cc` must be converted into valid, complete email addresses in strict accordance with the Recipient Address Handling Rules before they are inserted.
-
-2. `view email`
-   - The parameter identifies the email to view.
-   - Use a JSON-like format without quotation marks. The supported field is `target`.
-   - Example: `{target: first email}`
-
-3. `reply to email`
-   - Parameters contain a carbon-copy recipient when required by the task and the reply body.
-   - Use a JSON-like format without quotation marks. The supported fields are `cc` and `body`.
-   - Example: `{cc: team@example.com, body: Received, thank you.}`
-   - The `cc` value must also be converted into a valid, complete email address in strict accordance with the Recipient Address Handling Rules. A reply should normally preserve the original email content.
+| `<action>` | Required fields | Optional fields |
+|---|---|---|
+| `send email` | `recipient`, `subject`, `body` | `cc`, `bcc`, `attachment` |
+| `view email` | | `target`, `folder` |
+| `reply` | `body` | `target`, `cc` |
+| `reply all` | `body` | `target`, `cc` |
+| `forward` | `recipient` | `target`, `body`, `cc` |
+| `search` | `query` | `target` |
+| `delete` | | `target`, `folder` |
+| `move` | `folder` | `target` |
+| `flag` | | `target` |
+| `mark unread` | | `target` |
+| `save draft` | `body` | `recipient`, `subject` |
+| `open calendar` | | |
+| `open people` | | |
+| `open tasks` | | |
 
 ## Chrome Browser
 
-Template:
+Template (one line; numbered ops; must include `Verify:` and `Close the browser after verification.`):
 
-`Use the playwright-browser skill, open the browser, <action>.`
+`Use the playwright-browser skill, open the browser, then execute: 1. <op>[, {key: value}] 2. <op>[, {key: value}] ... Verify: <observable result> Close the browser after verification.`
 
-Examples:
+Ops: `goto` `search` `click` `type` `fill` `scroll` `wait` `select` `press` `check` `uncheck` `upload` `download` `extract` `follow` `hover` `back` `forward` `reload` `new tab`.
 
-- `Use the playwright-browser skill, open the browser, visit the xxx website.`
-- `Use the playwright-browser skill, open the browser, search for the xxx keyword, randomly select a relevant page, and browse its content for xx seconds.`
-
-The `<action>` placeholder describes browser interactions, including page scrolling, mouse clicks, keyboard input, and URL navigation.
+Do not use Google. Do not open OWA or Odoo URLs with this skill. After `search`, prefer `follow` with `nth`, then `scroll`, `extract`, `wait`, or `back`. Do not invent in-page control names for unknown public sites. Do not emit placeholder tokens.
 
 ## SMB Shared Folders
 
 Template:
 
-`Use the smb-access skill, connect to the SMB shared directory, use <operation type> to <specific operation>[, {parameters}]`
+`Use the smb-access skill, connect to the SMB shared directory, use <op> to <detail>, {<field>: <value>, ...}`
 
-Examples:
+`<detail>` restates the op (`view a folder`, `create a file`, `copy a file`) and must not add extra semantics. Paths are POSIX `/Company_Data/...` and must stay under the role's allowed trees (`HR-Private`, `accountancy`, `IT-Dev`, `Management`, plus `Public` and `Exchange` as listed for that role).
 
-- `Use the smb-access skill, connect to the SMB shared directory, use create to create a file, {path: /share/test.txt, content: hello world}`
-- `Use the smb-access skill, connect to the SMB shared directory, use copy to copy a file, {source path: /share/a.txt, destination path: /backup/a.txt}`
-- `Use the smb-access skill, connect to the SMB shared directory, use delete to delete a file, {path: /share/old.txt}`
-
-SMB shared-file operations are divided into the following operation types:
-
-1. `create`: Create a folder, create a file, or write content.
-   - Parameters contain path and content information.
-   - Use a JSON-like format without quotation marks. The supported fields are `path` and `content`.
-   - Example: `{path: /share/test.txt, content: hello world}`
-
-2. `copy`: Copy a folder or file.
-   - Parameters contain the source and destination paths.
-   - Use a JSON-like format without quotation marks. The supported fields are `source path` and `destination path`.
-   - Example: `{source path: /share/a.txt, destination path: /backup/a.txt}`
-
-3. `move`: Move a folder or file.
-   - Parameters contain the source and destination paths.
-   - Use a JSON-like format without quotation marks. The supported fields are `source path` and `destination path`.
-   - Example: `{source path: /share/a.txt, destination path: /backup/a.txt}`
-
-4. `delete`: Delete a folder or file.
-   - The parameter contains the target path.
-   - Use a JSON-like format without quotation marks. The supported field is `path`.
-   - Example: `{path: /share/old.txt}`
-
-5. `view`: View folder contents or file contents.
-   - The parameter contains the target path.
-   - Use a JSON-like format without quotation marks. The supported field is `path`.
-   - Example: `{path: /share/}`
+| `<op>` | Required fields |
+|---|---|
+| `view` | `path` |
+| `create folder` | `path` |
+| `create file` | `path`, `content` |
+| `append` | `path`, `content` |
+| `update file` | `path`, `content` |
+| `copy` | `source path`, `destination path` |
+| `move` | `source path`, `destination path` |
+| `rename` | `path`, `new name` |
+| `delete` | `path` |
 
 ## Odoo System
 
 Template:
 
-`Use the playwright-browser and odoo-use skills, open the browser, log in to the Odoo system, use the <module> module, <operation>[, {parameters}]`
+`Use the odoo-use skill, log in to the Odoo system, use the <module> module, <operation>, {<field>: <value>, ...}`
 
-Examples:
+Do not mention `playwright-browser` in the task string. Create and add operations need a unique `name` or `job position`.
 
-- `Use the playwright-browser and odoo-use skills, open the browser, log in to the Odoo system, use the Employees module, add employee, {name: DemoNew1, job position: Sales, work email: 123987@demo.com}`
-- `Use the playwright-browser and odoo-use skills, open the browser, log in to the Odoo system, use the Employees module, delete employee, {name: demo-1, job position: Sales, work email: 12fgh87@demo.com}`
-
-Odoo provides the following modules and operations:
-
-1. `Employees` module: Add an employee, delete an employee, or update employee information.
-   - Parameters contain employee information.
-   - Use a JSON-like format without quotation marks. The supported fields are `name`, `job position`, and `work email`.
-   - Example: `{name: DemoNew1, job position: Sales, work email: 123987@demo.com}`
-
-2. `Recruitment` module: Create a job posting, update recruitment information, or view job applications.
-   - Parameters contain recruitment information.
-   - Use a JSON-like format without quotation marks. The supported fields are `job position`, `department`, `email address`, and `work location`.
-   - Example: `{job position: Human Resources Manager, department: Human Resources, email address: 123987@demo.com, work location: Nanjing}`
+| `<module>` | `<operation>` | Required fields | Optional fields |
+|---|---|---|---|
+| `Employees` | `search employee` | | `name` or `query` |
+| `Employees` | `open employee` | `name` | |
+| `Employees` | `add employee` | `name` | `job position`, `work email`, `work phone`, `work mobile`, `department`, `manager`, `tags` |
+| `Employees` | `update employee` | `name` | same optional fields as add |
+| `Employees` | `delete employee` | `name` | |
+| `Employees` | `view departments` | | |
+| `Recruitment` | `create job posting` | `job position` | `email address` |
+| `Recruitment` | `update job posting` | `job position` | `department`, `email address` |
+| `Recruitment` | `delete job posting` | `job position` | |
+| `Recruitment` | `view applications` | | `job position` |
+| `Recruitment` | `create applicant` | `name` | `job position`, `email`, `phone` |
+| `Discuss` | `read inbox` | | |
+| `Discuss` | `post message` | | `body`, `channel` |
+| `Calendar` | `view calendar` | | |
+| `Calendar` | `create event` | | `title`, `attendee` |
+| `Contacts` | `add contact` | | `name`, `email`, `phone` |
+| `Surveys` | `view surveys` | | |
+| `To-do` | `view tasks` | | |
 
 ## Victim Penetration Test
 
