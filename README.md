@@ -208,7 +208,7 @@ Start `soldier` first, then start `commander`. After `pip install .` the command
 
 #### Install OpenCode skills/MCP on a soldier host
 
-Run once per role host. Copies that role's skills into `~/.config/opencode/skill/` (overwriting existing skill directories), merges MCP servers into `~/.config/opencode/opencode.json`, and installs Playwright Chromium if `npx playwright` is missing.
+Run once per role host. Copies that role's skills into `~/.config/opencode/skills/` (overwriting existing skill directories), merges MCP servers into `~/.config/opencode/opencode.json`, and installs Playwright Chromium if `npx playwright` is missing.
 
 ```bash
 soldier build hr
@@ -262,7 +262,7 @@ commander generate
 #### Manually dispatch a task
 
 ```bash
-commander dispatch --target hr --command "opencode run \"Check email with Exchange\"" --task "Check email with Exchange"
+commander dispatch --target hr --task "Check email with Exchange"
 ```
 
 #### On-demand victim campaign (not daily generation)

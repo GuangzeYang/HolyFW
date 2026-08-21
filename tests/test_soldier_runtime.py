@@ -91,7 +91,8 @@ class SoldierRuntimeTests(unittest.TestCase):
             self.assertEqual(path, base / "logs" / "tasks_2026-04-29.jsonl")
             payload = json.loads(path.read_text(encoding="utf-8").strip())
             self.assertEqual(payload["received_at"], "2026-04-29T09:08:09+08:00")
-            self.assertEqual(payload["command"], 'opencode run "Check email"')
+            self.assertEqual(payload["command"], "Check email")
+            self.assertEqual(payload["task"], "Check email")
             self.assertEqual(payload["status"], "successed")
             self.assertEqual(payload["exit_code"], 0)
             self.assertEqual(payload["stdout"], "done")
@@ -341,6 +342,36 @@ class SoldierRuntimeTests(unittest.TestCase):
             soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)
 
         enqueue_mock.assert_called_once_with("127.0.0.1", 38471, report, "down")
+
+    def test_handle_dispatch_runs_opencode_argv_with_prompt_only(self) -> None:
+        conn = FakeDispatchConnection()
+        prompt = "Use the exchange-use skill, open the Exchange mailbox, view email"
+        payload = {
+            "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
+            "task_date": "2026-04-29",
+            "command": f'opencode run "{prompt}"',
+            "task": prompt,
+        }
+        execute_mock = mock.Mock(return_value=("ok", "", 0, "successed", None))
+
+        with (
+            mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
+            mock.patch("soldier.soldier.claim_task_execution", return_value=("claimed", {})),
+            mock.patch("soldier.soldier.execute_command", execute_mock),
+            mock.patch("soldier.soldier.resolve_opencode_executable", return_value="opencode"),
+            mock.patch(
+                "soldier.soldier.append_task_execution_log",
+                return_value=Path("logs/tasks_2026-04-29.jsonl"),
+            ),
+            mock.patch("soldier.soldier.mark_task_completed"),
+            mock.patch("soldier.soldier.send_report", return_value=({"ok": True}, None)),
+        ):
+            soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)
+
+        execute_mock.assert_called_once()
+        argv = execute_mock.call_args[0][0]
+        self.assertEqual(list(argv), ["opencode", "run", prompt])
+        self.assertNotIn("opencode run", argv[2])
 
     def test_windows_tree_termination_uses_taskkill_t_and_f(self) -> None:
         proc = mock.Mock()

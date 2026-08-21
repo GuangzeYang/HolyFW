@@ -76,13 +76,23 @@ Compose (right pane after **New**): To **textbox**; **Show Cc** / **Show Bcc** (
 
 Locate controls by visible name or `aria-label` first. Wait for the pane to finish rendering before the next click.
 
+# Prose expansion
+
+Commander sets `min_words` plus `subject` / `topic` or a one-sentence `body` outline. Expand the letter on this host. Do not expect a full letter in the prompt.
+
+Before typing `body`:
+
+1. If `min_words` is present, write original English of at least that many whitespace-separated words about `subject`, `topic`, or the outline. No lorem ipsum. No invented credentials, hosts, or secrets.
+2. If `min_words` is absent and `body` is present, type `body` unchanged (legacy prompts).
+3. Type the expanded text in one shot. Do not expand recipient, subject, paths, or queries.
+
 # Actions
 
 Skip any field that the prompt omitted. Stop on the first missing required control.
 
 ## send email
 
-Required: `recipient`, `subject`, `body`. Optional: `cc`, `bcc`, `attachment`.
+Required: `recipient`, `subject`, `min_words`. Optional: `body` (short outline), `cc`, `bcc`, `attachment`.
 
 1. Click **Mail** if it is not already selected (top bar or app launcher).
 2. Click **New**. Compose opens in the right pane. Do not wait for an **Email message** menu item.
@@ -90,7 +100,7 @@ Required: `recipient`, `subject`, `body`. Optional: `cc`, `bcc`, `attachment`.
 4. If `cc` is set: after the Suggested contacts box for To is gone, use the **Cc textbox** (click **Show Cc** first if the textbox is missing). Lock each cc address the same way.
 5. If `bcc` is set: click **Show Bcc**, snapshot until a Bcc textbox exists, then lock each address the same way.
 6. Snapshot. Click **Add a subject**. Type `subject` in one shot.
-7. Click **Message body** (`Add a message or drag a file here`). Type `body` in one shot.
+7. Apply **Prose expansion**, then click **Message body** (`Add a message or drag a file here`). Type the expanded text in one shot.
 8. If `attachment` is set: click **Attach**. Set the file path from the prompt. Wait until a file chip appears.
 9. Snapshot. Click the blue **Send** (compose Send, not a folder).
 10. Wait until the compose pane is gone (list **New** is usable again). Then snapshot. Click **Sent Items** (Favorites row, not a buried duplicate if both exist). Confirm a row whose subject **starts with** `subject` (long or unicode subjects truncate in the list). If it is missing, wait once more and refresh the folder; if still missing, the send failed; stop.
@@ -108,12 +118,12 @@ Required: `target` (default: `first email`). Optional: `folder` (default: Inbox)
 
 ## reply
 
-Required: `body`. Optional: `target`, `cc`.
+Required: `min_words`. Optional: `body` (short outline), `target`, `cc`.
 
 1. Complete **view email** for `target` (default first email).
 2. Prefer **Reply** under reading-pane **Mail Actions**. On this OWA build the top toolbar usually shows **Reply all** and **not** **Reply**. If **Reply** is missing, click toolbar **Reply all** (same compose for a two-party thread). Do not fail the task because `getByRole('button', { name: 'Reply' })` is false.
 3. If `cc` is set, lock each address with **Recipient rules**.
-4. Type `body` at the **top** of the compose area. Keep the quoted original.
+4. Apply **Prose expansion**, then type the expanded text at the **top** of the compose area. Keep the quoted original.
 5. Click **Send**. Confirm the subject appears in **Sent Items**.
 
 ## reply all
@@ -122,12 +132,12 @@ Same as **reply**, but click **Reply all**.
 
 ## forward
 
-Required: `recipient`, `body` optional. Optional: `target`, `cc`.
+Required: `recipient`, `min_words`. Optional: `target`, `body` (short outline), `cc`.
 
 1. Complete **view email** for `target`.
 2. Open **More Actions** in the reading pane (or toolbar **More**) and click **Forward**.
 3. Fill **To** / **Cc** using Recipient rules.
-4. Type `body` above the quoted message if provided.
+4. Apply **Prose expansion**, then type the expanded text above the quoted message.
 5. Click **Send**. Confirm **Sent Items**.
 
 ## search
@@ -176,10 +186,10 @@ Optional: `target`.
 
 ## save draft
 
-Required: `body`. Optional: `recipient`, `subject`.
+Required: `min_words`. Optional: `body` (short outline), `recipient`, `subject`.
 
 1. Click **New**. Compose opens in the right pane (same as send email).
-2. Fill any provided To / Subject / body. Do **not** click Send.
+2. Fill any provided To / Subject. Apply **Prose expansion** for the body. Do **not** click Send.
 3. Click **Discard** only if the prompt says discard. Otherwise open another folder so OWA autosaves, then open **Drafts**.
 4. Confirm a draft row exists.
 

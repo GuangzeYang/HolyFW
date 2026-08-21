@@ -57,10 +57,47 @@ Get-ChildItem -LiteralPath '\\172.16.24.11\Company_Data'
 # Shared rules
 
 - Stop on Access Denied, path not found (unless the op is delete and the prompt allows idempotent miss), or authentication errors.
-- After create/update/copy/move, prove the result with `Test-Path` or `Get-ChildItem` / `Get-Content`.
+- After create/update/copy/move/download, prove the result with `Test-Path` or `Get-ChildItem`. Use `Get-Content` only on `.txt`, `.md`, or `.csv`. For `.docx` print `Name`, `Length`, and `LastWriteTime` from `Get-Item`.
 - Create is not idempotent if the prompt wants a new unique name. Prefer the path the prompt gives. `New-Item -Force` on an existing folder is safe.
 - Delete: if `Test-Path` is false, the delete already succeeded; do not error.
 - Text files: `Set-Content` / `Add-Content` `-Encoding UTF8`.
+
+# Prose expansion
+
+Commander sets `min_words` plus `topic` or a one-sentence `content` outline. Expand the document on this host. Do not expect the full document in the prompt.
+
+1. If `min_words` is present, write original English of at least that many whitespace-separated words about `topic` or the outline. No lorem ipsum. No invented credentials, hosts, or secrets.
+2. If `min_words` is absent and `content` is present, use `content` unchanged (legacy prompts).
+3. Do not expand paths or file names.
+
+# Word documents
+
+When `create file` / `update file` uses a `.docx` path, write a real Word document from the expanded prose, then **upload** it to the share. Do **not** `Set-Content` a `.docx` (that is not a Word file). Do not rename a `.txt` to `.docx`.
+
+1. Apply **Prose expansion**.
+2. Save locally with Word COM (Desktop or `$env:TEMP`), then `Copy-Item` to the UNC path.
+3. Success: UNC `Test-Path` is `$true` and `(Get-Item -LiteralPath '<unc>').Length -gt 4000`.
+
+```powershell
+$local = Join-Path $env:USERPROFILE 'Desktop\<file.docx>'
+$parent = Split-Path -Parent '<unc>'
+if (-not (Test-Path -LiteralPath $parent)) {
+  New-Item -ItemType Directory -Force -Path $parent | Out-Null
+}
+$word = New-Object -ComObject Word.Application
+$word.Visible = $false
+$word.DisplayAlerts = 0
+$doc = $word.Documents.Add()
+$word.Selection.TypeText('<topic>')
+$word.Selection.TypeParagraph()
+$word.Selection.TypeText('<expanded prose>')
+$doc.SaveAs2($local, 16)
+$doc.Close()
+$word.Quit()
+Copy-Item -LiteralPath $local -Destination '<unc>' -Force
+```
+
+If Word COM is unavailable, stop and report the error. Text files (`.txt`, `.md`, `.csv`) still use `Set-Content` / `Add-Content` `-Encoding UTF8` as below.
 
 # Operations
 
@@ -71,7 +108,8 @@ Skip unused fields. Resolve `path` / `source path` / `destination path` with Pat
 `{path: ...}`
 
 - Directory: `Get-ChildItem -LiteralPath '<unc>'`
-- File: `Get-Content -LiteralPath '<unc>'`
+- Text file (`.txt`, `.md`, `.csv`): `Get-Content -LiteralPath '<unc>'`
+- Word file (`.docx`): `Get-Item -LiteralPath '<unc>'` and print `Name`, `Length`, `LastWriteTime`. Do not `Get-Content` a `.docx`.
 - If the path ends with `\` or has no file name, treat as directory.
 - Print names (and file text). Do not invent files that were not listed.
 
@@ -88,31 +126,33 @@ Success: `Test-Path` is `$true`.
 
 ## create file
 
-`{path: ..., content: ...}`
+`{path: ..., min_words: ..., topic: ...}` Optional short `content` outline.
+
+If the path ends in `.docx`, follow **Word documents** (compose locally, then upload). Otherwise apply **Prose expansion**, then:
 
 ```powershell
-Set-Content -LiteralPath '<unc>' -Value '<content>' -Encoding UTF8
+Set-Content -LiteralPath '<unc>' -Value '<expanded text>' -Encoding UTF8
 Get-Content -LiteralPath '<unc>' -Raw
 ```
 
-Success: file exists and content contains the written text. Parent folders: create with `New-Item -ItemType Directory -Force -Path '<parent>'` on the parent if missing, then write the file. `Set-Content -Encoding UTF8` on Windows PowerShell 5.1 writes a UTF-8 **BOM**; that is success, not corruption.
+Success: file exists and the written text has at least `min_words` whitespace-separated words (or matches legacy `content` when `min_words` is absent). Parent folders: create with `New-Item -ItemType Directory -Force -Path '<parent>'` on the parent if missing, then write the file. `Set-Content -Encoding UTF8` on Windows PowerShell 5.1 writes a UTF-8 **BOM**; that is success, not corruption.
 
 ## append
 
-`{path: ..., content: ...}`
+`{path: ..., min_words: ..., topic: ...}` Optional short `content` outline.
 
 ```powershell
 if (-not (Test-Path -LiteralPath '<unc>')) { throw 'append target missing' }
-Add-Content -LiteralPath '<unc>' -Value '<content>' -Encoding UTF8
+Add-Content -LiteralPath '<unc>' -Value '<expanded text>' -Encoding UTF8
 ```
 
-On this host **Add-Content creates a missing file**. For an append-only prompt, `Test-Path` first; if false, stop. Do not treat a newly created file as a successful append.
+Apply **Prose expansion** first. Do not append to `.docx`; use `create file` or `update file` for Word. On this host **Add-Content creates a missing file**. For an append-only prompt, `Test-Path` first; if false, stop. Do not treat a newly created file as a successful append.
 
 ## update file
 
-`{path: ..., content: ...}`
+`{path: ..., min_words: ..., topic: ...}` Optional short `content` outline.
 
-Overwrite with `Set-Content` (same as create file). Success: content matches.
+If the path ends in `.docx`, follow **Word documents** (replace the local document, then upload again). Otherwise apply **Prose expansion**, then overwrite with `Set-Content` (same as create file). Success: content matches the expanded text.
 
 ## copy
 
@@ -123,6 +163,19 @@ Copy-Item -LiteralPath '<src>' -Destination '<dst>' -Recurse -Force
 ```
 
 Success: destination `Test-Path` is `$true`. Destination parent must be an allowed tree.
+
+## download
+
+`{path: ...}` Optional `local path` (default: `$env:USERPROFILE\Desktop\<filename>`).
+
+Copy the share file onto this host (download). Resolve `path` with Path mapping first.
+
+```powershell
+$local = '<local path or Desktop\filename>'
+Copy-Item -LiteralPath '<unc>' -Destination $local -Force
+```
+
+Success: local `Test-Path` is `$true` and `(Get-Item $local).Length` equals the source length. Do not `Get-Content` a `.docx`.
 
 ## move
 
@@ -165,3 +218,4 @@ Success: `Test-Path` is `$false`. Never `Remove-Item` `\\172.16.24.11\Company_Da
 - Do not write to `HR-Private`, `accountancy`, or `Management` on a normal Programmer task.
 - Do not call `New-Item -LiteralPath` (parameter does not exist on PS 5.1 here). Use `New-Item -Path`.
 - Do not put `..` in `Rename-Item -NewName` (OS rejects it as a path).
+- Do not `Set-Content` or `Get-Content` a `.docx`. Use Word COM, then `Copy-Item` to upload or download.

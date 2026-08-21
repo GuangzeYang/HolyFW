@@ -25,6 +25,8 @@ except ImportError:
     )
     from commander.target_config import load_target_config
 
+from common import strip_opencode_run_prefix
+
 
 @dataclass(frozen=True, slots=True)
 class DispatchOutcome:
@@ -102,17 +104,14 @@ class DispatchClient:
                 task_id=resolved_task_id,
             )
 
-        # JSON string literal preserves quotes and backslashes inside task text.
-        command = f"opencode run {json.dumps(task_text, ensure_ascii=False)}"
+        prompt = strip_opencode_run_prefix(task_text)
         args = [
             sys.executable,
             str(self.dispatch_script),
             "--target",
             role,
-            "--command",
-            command,
             "--task",
-            task_text,
+            prompt,
             "--task-id",
             resolved_task_id,
         ]

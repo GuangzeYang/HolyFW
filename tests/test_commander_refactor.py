@@ -642,6 +642,8 @@ class PromptTests(unittest.TestCase):
         self.assertIn("exactly 2 task items", prompt)
         self.assertIn("Do not include a time field", prompt)
         self.assertIn('"hr": [tasks]', prompt)
+        self.assertIn("forbidden_slot_indices", prompt)
+        self.assertIn("allowed_slot_indices", prompt)
         self.assertNotIn("TASK_FILE_READY", prompt)
 
     def test_constraints_use_current_skill_grammar(self) -> None:
@@ -652,7 +654,10 @@ class PromptTests(unittest.TestCase):
         )
         self.assertNotIn("reply to email", prompt)
         self.assertIn("open the Exchange mailbox, reply,", prompt)
+        self.assertIn("min_words: 400", prompt)
         self.assertIn("use view to view a folder", prompt)
+        self.assertIn(".docx", prompt)
+        self.assertIn("download", prompt)
         self.assertIn("opencode run", prompt)
 
     def test_generation_payload_strips_skill_examples(self) -> None:
@@ -704,6 +709,16 @@ class PromptTests(unittest.TestCase):
         self.assertNotIn("playwright-browser and odoo-use", by_name["odoo-use"]["template"])
         self.assertIn("then execute:", by_name["playwright-browser"]["template"])
         self.assertIn("create file", [action["name"] for action in by_name["smb-access"]["actions"]])
+        send = next(item for item in by_name["exchange-use"]["actions"] if item["name"] == "send email")
+        self.assertEqual(send["required"], ["recipient", "subject", "min_words"])
+        self.assertIn("body", send["optional"])
+        create = next(item for item in by_name["smb-access"]["actions"] if item["name"] == "create file")
+        self.assertEqual(create["required"], ["path", "min_words", "topic"])
+        download = next(item for item in by_name["smb-access"]["actions"] if item["name"] == "download")
+        self.assertEqual(download["required"], ["path"])
+        self.assertIn(".docx", " ".join(by_name["smb-access"]["rules"]))
+        post = next(item for item in by_name["odoo-use"]["actions"] if item["name"] == "post message")
+        self.assertEqual(post["required"], ["min_words"])
         env_text = " ".join(payload["context"]["env"])
         self.assertIn("/Company_Data/HR-Private", env_text)
 
@@ -728,6 +743,8 @@ class PromptTests(unittest.TestCase):
         self.assertIn('"task_count": 2', user)
         self.assertIn("backward", user)
         self.assertIn("Do not output time fields", user)
+        self.assertIn("forbidden_slot_indices", user)
+        self.assertIn("allowed_slot_indices", user)
 
     def test_build_role_task_prompt_keeps_english_contract(self) -> None:
         prompt = build_role_task_prompt(
@@ -1154,6 +1171,8 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertIn('"from"', client.prompts[0])
             self.assertIn("10:01", client.prompts[0])
             self.assertIn("manager@ndrtest.local", client.prompts[0])
+            self.assertIn('"forbidden_slot_indices"', client.prompts[0])
+            self.assertIn('"allowed_slot_indices"', client.prompts[0])
             self.assertEqual(len(client.prompts), 1)
 
     def test_generate_role_tasks_ignores_file_based_dependency_context(self) -> None:
@@ -1284,6 +1303,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertTrue(result.success)
             self.assertEqual(result.stats["quality_fail"], 1)
             self.assertEqual(len(client.prompts), 2)
+            self.assertIn("forbidden_slot_indices", client.prompts[1])
             saved = json.loads(final_file.read_text(encoding="utf-8"))
             self.assertEqual(saved["manager"][0]["time"], "09:01")
             self.assertEqual(saved["manager"][0]["task"], "review backlog")

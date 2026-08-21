@@ -8,24 +8,36 @@ import os
 from pathlib import Path
 from typing import Any
 
+from common import commander_workspace_dir
+
 WORKDAY_MINUTES = 8 * 60
 
 CONFIG_FILE_NAME = "config.json"
 
 
+def _package_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
 def default_runtime_config_path() -> Path:
-    """Return the default config.json path under commander/."""
-    return Path(__file__).resolve().parent / CONFIG_FILE_NAME
+    """Prefer workspace commander/config.json; fall back to the installed package copy."""
+    try:
+        workspace_cfg = commander_workspace_dir(package_hint=_package_dir()) / CONFIG_FILE_NAME
+        if workspace_cfg.is_file():
+            return workspace_cfg
+    except FileNotFoundError:
+        pass
+    return _package_dir() / CONFIG_FILE_NAME
 
 
 def resolve_config_relative_path(raw_path: str) -> Path:
-    """Resolve a config path string against commander/ when it is relative."""
+    """Resolve a config path string against the workspace commander/ directory."""
     if not isinstance(raw_path, str) or not raw_path.strip():
         raise ValueError("Path value must be a non-empty string")
     expanded = Path(os.path.expanduser(raw_path.strip()))
     if expanded.is_absolute():
         return expanded.resolve()
-    candidate = (Path(__file__).resolve().parent / expanded).resolve()
+    candidate = (commander_workspace_dir(package_hint=_package_dir()) / expanded).resolve()
     if candidate.exists():
         return candidate
     try:

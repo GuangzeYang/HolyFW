@@ -335,7 +335,12 @@ def _statistic_output_dir(raw: str) -> Path:
     text = raw.strip()
     if text:
         return Path(text).expanduser().resolve()
-    return Path(__file__).resolve().parent.parent
+    try:
+        from common import locate_holyfw_root
+
+        return locate_holyfw_root(package_hint=Path(__file__).resolve().parent)
+    except FileNotFoundError:
+        return Path.cwd().resolve()
 
 
 def schedules_from_role_tasks(

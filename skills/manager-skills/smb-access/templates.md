@@ -1,6 +1,6 @@
 # smb-access prompt templates
 
-Pass the quoted string to `opencode run`. Paths may use `/Company_Data/...`; the skill maps them to `\\172.16.24.11\Company_Data\...`.
+Pass the quoted string to `opencode run`. Paths may use `/Company_Data/...`; the skill maps them to `\\172.16.24.11\Company_Data\...`. For `.docx`, the agent writes a Word document from `topic` and uploads it; `download` copies the share file to the local Desktop.
 
 ## Grammar
 
@@ -12,10 +12,11 @@ Use the smb-access skill, connect to the SMB shared directory, use <op> to <deta
 |---|---|
 | `view` | `path` |
 | `create folder` | `path` |
-| `create file` | `path`, `content` |
-| `append` | `path`, `content` |
-| `update file` | `path`, `content` |
+| `create file` | `path` (prefer `.docx`), `min_words` (300-800), `topic` (required), `content` (optional short outline) |
+| `append` | `path` (`.txt` / `.md` / `.csv`), `min_words` (300-800), `topic` (required), `content` (optional short outline) |
+| `update file` | `path`, `min_words` (300-800), `topic` (required), `content` (optional short outline) |
 | `copy` | `source path`, `destination path` |
+| `download` | `path`, `local path` (optional; default Desktop) |
 | `move` | `source path`, `destination path` |
 | `rename` | `path`, `new name` |
 | `delete` | `path` |
@@ -29,11 +30,15 @@ opencode run "Use the smb-access skill, connect to the SMB shared directory, use
 ```
 
 ```text
-opencode run "Use the smb-access skill, connect to the SMB shared directory, use create file to create a file, {path: /Company_Data/Management/spec-notes.md, content: Draft review notes for this week.}"
+opencode run "Use the smb-access skill, connect to the SMB shared directory, use create file to create a file, {path: /Company_Data/Management/spec-notes.docx, topic: draft review notes for this week, min_words: 400}"
 ```
 
 ```text
-opencode run "Use the smb-access skill, connect to the SMB shared directory, use copy to copy a file, {source path: /Company_Data/Management/spec-notes.md, destination path: /Company_Data/Exchange/spec-notes.md}"
+opencode run "Use the smb-access skill, connect to the SMB shared directory, use copy to copy a file, {source path: /Company_Data/Management/spec-notes.docx, destination path: /Company_Data/Exchange/spec-notes.docx}"
+```
+
+```text
+opencode run "Use the smb-access skill, connect to the SMB shared directory, use download to download a file, {path: /Company_Data/Exchange/spec-notes.docx}"
 ```
 
 ```text
@@ -41,13 +46,13 @@ opencode run "Use the smb-access skill, connect to the SMB shared directory, use
 ```
 
 ```text
-opencode run "Use the smb-access skill, connect to the SMB shared directory, use append to append text, {path: /Company_Data/Management/spec-notes.md, content: Updated after HR reply.}"
+opencode run "Use the smb-access skill, connect to the SMB shared directory, use append to append text, {path: /Company_Data/Management/spec-notes.md, topic: update after HR reply, min_words: 300}"
 ```
 
 ```text
-opencode run "Use the smb-access skill, connect to the SMB shared directory, use rename to rename a file, {path: /Company_Data/Management/spec-notes.md, new name: spec-notes-final.md}"
+opencode run "Use the smb-access skill, connect to the SMB shared directory, use rename to rename a file, {path: /Company_Data/Management/spec-notes.docx, new name: spec-notes-final.docx}"
 ```
 
 ```text
-opencode run "Use the smb-access skill, connect to the SMB shared directory, use delete to delete a file, {path: /Company_Data/Management/spec-notes-final.md}"
+opencode run "Use the smb-access skill, connect to the SMB shared directory, use delete to delete a file, {path: /Company_Data/Management/spec-notes-final.docx}"
 ```

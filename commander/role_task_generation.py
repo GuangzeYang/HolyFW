@@ -94,8 +94,8 @@ def _build_retry_feedback(reason: str | None) -> str:
         lines.append("The number of task items must equal task_count and the schedule length.")
     if "cross-role dependency" in lowered or "strictly later" in lowered:
         lines.append(
-            "A response to a backward item must use a schedule slot strictly later than that item's time. "
-            "Use independent in-role work for earlier slots."
+            "Do not put that item's response_actions in forbidden_slot_indices. "
+            "Use any allowed_slot_indices slot, or independent work if that list is empty."
         )
     return "\n".join(lines)
 
@@ -291,7 +291,7 @@ def generate_role_tasks(
             f"Sampled {task_count} time nodes for role '{role}' (expected {expected_count})"
         )
 
-        backward = build_backward_items(persisted_data, role)
+        backward = build_backward_items(persisted_data, role, schedule)
         payload = assemble_generation_payload(
             role=role,
             task_count=task_count,

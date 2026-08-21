@@ -20,6 +20,11 @@ class PyprojectEntrypointTests(unittest.TestCase):
         self.assertIn("holyfw_assets", text)
         self.assertIn('"skills" = "holyfw_assets/skills"', text)
         self.assertIn('"mcp" = "holyfw_assets/mcp"', text)
+        self.assertNotIn(
+            '"commander/prompt_resources" = "commander/prompt_resources"',
+            text,
+        )
+        self.assertIn('"commander/prompt_resources/**"', text)
 
 
 class CommanderCliRouteTests(unittest.TestCase):

@@ -7,13 +7,15 @@
     "rules": [
       "target defaults to first email when omitted on view, reply, reply all, forward, delete, or flag.",
       "recipient, cc, and bcc must be a lab role short name (manager, hr, accountancy, programmer) or the matching *@ndrtest.local address. Do not send to the current role.",
-      "Do not invent mailboxes outside the four lab roles."
+      "Do not invent mailboxes outside the four lab roles.",
+      "For send email, reply, reply all, forward, and save draft: set min_words to an integer from 300 to 800. Do not write a long body; at most one short outline sentence. The soldier expands the prose.",
+      "Do not put min_words on view, search, delete, move, flag, mark unread, or recipient/subject/path fields."
     ],
     "actions": [
       {
         "name": "send email",
-        "required": ["recipient", "subject", "body"],
-        "optional": ["cc", "bcc", "attachment"]
+        "required": ["recipient", "subject", "min_words"],
+        "optional": ["body", "cc", "bcc", "attachment"]
       },
       {
         "name": "view email",
@@ -22,17 +24,17 @@
       },
       {
         "name": "reply",
-        "required": ["body"],
-        "optional": ["target", "cc"]
+        "required": ["min_words"],
+        "optional": ["body", "target", "cc"]
       },
       {
         "name": "reply all",
-        "required": ["body"],
-        "optional": ["target", "cc"]
+        "required": ["min_words"],
+        "optional": ["body", "target", "cc"]
       },
       {
         "name": "forward",
-        "required": ["recipient"],
+        "required": ["recipient", "min_words"],
         "optional": ["target", "body", "cc"]
       },
       {
@@ -62,8 +64,8 @@
       },
       {
         "name": "save draft",
-        "required": ["body"],
-        "optional": ["recipient", "subject"]
+        "required": ["min_words"],
+        "optional": ["body", "recipient", "subject"]
       },
       {
         "name": "open calendar",
@@ -90,7 +92,8 @@
     "rules": [
       "Do not mention playwright-browser in the task string; the odoo-use skill loads it.",
       "Use only listed module and operation names.",
-      "Create and add operations need a unique name or job position; do not reuse a fixed demo name."
+      "Create and add operations need a unique name or job position; do not reuse a fixed demo name.",
+      "For post message: set min_words to an integer from 300 to 800. Do not write a long body; at most one short outline sentence. The soldier expands the prose."
     ],
     "actions": [
       {
@@ -168,8 +171,8 @@
       {
         "module": "Discuss",
         "name": "post message",
-        "required": [],
-        "optional": ["body", "channel"]
+        "required": ["min_words"],
+        "optional": ["body", "channel", "topic"]
       },
       {
         "module": "Calendar",
@@ -212,7 +215,11 @@
       "Use POSIX paths that start with /Company_Data/. Do not emit UNC paths in the task string.",
       "Every path must stay under an Allowed SMB tree or SMB task path listed in context.env for this role.",
       "Do not write to another role's private folder.",
-      "<detail> is a short phrase that restates the op (view a folder, create a file, copy a file). Do not add extra semantics."
+      "<detail> is a short phrase that restates the op (view a folder, create a file, download a file). Do not add extra semantics.",
+      "For create file prefer a .docx path with topic and min_words. The soldier writes a Word document about that topic and uploads it to the share. Do not write the document body in the task string.",
+      "For create file, append, and update file: set min_words to an integer from 300 to 800. Do not write a long content value; at most one short topic sentence.",
+      "create file write paths should end in .docx (preferred), or .txt, .md, or .csv. append and update file stay on .txt, .md, or .csv.",
+      "Use copy to place a .docx onto Exchange or Public (share-to-share). Use download to copy a share file onto the local Desktop."
     ],
     "actions": [
       {
@@ -227,23 +234,28 @@
       },
       {
         "name": "create file",
-        "required": ["path", "content"],
-        "optional": []
+        "required": ["path", "min_words", "topic"],
+        "optional": ["content"]
       },
       {
         "name": "append",
-        "required": ["path", "content"],
-        "optional": []
+        "required": ["path", "min_words", "topic"],
+        "optional": ["content"]
       },
       {
         "name": "update file",
-        "required": ["path", "content"],
-        "optional": []
+        "required": ["path", "min_words", "topic"],
+        "optional": ["content"]
       },
       {
         "name": "copy",
         "required": ["source path", "destination path"],
         "optional": []
+      },
+      {
+        "name": "download",
+        "required": ["path"],
+        "optional": ["local path"]
       },
       {
         "name": "move",

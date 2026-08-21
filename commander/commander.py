@@ -546,6 +546,8 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     logging.info("Starting commander, logs: %s", log_file)
+    logging.info("Commander workspace: %s", logs_dir.parent)
+    logging.info("Task file directory: %s", data_dir.resolve())
 
     statistic_output_dir = None
     if args.statistic:

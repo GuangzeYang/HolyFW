@@ -17,7 +17,7 @@ Use the exchange-use skill, open the Exchange mailbox, <action>, {<field>: <valu
 ```
 
 ```text
-opencode run "Use the exchange-use skill, open the Exchange mailbox, send email, {recipient: manager, subject: Weekly staffing update, body: Please review headcount this week.}"
+opencode run "Use the exchange-use skill, open the Exchange mailbox, send email, {recipient: manager, subject: Weekly staffing update, min_words: 400}"
 ```
 
 ```text
@@ -25,7 +25,7 @@ opencode run "Use the exchange-use skill, open the Exchange mailbox, view email,
 ```
 
 ```text
-opencode run "Use the exchange-use skill, open the Exchange mailbox, reply, {body: Received. I will collect the staffing figures after reviewing the private folder.}"
+opencode run "Use the exchange-use skill, open the Exchange mailbox, reply, {min_words: 400}"
 ```
 
 ```text
@@ -47,7 +47,7 @@ opencode run "Use the odoo-use skill, log in to the Odoo system, use the Recruit
 ```
 
 ```text
-opencode run "Use the odoo-use skill, log in to the Odoo system, use the Discuss module, post message, {channel: general, body: Please send updated headcount by Friday.}"
+opencode run "Use the odoo-use skill, log in to the Odoo system, use the Discuss module, post message, {channel: general, topic: please send updated headcount by Friday, min_words: 300}"
 ```
 
 ## playwright-browser
@@ -84,9 +84,13 @@ opencode run "Use the smb-access skill, connect to the SMB shared directory, use
 ```
 
 ```text
-opencode run "Use the smb-access skill, connect to the SMB shared directory, use create file to create a file, {path: /Company_Data/accountancy/ledger-notes.txt, content: Q3 invoice draft.}"
+opencode run "Use the smb-access skill, connect to the SMB shared directory, use create file to create a file, {path: /Company_Data/accountancy/ledger-notes.docx, topic: Q3 invoice draft, min_words: 400}"
 ```
 
 ```text
-opencode run "Use the smb-access skill, connect to the SMB shared directory, use copy to copy a file, {source path: /Company_Data/accountancy/ledger-notes.txt, destination path: /Company_Data/Exchange/ledger-notes.txt}"
+opencode run "Use the smb-access skill, connect to the SMB shared directory, use copy to copy a file, {source path: /Company_Data/accountancy/ledger-notes.docx, destination path: /Company_Data/Exchange/ledger-notes.docx}"
+```
+
+```text
+opencode run "Use the smb-access skill, connect to the SMB shared directory, use download to download a file, {path: /Company_Data/Exchange/ledger-notes.docx}"
 ```

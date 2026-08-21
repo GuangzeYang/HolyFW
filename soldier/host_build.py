@@ -27,6 +27,10 @@ def opencode_config_dir() -> Path:
 
 
 def opencode_skill_dir() -> Path:
+    return opencode_config_dir() / "skills"
+
+
+def opencode_legacy_skill_dir() -> Path:
     return opencode_config_dir() / "skill"
 
 
@@ -186,6 +190,9 @@ def run_build(role: str) -> int:
         from holyfw_assets import mcp_config_path
 
         installed = copy_skills(pack_root, opencode_skill_dir())
+        legacy = opencode_legacy_skill_dir()
+        if legacy.is_dir():
+            shutil.rmtree(legacy)
         merge_mcp_config(mcp_config_path(), opencode_json_path())
         ensure_playwright()
     except (ValueError, FileNotFoundError, RuntimeError, OSError, json.JSONDecodeError) as exc:

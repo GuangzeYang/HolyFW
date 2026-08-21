@@ -175,6 +175,71 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
 
         self.assertEqual(build_backward_items(task_data, "hr"), [])
 
+    def test_schedule_slots_forbid_equal_and_earlier_times(self) -> None:
+        task_data = {
+            "manager": [
+                {
+                    "time": "14:13",
+                    "task": (
+                        "Use exchange-use skill, send email, "
+                        "{recipient: programmer@ndrtest.local, subject: Release status}"
+                    ),
+                }
+            ]
+        }
+        schedule = ["09:09", "14:13", "14:41", "15:02"]
+
+        items = build_backward_items(task_data, "programmer", schedule)
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["relation"], "email")
+        self.assertEqual(
+            items[0]["response_actions"],
+            ["reply", "reply all", "view email", "review email", "forward"],
+        )
+        self.assertEqual(items[0]["forbidden_slot_indices"], [0, 1])
+        self.assertEqual(items[0]["forbidden_times"], ["09:09", "14:13"])
+        self.assertEqual(items[0]["allowed_slot_indices"], [2, 3])
+        self.assertEqual(items[0]["allowed_times"], ["14:41", "15:02"])
+
+    def test_schedule_slots_are_empty_when_no_later_time_exists(self) -> None:
+        task_data = {
+            "hr": [
+                {
+                    "time": "16:40",
+                    "task": (
+                        "Use exchange-use skill, send email, "
+                        "{to: manager@ndrtest.local, subject: Onboarding}"
+                    ),
+                }
+            ]
+        }
+
+        items = build_backward_items(task_data, "manager", ["09:10", "14:02", "16:40"])
+
+        self.assertEqual(items[0]["forbidden_slot_indices"], [0, 1, 2])
+        self.assertEqual(items[0]["allowed_slot_indices"], [])
+        self.assertEqual(items[0]["allowed_times"], [])
+
+    def test_slot_fields_are_omitted_without_a_schedule(self) -> None:
+        task_data = {
+            "hr": [
+                {
+                    "time": "10:01",
+                    "task": (
+                        "Use exchange-use skill, send email, "
+                        "{to: manager@ndrtest.local, subject: Onboarding}"
+                    ),
+                }
+            ]
+        }
+
+        items = build_backward_items(task_data, "manager")
+
+        self.assertEqual(items[0]["from"], ["hr"])
+        self.assertNotIn("forbidden_slot_indices", items[0])
+        self.assertNotIn("allowed_slot_indices", items[0])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -72,6 +72,9 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = resolve_config_relative_path(scanner_config["data_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
     logs_dir = resolve_config_relative_path(paths_config["logs_dir"])
+    emit_status = lambda message: print(message, flush=True)
+    emit_status(f"Task file directory: {output_dir}")
+    emit_status(f"Commander logs directory: {logs_dir}")
     domain_resource_path = resolve_config_relative_path(paths_config["domain_resource_file"])
     constraints_resource_path = resolve_config_relative_path(
         paths_config["task_generation_constraints_file"]
@@ -79,7 +82,6 @@ def main(argv: list[str] | None = None) -> int:
 
     interval = generator_config["generation_retry_interval_seconds"]
     agent_client = build_deepseek_client(generator_config)
-    emit_status = lambda message: print(message, flush=True)
 
     try:
         while True:

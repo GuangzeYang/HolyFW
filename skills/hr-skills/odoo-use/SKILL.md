@@ -147,7 +147,7 @@ Optional `{job position: ...}`.
 
 1. Open **Discuss** (often already open after login).
 2. **read inbox**: click **Inbox**. Read the empty state or the first thread. Optional **Mark all read**.
-3. **post message**: click channel **general** (or `{channel: ...}`). Click the composer at the bottom, type `{body: ...}`, press Enter or click Send.
+3. **post message**: click channel **general** (or `{channel: ...}`). If `min_words` is set, write original English of at least that many words about `topic` or the short `body` outline (no lorem ipsum, no invented secrets). If `min_words` is absent, type `{body: ...}` unchanged. Click the composer at the bottom, type the expanded text, press Enter or click Send.
 4. **search messages**: click **Search Messages**, type `{query: ...}`.
 
 # Calendar

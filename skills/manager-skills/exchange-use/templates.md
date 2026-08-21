@@ -10,17 +10,17 @@ Use the exchange-use skill, open the Exchange mailbox, <action>, {<field>: <valu
 
 | `<action>` | Fields |
 |---|---|
-| `send email` | `recipient` (required), `subject`, `body`, `cc`, `bcc`, `attachment` |
+| `send email` | `recipient` (required), `subject` (required), `min_words` (required, 300-800), `body` (optional short outline), `cc`, `bcc`, `attachment` |
 | `view email` | `target`, `folder` |
-| `reply` | `body` (required), `target`, `cc` |
-| `reply all` | `body` (required), `target`, `cc` |
-| `forward` | `recipient` (required), `target`, `body`, `cc` |
+| `reply` | `min_words` (required, 300-800), `body` (optional short outline), `target`, `cc` |
+| `reply all` | `min_words` (required, 300-800), `body` (optional short outline), `target`, `cc` |
+| `forward` | `recipient` (required), `min_words` (required, 300-800), `target`, `body` (optional short outline), `cc` |
 | `search` | `query` (required), `target` |
 | `delete` | `target`, `folder` |
 | `move` | `folder` (required destination), `target` |
 | `flag` | `target` |
 | `mark unread` | `target` |
-| `save draft` | `body`, `recipient`, `subject` |
+| `save draft` | `min_words` (required, 300-800), `body` (optional short outline), `recipient`, `subject` |
 | `open calendar` | none |
 | `open people` | none |
 | `open tasks` | none |
@@ -30,11 +30,11 @@ Use the exchange-use skill, open the Exchange mailbox, <action>, {<field>: <valu
 ## Examples
 
 ```text
-opencode run "Use the exchange-use skill, open the Exchange mailbox, send email, {recipient: hr, subject: Weekly staffing update, body: Please review headcount this week.}"
+opencode run "Use the exchange-use skill, open the Exchange mailbox, send email, {recipient: hr, subject: Weekly staffing update, min_words: 400}"
 ```
 
 ```text
-opencode run "Use the exchange-use skill, open the Exchange mailbox, send email, {recipient: hr@ndrtest.local, cc: programmer, subject: Onboarding pack, body: Offer letter is attached., attachment: C:\Users\manager\Desktop\offer.pdf}"
+opencode run "Use the exchange-use skill, open the Exchange mailbox, send email, {recipient: hr@ndrtest.local, cc: programmer, subject: Onboarding pack, min_words: 400, attachment: C:\Users\manager\Desktop\offer.pdf}"
 ```
 
 ```text
@@ -42,15 +42,15 @@ opencode run "Use the exchange-use skill, open the Exchange mailbox, view email,
 ```
 
 ```text
-opencode run "Use the exchange-use skill, open the Exchange mailbox, reply, {target: Staffing update, body: Received. I will collect the figures this afternoon.}"
+opencode run "Use the exchange-use skill, open the Exchange mailbox, reply, {target: Staffing update, min_words: 400}"
 ```
 
 ```text
-opencode run "Use the exchange-use skill, open the Exchange mailbox, reply all, {body: Thanks, I will follow up with the Management folder.}"
+opencode run "Use the exchange-use skill, open the Exchange mailbox, reply all, {min_words: 400}"
 ```
 
 ```text
-opencode run "Use the exchange-use skill, open the Exchange mailbox, forward, {target: first email, recipient: hr, body: FYI for staffing.}"
+opencode run "Use the exchange-use skill, open the Exchange mailbox, forward, {target: first email, recipient: hr, min_words: 400}"
 ```
 
 ```text

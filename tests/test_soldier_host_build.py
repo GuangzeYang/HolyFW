@@ -63,7 +63,7 @@ class CopySkillTests(unittest.TestCase):
             pack = root / "pack"
             _write_skill(pack, "exchange-use", "new\n")
             (pack / "PROMPT_TEMPLATES.md").write_text("ignore", encoding="utf-8")
-            dest_root = root / "skill"
+            dest_root = root / "skills"
             stale = dest_root / "exchange-use"
             stale.mkdir(parents=True)
             (stale / "SKILL.md").write_text("old\n", encoding="utf-8")
@@ -81,7 +81,7 @@ class CopySkillTests(unittest.TestCase):
             pack = Path(tmp) / "pack"
             pack.mkdir()
             with self.assertRaises(FileNotFoundError):
-                copy_skills(pack, Path(tmp) / "skill")
+                copy_skills(pack, Path(tmp) / "skills")
 
 
 class MergeMcpTests(unittest.TestCase):
@@ -178,9 +178,10 @@ class RunBuildTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             self.assertEqual(
-                (oc / "skill" / "exchange-use" / "SKILL.md").read_text(encoding="utf-8"),
+                (oc / "skills" / "exchange-use" / "SKILL.md").read_text(encoding="utf-8"),
                 "# skill\n",
             )
+            self.assertFalse((oc / "skill").exists())
             saved = json.loads((oc / "opencode.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["mcp"]["playwright"]["command"], ["npx"])
 

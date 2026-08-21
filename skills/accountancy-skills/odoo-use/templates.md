@@ -23,7 +23,7 @@ Omit the `{...}` block when the operation has no fields. Omit unused keys.
 | `Recruitment` | `delete job posting` | `job position` |
 | `Recruitment` | `create applicant` | `name`, `job position`, `email`, `phone` |
 | `Discuss` | `read inbox` | none |
-| `Discuss` | `post message` | `body`, `channel` |
+| `Discuss` | `post message` | `min_words` (required, 300-800), `body` (optional short outline), `channel`, `topic` |
 | `Calendar` | `view calendar` | none |
 | `Calendar` | `create event` | `title`, `attendee` |
 | `Contacts` | `add contact` | `name`, `email`, `phone` |
@@ -57,7 +57,7 @@ opencode run "Use the odoo-use skill, log in to the Odoo system, use the Recruit
 ```
 
 ```text
-opencode run "Use the odoo-use skill, log in to the Odoo system, use the Discuss module, post message, {channel: general, body: Please send updated headcount by Friday.}"
+opencode run "Use the odoo-use skill, log in to the Odoo system, use the Discuss module, post message, {channel: general, topic: please send updated headcount by Friday, min_words: 300}"
 ```
 
 ```text

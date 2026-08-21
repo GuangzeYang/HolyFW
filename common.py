@@ -14,6 +14,96 @@ DATE_FULL = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DATE_MD = re.compile(r"^\d{2}-\d{2}$")
 UUID_HEX_NO_HYPHEN = re.compile(r"^[0-9a-fA-F]{8,32}$")
 WORK_WINDOWS = ((9 * 60, 12 * 60), (13 * 60, 18 * 60))
+HOLYFW_ROOT_ENV = "HOLYFW_ROOT"
+_INSTALL_TREE_MARKERS = frozenset({"site-packages", "dist-packages"})
+_OPENCODE_RUN_PREFIX = re.compile(r"^(?:opencode(?:\.cmd)?)\s+run\s+", re.IGNORECASE)
+_PACKAGE_DIR_NAMES = frozenset({"commander", "soldier"})
+
+
+def is_install_tree(path: Path) -> bool:
+    """Return True when *path* lives under a Python package install tree."""
+    return any(part.lower() in _INSTALL_TREE_MARKERS for part in Path(path).parts)
+
+
+def looks_like_holyfw_root(path: Path) -> bool:
+    """Return True when *path* is a HolyFW checkout (commander config + soldier/)."""
+    root = Path(path)
+    return (root / "commander" / "config.json").is_file() and (root / "soldier").is_dir()
+
+
+def locate_holyfw_root(*, package_hint: Path | None = None) -> Path:
+    """Locate the source workspace. Never returns a site-packages path."""
+    env = os.environ.get(HOLYFW_ROOT_ENV, "").strip()
+    if env:
+        root = Path(env).expanduser().resolve()
+        if is_install_tree(root):
+            raise FileNotFoundError(
+                f"{HOLYFW_ROOT_ENV} must not point at a Python install tree: {root}"
+            )
+        if looks_like_holyfw_root(root):
+            return root
+        raise FileNotFoundError(
+            f"{HOLYFW_ROOT_ENV} must contain commander/config.json and soldier/: {root}"
+        )
+
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+    cwd = Path.cwd().resolve()
+    candidates.extend((cwd, *cwd.parents))
+    if package_hint is not None:
+        hint = Path(package_hint).resolve()
+        if not is_install_tree(hint):
+            candidates.append(hint)
+            if hint.name.lower() in _PACKAGE_DIR_NAMES:
+                candidates.append(hint.parent)
+
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if is_install_tree(candidate):
+            continue
+        if looks_like_holyfw_root(candidate):
+            return candidate
+
+    raise FileNotFoundError(
+        "Cannot locate the HolyFW workspace (need commander/config.json and a soldier/ directory). "
+        f"Run from the repository, or set {HOLYFW_ROOT_ENV}. "
+        "Task files and logs must not be written under site-packages."
+    )
+
+
+def commander_workspace_dir(*, package_hint: Path | None = None) -> Path:
+    """Return the writable commander/ directory in the source workspace."""
+    return locate_holyfw_root(package_hint=package_hint) / "commander"
+
+
+def soldier_workspace_dir(*, package_hint: Path | None = None) -> Path:
+    """Return the writable soldier/ directory in the source workspace."""
+    return locate_holyfw_root(package_hint=package_hint) / "soldier"
+
+
+def strip_opencode_run_prefix(text: str) -> str:
+    """Return the OpenCode prompt, stripping a leading ``opencode run`` wrapper."""
+    if not isinstance(text, str):
+        return ""
+    stripped = text.strip()
+    match = _OPENCODE_RUN_PREFIX.match(stripped)
+    if not match:
+        return stripped
+    rest = stripped[match.end() :].strip()
+    if not rest:
+        return ""
+    if len(rest) >= 2 and rest[0] == rest[-1] and rest[0] in {'"', "'"}:
+        if rest.startswith('"'):
+            try:
+                parsed = json.loads(rest)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, str) and parsed.strip():
+                return parsed.strip()
+        return rest[1:-1].strip()
+    return rest
 
 
 def clean_old_files(dir_path: Path, pattern: str, days: int = 20) -> None:
@@ -567,7 +657,10 @@ def normalize_role_tasks(
             desc = item.get("task")
             if not isinstance(desc, str) or not desc.strip():
                 continue
-            descriptions.append(desc.strip())
+            desc = strip_opencode_run_prefix(desc)
+            if not desc:
+                continue
+            descriptions.append(desc)
             load_flags.append(bool(item.get("is_load", False)))
             raw_time = item.get("time")
             if isinstance(raw_time, str) and parse_hhmm_to_minute(raw_time) is not None:

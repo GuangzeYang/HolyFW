@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -24,6 +25,7 @@ import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Sequence
 import logging
 
 try:
@@ -33,6 +35,8 @@ except ImportError:
 
 from common import (
     clean_old_files,
+    soldier_workspace_dir,
+    strip_opencode_run_prefix,
     validate_task_id,
     expand_date_segment,
     parse_task_ref,
@@ -154,15 +158,20 @@ def configure_soldier_root_logging(logs_dir: Path, level: int = logging.INFO) ->
     return reattach_soldier_dated_file_handler(logs_dir, level, logger=logger)
 
 
+def soldier_data_dir() -> Path:
+    """Writable soldier/ directory in the source workspace, never site-packages."""
+    return soldier_workspace_dir(package_hint=Path(__file__).resolve().parent)
+
+
 def get_logs_dir(base_dir: Path | None = None) -> Path:
-    root = base_dir or Path(__file__).resolve().parent
+    root = base_dir or soldier_data_dir()
     path = root / LOGS_DIR_NAME
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def get_runtime_dir(base_dir: Path | None = None) -> Path:
-    root = base_dir or Path(__file__).resolve().parent
+    root = base_dir or soldier_data_dir()
     path = root / RUNTIME_DIR_NAME
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -187,16 +196,21 @@ def append_task_execution_log(
     stderr_text: str,
     message: str | None = None,
     base_dir: Path | None = None,
+    argv: list[str] | None = None,
+    task: str | None = None,
 ) -> Path:
     """Append one task lifecycle record (receive + opencode result) to logs/tasks_*.jsonl."""
     path = tasks_log_path(date_str, base_dir)
+    prompt = strip_opencode_run_prefix(task if task is not None else command)
     record = {
         "received_at": received_at,
         "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "task_id": task_id,
         "task_ref": task_ref,
         "date": date_str,
-        "command": command,
+        "task": prompt,
+        "command": prompt,
+        "argv": list(argv) if argv is not None else [],
         "status": status,
         "exit_code": exit_code,
         "message": message or "",
@@ -594,8 +608,37 @@ def terminate_all_active_processes(reason: str) -> None:
             logging.error("Failed to terminate active pid=%s: %s", proc.pid, exc, exc_info=True)
 
 
+def _command_label(command: str | Sequence[str]) -> str:
+    if isinstance(command, str):
+        return command
+    parts = [str(part) for part in command]
+    if os.name == "nt":
+        return subprocess.list2cmdline(parts)
+    return " ".join(parts)
+
+
+def resolve_opencode_executable() -> str:
+    found = shutil.which("opencode")
+    if not found:
+        raise FileNotFoundError("opencode executable not found on PATH")
+    return found
+
+
+def build_opencode_argv(prompt: str) -> list[str]:
+    return [resolve_opencode_executable(), "run", prompt]
+
+
+def dispatch_prompt_from_payload(payload: dict) -> str:
+    raw = payload.get("task")
+    if not isinstance(raw, str) or not raw.strip():
+        raw = payload.get("command")
+    if not isinstance(raw, str):
+        return ""
+    return strip_opencode_run_prefix(raw)
+
+
 def execute_command(
-    command: str,
+    command: str | Sequence[str],
     timeout_sec: int,
     max_output_bytes: int = MAX_COMMAND_OUTPUT_BYTES,
     *,
@@ -605,10 +648,15 @@ def execute_command(
     if _SHUTTING_DOWN.is_set():
         return "", "soldier is shutting down", -1, "failed", "Execution cancelled during shutdown"
     popen_options: dict = {
-        "shell": True,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
     }
+    if isinstance(command, str):
+        popen_target: str | list[str] = command
+        popen_options["shell"] = True
+    else:
+        popen_target = [str(part) for part in command]
+        popen_options["shell"] = False
     if os.name == "nt":
         popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
@@ -618,7 +666,7 @@ def execute_command(
         popen_options["stdout"] = stdout_tmp
         popen_options["stderr"] = stderr_tmp
         try:
-            proc = subprocess.Popen(command, **popen_options)
+            proc = subprocess.Popen(popen_target, **popen_options)
         except OSError as exc:
             return "", str(exc), -1, "failed", f"Execution failed: {exc}"
 
@@ -630,7 +678,7 @@ def execute_command(
             try:
                 exit_code = proc.wait(timeout=timeout_sec)
             except subprocess.TimeoutExpired:
-                terminate_process_tree(proc, f"task timeout: {task_ref or command[:80]}")
+                terminate_process_tree(proc, f"task timeout: {task_ref or _command_label(command)[:80]}")
                 out, out_truncated = _read_temp_output_limited(stdout_tmp, max_output_bytes)
                 err_out, err_truncated = _read_temp_output_limited(stderr_tmp, max_output_bytes)
                 if not err_out:
@@ -663,6 +711,12 @@ def task_ref_full(date_str: str, role: str, task_id: str) -> str:
 
 
 def default_config_path() -> Path:
+    try:
+        candidate = soldier_data_dir() / DEFAULT_CONFIG_NAME
+        if candidate.is_file():
+            return candidate
+    except FileNotFoundError:
+        pass
     return Path(__file__).resolve().parent / DEFAULT_CONFIG_NAME
 
 
@@ -876,7 +930,7 @@ def handle_dispatch_connection(
                 logging.warning(f"Failed to send error response to dispatch connection: {os_err}")
             return
         task_ref = payload.get("task_ref")
-        command = payload.get("command")
+        prompt = dispatch_prompt_from_payload(payload)
         task_date_override = payload.get("task_date")
         if not isinstance(task_ref, str):
             try:
@@ -889,11 +943,11 @@ def handle_dispatch_connection(
             except OSError as os_err:
                 logging.warning(f"Failed to send error response to dispatch connection: {os_err}")
             return
-        if not isinstance(command, str) or not command.strip():
+        if not prompt:
             try:
                 conn.sendall(
                     (
-                        json.dumps({"ok": False, "error": "Missing or invalid command"}, ensure_ascii=False)
+                        json.dumps({"ok": False, "error": "Missing or invalid task"}, ensure_ascii=False)
                         + "\n"
                     ).encode("utf-8")
                 )
@@ -936,12 +990,12 @@ def handle_dispatch_connection(
         full_ref = task_ref_full(date_str, role, task_id)
         received_at = datetime.now().astimezone().isoformat(timespec="seconds")
         extras = task_extra(task_id)
-        logging.info("Received — %s", command, extra=extras)
+        logging.info("Received — %s", prompt, extra=extras)
         claim_status, previous_state = claim_task_execution(
             date_str,
             task_id,
             full_ref,
-            command,
+            prompt,
             received_at,
             timeout_sec + RUNNING_STALE_GRACE_SECONDS,
         )
@@ -1009,11 +1063,17 @@ def handle_dispatch_connection(
             logging.error("Claimed but acknowledgment failed; not executing", extra=extras)
             return
 
-        out, err_out, exit_code, status, msg = execute_command(
-            command,
-            timeout_sec,
-            task_ref=full_ref,
-        )
+        argv = ["opencode", "run", prompt]
+        try:
+            argv = build_opencode_argv(prompt)
+        except FileNotFoundError as exc:
+            out, err_out, exit_code, status, msg = "", str(exc), -1, "failed", str(exc)
+        else:
+            out, err_out, exit_code, status, msg = execute_command(
+                argv,
+                timeout_sec,
+                task_ref=full_ref,
+            )
 
         report = {
             "task_ref": full_ref,
@@ -1032,12 +1092,14 @@ def handle_dispatch_connection(
                 task_ref=full_ref,
                 date_str=date_str,
                 received_at=received_at,
-                command=command,
+                command=prompt,
                 status=status,
                 exit_code=exit_code,
                 stdout_text=out,
                 stderr_text=err_out,
                 message=msg,
+                argv=argv,
+                task=prompt,
             )
         except OSError as e:
             logging.error("Failed to write task log: %s", e, extra=extras)
@@ -1046,7 +1108,7 @@ def handle_dispatch_connection(
             date_str,
             task_id,
             full_ref,
-            command,
+            prompt,
             received_at,
             report,
             task_log_file,
@@ -1088,7 +1150,11 @@ def run_listen(
     to = load_exec_timeout(config_path)
     timeout_sec = to if to is not None and to > 0 else SUBPROCESS_TIMEOUT_DEFAULT
     worker_threads = load_worker_threads(config_path)
-    script_dir = Path(__file__).resolve().parent
+    try:
+        script_dir = soldier_data_dir()
+    except FileNotFoundError as exc:
+        logging.error("%s", exc)
+        raise
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1234,12 +1300,17 @@ Default reads {DEFAULT_CONFIG_NAME} in same directory:
 
         return run_build(args.role)
 
-    script_dir = Path(__file__).resolve().parent
+    try:
+        script_dir = soldier_data_dir()
+    except FileNotFoundError as exc:
+        print(exc, file=sys.stderr)
+        return 1
     soldier_logs = get_logs_dir(script_dir)
     get_runtime_dir(script_dir)
     log_file = configure_soldier_root_logging(soldier_logs, logging.INFO)
 
     logging.info("Soldier starting, logs: %s", log_file)
+    logging.info("Soldier workspace: %s", script_dir)
     logging.info("Runtime state directory: %s", get_runtime_dir(script_dir))
 
     cfg = args.config if getattr(args, "config", None) is not None else default_config_path()

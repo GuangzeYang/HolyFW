@@ -62,6 +62,8 @@ We use agents to define a set of roles, with each role assigned to a separate ho
 
 When a generated task uses a domain resource, its description must follow the corresponding invocation grammar below. Parameter blocks are JSON-like: no quotation marks around keys or values. Omit unused keys. Omit the `{...}` block when the action or operation has no fields. The task string is the invocation only (never wrap it with `opencode run`).
 
+For actions that produce prose (`send email`, `reply`, `reply all`, `forward`, `save draft`, `create file`, `append`, `update file`, Odoo `post message`): set `min_words` to an integer from 300 to 800. Do not write a long `body` or `content`; at most one short outline sentence. The soldier expands the prose. Do not put `min_words` on paths, recipients, subjects, or view-only actions. SMB `create file` should prefer a `.docx` path plus `topic`; the soldier writes a Word document about that topic and uploads it. `append` / `update file` stay on `.txt`, `.md`, or `.csv`.
+
 ## Exchange Email
 
 Template:
@@ -72,17 +74,17 @@ Template:
 
 | `<action>` | Required fields | Optional fields |
 |---|---|---|
-| `send email` | `recipient`, `subject`, `body` | `cc`, `bcc`, `attachment` |
+| `send email` | `recipient`, `subject`, `min_words` | `body` (short outline), `cc`, `bcc`, `attachment` |
 | `view email` | | `target`, `folder` |
-| `reply` | `body` | `target`, `cc` |
-| `reply all` | `body` | `target`, `cc` |
-| `forward` | `recipient` | `target`, `body`, `cc` |
+| `reply` | `min_words` | `body` (short outline), `target`, `cc` |
+| `reply all` | `min_words` | `body` (short outline), `target`, `cc` |
+| `forward` | `recipient`, `min_words` | `target`, `body` (short outline), `cc` |
 | `search` | `query` | `target` |
 | `delete` | | `target`, `folder` |
 | `move` | `folder` | `target` |
 | `flag` | | `target` |
 | `mark unread` | | `target` |
-| `save draft` | `body` | `recipient`, `subject` |
+| `save draft` | `min_words` | `body` (short outline), `recipient`, `subject` |
 | `open calendar` | | |
 | `open people` | | |
 | `open tasks` | | |
@@ -103,19 +105,20 @@ Template:
 
 `Use the smb-access skill, connect to the SMB shared directory, use <op> to <detail>, {<field>: <value>, ...}`
 
-`<detail>` restates the op (`view a folder`, `create a file`, `copy a file`) and must not add extra semantics. Paths are POSIX `/Company_Data/...` and must stay under the role's allowed trees (`HR-Private`, `accountancy`, `IT-Dev`, `Management`, plus `Public` and `Exchange` as listed for that role).
+`<detail>` restates the op (`view a folder`, `create a file`, `download a file`) and must not add extra semantics. Paths are POSIX `/Company_Data/...` and must stay under the role's allowed trees (`HR-Private`, `accountancy`, `IT-Dev`, `Management`, plus `Public` and `Exchange` as listed for that role). Prefer `.docx` for `create file`. Use `copy` for share-to-share (upload to Exchange/Public). Use `download` to copy a share file to the local Desktop.
 
-| `<op>` | Required fields |
-|---|---|
-| `view` | `path` |
-| `create folder` | `path` |
-| `create file` | `path`, `content` |
-| `append` | `path`, `content` |
-| `update file` | `path`, `content` |
-| `copy` | `source path`, `destination path` |
-| `move` | `source path`, `destination path` |
-| `rename` | `path`, `new name` |
-| `delete` | `path` |
+| `<op>` | Required fields | Optional fields |
+|---|---|---|
+| `view` | `path` | |
+| `create folder` | `path` | |
+| `create file` | `path`, `min_words`, `topic` | `content` (short outline) |
+| `append` | `path`, `min_words`, `topic` | `content` (short outline) |
+| `update file` | `path`, `min_words`, `topic` | `content` (short outline) |
+| `copy` | `source path`, `destination path` | |
+| `download` | `path` | `local path` |
+| `move` | `source path`, `destination path` | |
+| `rename` | `path`, `new name` | |
+| `delete` | `path` | |
 
 ## Odoo System
 
@@ -139,7 +142,7 @@ Do not mention `playwright-browser` in the task string. Create and add operation
 | `Recruitment` | `view applications` | | `job position` |
 | `Recruitment` | `create applicant` | `name` | `job position`, `email`, `phone` |
 | `Discuss` | `read inbox` | | |
-| `Discuss` | `post message` | | `body`, `channel` |
+| `Discuss` | `post message` | `min_words` | `body` (short outline), `channel`, `topic` |
 | `Calendar` | `view calendar` | | |
 | `Calendar` | `create event` | | `title`, `attendee` |
 | `Contacts` | `add contact` | | `name`, `email`, `phone` |

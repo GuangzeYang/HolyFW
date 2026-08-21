@@ -40,6 +40,11 @@ SMB_PUBLIC_OR_EXCHANGE_PATTERN = re.compile(
 ROLE_TOKEN_PATTERN = {
     role: re.compile(rf"\b{re.escape(role)}\b", re.IGNORECASE) for role in OFFICE_ROLES
 }
+RESPONSE_ACTIONS_BY_RELATION = {
+    "email": ("reply", "reply all", "view email", "review email", "forward"),
+    "smb": ("smb-access",),
+    "named": ("odoo-use",),
+}
 
 
 def collect_backward_events(task_data: dict[str, Any], target_role: str) -> list[dict[str, Any]]:
@@ -71,24 +76,42 @@ def collect_backward_events(task_data: dict[str, Any], target_role: str) -> list
     return events
 
 
-def build_backward_items(task_data: dict[str, Any], target_role: str) -> list[dict[str, Any]]:
+def build_backward_items(
+    task_data: dict[str, Any],
+    target_role: str,
+    schedule: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """Return JSON-serializable backward facts for the generation prompt."""
     items: list[dict[str, Any]] = []
     for event in collect_backward_events(task_data, target_role):
-        items.append(
-            {
-                "from": list(event["from_roles"]),
-                "to": list(event["to_roles"]),
-                "time": event["time"],
-                "task": event["task"],
-            }
-        )
+        relation = str(event.get("relation") or "")
+        item: dict[str, Any] = {
+            "from": list(event["from_roles"]),
+            "to": list(event["to_roles"]),
+            "time": event["time"],
+            "task": event["task"],
+            "relation": relation,
+            "response_actions": list(RESPONSE_ACTIONS_BY_RELATION.get(relation, ())),
+        }
+        if schedule is not None:
+            forbidden_indices, allowed_indices, forbidden_times, allowed_times = (
+                _partition_schedule_slots(schedule, int(event["minute"]))
+            )
+            item["forbidden_slot_indices"] = forbidden_indices
+            item["forbidden_times"] = forbidden_times
+            item["allowed_slot_indices"] = allowed_indices
+            item["allowed_times"] = allowed_times
+        items.append(item)
     return items
 
 
-def build_dependency_context(task_data: dict[str, Any], target_role: str) -> str:
+def build_dependency_context(
+    task_data: dict[str, Any],
+    target_role: str,
+    schedule: list[str] | None = None,
+) -> str:
     """Return a compact JSON string of backward facts, or empty when none exist."""
-    items = build_backward_items(task_data, target_role)
+    items = build_backward_items(task_data, target_role, schedule)
     if not items:
         return ""
     import json
@@ -160,6 +183,30 @@ def _format_dependency_violation(
         f"Required constraint: this '{target_role}' response must start strictly later than {dep_time}, "
         "or the slot must be filled with independent work that is not a response to that source task."
     )
+
+
+def _partition_schedule_slots(
+    schedule: list[str],
+    source_minute: int,
+) -> tuple[list[int], list[int], list[str], list[str]]:
+    """Split this role's schedule into slots at/before the source vs strictly later."""
+    forbidden_indices: list[int] = []
+    allowed_indices: list[int] = []
+    forbidden_times: list[str] = []
+    allowed_times: list[str] = []
+    for index, time_text in enumerate(schedule):
+        if not isinstance(time_text, str):
+            continue
+        minute = parse_hhmm_to_minute(time_text)
+        if minute is None:
+            continue
+        if minute <= source_minute:
+            forbidden_indices.append(index)
+            forbidden_times.append(time_text)
+        else:
+            allowed_indices.append(index)
+            allowed_times.append(time_text)
+    return forbidden_indices, allowed_indices, forbidden_times, allowed_times
 
 
 def _task_snippet(text: str, max_len: int = 100) -> str:

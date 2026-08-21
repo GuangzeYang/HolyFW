@@ -165,15 +165,12 @@ def _run_opencode(task_text: str, timeout_seconds: int) -> tuple[int, str]:
 
 def _run_dispatch(task_text: str, timeout_seconds: int) -> tuple[int, str]:
     dispatch_script = Path(__file__).resolve().parent / "dispatch.py"
-    command = f"opencode run {json.dumps(task_text, ensure_ascii=False)}"
     completed = subprocess.run(
         [
             sys.executable,
             str(dispatch_script),
             "--target",
             "victim",
-            "--command",
-            command,
             "--task",
             task_text,
         ],

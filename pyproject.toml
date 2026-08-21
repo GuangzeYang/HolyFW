@@ -18,6 +18,17 @@ dependencies = [
 commander = "commander.cli:main"
 soldier = "soldier.soldier:main"
 
+[tool.hatch.build]
+# Always ship in-package data files, even when Git does not track them.
+# Do not force-include these onto the same wheel paths — Hatch will error
+# if a file is added to the archive twice.
+artifacts = [
+  "commander/config.json",
+  "commander/commander.ini",
+  "commander/prompt_resources/**",
+  "soldier/soldier.ini",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["commander", "soldier", "holyfw_assets"]
 
@@ -27,10 +38,6 @@ packages = ["commander", "soldier", "holyfw_assets"]
 "mcp" = "holyfw_assets/mcp"
 "domain_resource.md" = "holyfw_assets/domain_resource.md"
 "task_generation_constraints.md" = "holyfw_assets/task_generation_constraints.md"
-"commander/config.json" = "commander/config.json"
-"commander/commander.ini" = "commander/commander.ini"
-"commander/prompt_resources" = "commander/prompt_resources"
-"soldier/soldier.ini" = "soldier/soldier.ini"
 
 [tool.hatch.build.targets.sdist]
 include = [

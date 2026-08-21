@@ -117,8 +117,8 @@ def build_react_generation_messages(
     user_lines = [
         f"Generate exactly {task_count} English task bodies for role '{role}'.",
         "Do not output time fields. Commander will attach the schedule times in list order.",
-        "Place any response to a backward item into a later schedule slot than that item's time.",
-        "If no later slot exists, do not emit that response; emit independent in-role work instead.",
+        "Task i is assigned schedule[i]. For each backward item, do not use that item's response_actions in forbidden_slot_indices.",
+        "A response may use any slot in allowed_slot_indices. If that list is empty, do not emit that response.",
         "Return ReAct output only.",
         "",
         json.dumps(user_obj, ensure_ascii=False, indent=2),
