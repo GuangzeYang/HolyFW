@@ -660,6 +660,18 @@ class PromptTests(unittest.TestCase):
         self.assertIn("download", prompt)
         self.assertIn("opencode run", prompt)
 
+    def test_constraints_treat_skill_catalog_as_format_only(self) -> None:
+        prompt = format_task_generation_constraints(
+            CONSTRAINTS_TEMPLATE,
+            roles=("hr",),
+            tasks_per_role=2,
+        )
+        self.assertIn("FORMAT reference only", prompt)
+        self.assertIn("Do not follow skills[] order", prompt)
+        self.assertIn("Do not copy task content from the catalog", prompt)
+        self.assertIn("Format illustration only", prompt)
+        self.assertNotIn("Mix skills across the day", prompt)
+
     def test_generation_payload_strips_skill_examples(self) -> None:
         catalog = {
             "domain": {"company": "lab"},
@@ -689,6 +701,8 @@ class PromptTests(unittest.TestCase):
         self.assertNotIn("example", skill)
         self.assertNotIn("example", skill["actions"][0])
         self.assertEqual(skill["actions"][0]["name"], "reply")
+        self.assertIn("FORMAT ONLY", skill["catalog_use"])
+        self.assertEqual(payload["skill_catalog_contract"]["reference"], "format")
 
     def test_live_payload_has_grammar_templates_without_examples(self) -> None:
         payload = assemble_generation_payload(
@@ -745,6 +759,10 @@ class PromptTests(unittest.TestCase):
         self.assertIn("Do not output time fields", user)
         self.assertIn("forbidden_slot_indices", user)
         self.assertIn("allowed_slot_indices", user)
+        self.assertIn("invocation-format catalog only", user)
+        self.assertIn("Do not follow its order", user)
+        self.assertIn("Do not copy its content", user)
+        self.assertEqual(payload["skill_catalog_contract"]["reference"], "format")
 
     def test_build_role_task_prompt_keeps_english_contract(self) -> None:
         prompt = build_role_task_prompt(
@@ -1387,6 +1405,8 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertEqual(len(client.prompts), 2)
             self.assertIn("The previous output failed validation", client.prompts[1])
             self.assertIn("does not match schedule", client.prompts[1])
+            self.assertIn("FORMAT ONLY", client.prompts[1])
+            self.assertIn("Do not walk skills[]", client.prompts[1])
             self.assertEqual(client.response_formats[1], {"type": "json_object"})
 
     def test_generate_role_tasks_zips_algorithm_times_and_ignores_model_times(self) -> None:

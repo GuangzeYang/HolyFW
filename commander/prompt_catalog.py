@@ -55,11 +55,20 @@ def _skills_for_role(catalog: dict[str, Any], role: str) -> list[dict[str, Any]]
         if not isinstance(name, str):
             continue
         item = templates.get(name)
+        entry: dict[str, Any] = {
+            "catalog_use": (
+                "FORMAT ONLY. Copy template/action/field grammar. "
+                "Ignore this object's index. Do not copy its prose into a task."
+            )
+        }
         if isinstance(item, dict):
             stripped = _strip_examples(item)
-            skills.append(stripped if isinstance(stripped, dict) else {"name": name})
+            extra = dict(stripped) if isinstance(stripped, dict) else {"name": name}
+            extra.pop("catalog_use", None)
+            entry.update(extra)
         else:
-            skills.append({"name": name})
+            entry["name"] = name
+        skills.append(entry)
     return skills
 
 
@@ -87,6 +96,20 @@ def assemble_generation_payload(
         "domain": domain,
         "role": role_key,
         "duties": role_info.get("duties", "") if isinstance(role_info, dict) else "",
+        "skill_catalog_contract": {
+            "reference": "format",
+            "use": [
+                "template string",
+                "action or op names",
+                "required and optional field names",
+                "key-omission and min_words rules",
+            ],
+            "do_not": [
+                "walk skills[] in array order",
+                "walk actions[] in listed order",
+                "copy subjects, paths, names, bodies, queries, or other task content from the catalog or the format illustration",
+            ],
+        },
         "skills": _skills_for_role(loaded, role_key),
         "task_count": int(task_count),
         "context": {
@@ -116,6 +139,7 @@ def build_react_generation_messages(
     user_obj = dict(payload)
     user_lines = [
         f"Generate exactly {task_count} English task bodies for role '{role}'.",
+        "The skills array is an invocation-format catalog only. Do not follow its order. Do not copy its content.",
         "Do not output time fields. Commander will attach the schedule times in list order.",
         "Task i is assigned schedule[i]. For each backward item, do not use that item's response_actions in forbidden_slot_indices.",
         "A response may use any slot in allowed_slot_indices. If that list is empty, do not emit that response.",
