@@ -55,7 +55,6 @@
       "avoid_five_minutes": true
     },
     "api_base_url": "https://api.deepseek.com",
-    "api_key": "sk-94a224f2b65c4629adccc4b91afed41e",
     "model": "deepseek-v4-pro",
     "request_timeout_seconds": 300,
     "max_tokens": 32776

@@ -147,7 +147,6 @@ def _validate_schema(data: dict[str, Any]) -> None:
             "Reduce generator.time_model.tasks_per_role or lower generator.min_internal."
         )
     _read_required(data, "generator.api_base_url", str)
-    _read_required(data, "generator.api_key", str)
     _read_required(data, "generator.model", str)
     _validate_positive_int(data, "generator.request_timeout_seconds")
     _validate_positive_int(data, "generator.max_tokens")
@@ -271,7 +270,6 @@ def get_generator_config(data: dict[str, Any]) -> dict[str, Any]:
         ),
         "min_internal": _read_required(data, "generator.min_internal", int),
         "api_base_url": _read_required(data, "generator.api_base_url", str),
-        "api_key": _read_required(data, "generator.api_key", str),
         "model": _read_required(data, "generator.model", str),
         "request_timeout_seconds": _read_required(data, "generator.request_timeout_seconds", int),
         "max_tokens": _read_required(data, "generator.max_tokens", int),

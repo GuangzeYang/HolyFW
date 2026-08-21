@@ -170,11 +170,10 @@ This is the main `commander` configuration file. It controls listening, scanning
 - Scan interval: `60` seconds
 - Task generation uses DeepSeek by default:
   - `api_base_url`
-  - `api_key`
   - `model`
   - `request_timeout_seconds`
 
-Note: `generator.api_key` is sensitive information and should not be stored in plaintext in the repository long-term.
+The DeepSeek API key is read from the `DEEPSEEK_API_KEY` environment variable, not from JSON. See the generator section below.
 
 #### `commander/commander.ini`
 
@@ -366,9 +365,16 @@ Controls task generation:
 
 - `max_attempts`: Number of generation attempts
 - `api_base_url`: Model API URL
-- `api_key`: Model API key
 - `model`: Model name
 - `request_timeout_seconds`: Timeout for a single model request
+
+The DeepSeek API key is not stored in `config.json`. Set it in the process environment before `commander serve` or `commander generate`:
+
+```powershell
+$env:DEEPSEEK_API_KEY = "..."
+```
+
+If `DEEPSEEK_API_KEY` is missing or blank, client construction fails with an error naming that variable.
 
 ### paths
 
@@ -504,7 +510,7 @@ Operational state (not task logs) lives under `soldier/runtime/`:
 - Dispatch binds a task as `waiting` before sending it to `soldier`. If sending fails, the task is rolled back to a retryable state.
 - `soldier` command output is truncated to the configured limit before being written to a report, preventing large stdout/stderr streams from exhausting memory.
 - If `soldier` cannot report to `commander`, the report is added to a local queue and retried up to three times in the background.
-- The generator uses the DeepSeek API by default. When changing model settings, also review the `generator` section in `commander/config.json`.
+- The generator uses the DeepSeek API by default. Set `DEEPSEEK_API_KEY` in the environment, and review the `generator` section in `commander/config.json` for non-secret model settings.
 
 ## Development and Regression Testing
 

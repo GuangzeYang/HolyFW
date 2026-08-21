@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -468,6 +469,32 @@ class DeepSeekClientTests(unittest.TestCase):
             with self.assertRaises(AgentTimeoutError):
                 DeepSeekAgentClient(self.config).request_completion("hello")
 
+    def test_build_deepseek_client_reads_env_key(self) -> None:
+        generator_config = {
+            "api_base_url": "https://api.deepseek.com",
+            "api_key": "json-key-must-be-ignored",
+            "model": "deepseek-chat",
+            "request_timeout_seconds": 10,
+            "max_tokens": 8192,
+        }
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "  env-secret  "}):
+            client = deepseek_client.build_deepseek_client(generator_config)
+        self.assertEqual(client.config.api_key, "env-secret")
+        self.assertEqual(client.config.model, "deepseek-chat")
+
+    def test_build_deepseek_client_raises_when_env_missing(self) -> None:
+        generator_config = {
+            "api_base_url": "https://api.deepseek.com",
+            "model": "deepseek-chat",
+            "request_timeout_seconds": 10,
+            "max_tokens": 8192,
+        }
+        cleaned = {key: value for key, value in os.environ.items() if key != "DEEPSEEK_API_KEY"}
+        with mock.patch.dict(os.environ, cleaned, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                deepseek_client.build_deepseek_client(generator_config)
+        self.assertIn("DEEPSEEK_API_KEY", str(ctx.exception))
+
 
 class ExtractorTests(unittest.TestCase):
     def test_extract_json_object_from_wrapped_text(self) -> None:
@@ -843,6 +870,19 @@ class RuntimeConfigGeneratorFeasibilityTests(unittest.TestCase):
             cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             loaded = load_runtime_config(cfg_path)
         self.assertEqual(get_server_config(loaded)["worker_threads"], 6)
+
+    def test_get_generator_config_ignores_leftover_api_key(self) -> None:
+        from commander.runtime_config import get_generator_config, load_runtime_config
+
+        base_path = Path(__file__).resolve().parent.parent / "commander" / "config.json"
+        data = json.loads(base_path.read_text(encoding="utf-8"))
+        data["generator"]["api_key"] = "leftover-must-be-ignored"
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.json"
+            cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            loaded = load_runtime_config(cfg_path)
+        generator = get_generator_config(loaded)
+        self.assertNotIn("api_key", generator)
 
 
 class FakeAgentClient(AgentRequestABC):

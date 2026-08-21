@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import time
 import urllib.error
@@ -15,6 +16,8 @@ try:
     from agent_request_abc import AgentRequestABC, AgentRequestError, AgentResponse, AgentTimeoutError
 except ImportError:
     from commander.agent_request_abc import AgentRequestABC, AgentRequestError, AgentResponse, AgentTimeoutError
+
+DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
 
 
 @dataclass(slots=True)
@@ -117,9 +120,14 @@ class DeepSeekAgentClient(AgentRequestABC):
 
 
 def build_deepseek_client(generator_config: dict[str, Any]) -> DeepSeekAgentClient:
+    api_key = os.environ.get(DEEPSEEK_API_KEY_ENV, "").strip()
+    if not api_key:
+        raise ValueError(
+            f"DeepSeek API key is missing; set the {DEEPSEEK_API_KEY_ENV} environment variable"
+        )
     config = DeepSeekConfig(
         api_base_url=str(generator_config["api_base_url"]),
-        api_key=str(generator_config["api_key"]),
+        api_key=api_key,
         model=str(generator_config["model"]),
         request_timeout_seconds=int(generator_config["request_timeout_seconds"]),
         max_tokens=int(generator_config["max_tokens"]),
