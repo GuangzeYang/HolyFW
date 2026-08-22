@@ -772,7 +772,7 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(upload["required"], ["path", "min_words", "topic"])
         env_text = " ".join(payload["context"]["env"])
         self.assertIn("/Company_Data/HR-Private", env_text)
-        self.assertIn("/ftp-root/hr", env_text)
+        self.assertIn("FTP task paths: /hr", env_text)
 
     def test_react_user_payload_contains_domain_skills_and_backward(self) -> None:
         payload = assemble_generation_payload(

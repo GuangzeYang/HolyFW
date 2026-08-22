@@ -10,6 +10,6 @@
     "Allowed SMB: \\\\172.16.24.11\\Company_Data\\IT-Dev, \\\\172.16.24.11\\Company_Data\\Public, \\\\172.16.24.11\\Company_Data\\Exchange",
     "SMB task paths: /Company_Data/IT-Dev, /Company_Data/Public, /Company_Data/Exchange",
     "FTPS: 172.16.24.15:21",
-    "FTP task paths: /ftp-root/programmer"
+    "FTP task paths: /programmer"
   ]
 }
