@@ -104,68 +104,31 @@ class SysmonServiceTests(unittest.TestCase):
         self.assertEqual(sysmon_service.parse_sc_query(running, 0), "RUNNING")
         self.assertIsNone(sysmon_service.parse_sc_query("", 1060))
 
-    def test_restart_stops_running_then_applies_config(self) -> None:
+    def test_observe_records_running_without_sc_stop_or_start(self) -> None:
+        from datetime import datetime
+
         calls: list[list[str]] = []
-        states = iter(["RUNNING", "STOPPED", "STOPPED"])
+        stamp = datetime(2026, 8, 22, 20, 15, 0)
 
         def run_fn(args, **kwargs):
             calls.append(list(args))
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
-        def query_fn():
-            return "Sysmon64", next(states)
-
-        result = sysmon_service.restart_sysmon(
-            Path("C:/Sysmon64.exe"),
-            Path("C:/sysmonconfig.xml"),
+        result = sysmon_service.observe_sysmon(
             run_fn=run_fn,
-            query_fn=query_fn,
-            sleep_fn=lambda _: None,
+            query_fn=lambda: ("Sysmon64", "RUNNING"),
+            now_fn=lambda: stamp,
         )
-        self.assertTrue(result["was_running"])
-        self.assertEqual(result["action"], "config+start")
-        self.assertEqual(calls[0][:2], ["sc", "stop"])
-        self.assertEqual(calls[1][:2], ["sc", "start"])
-        self.assertIn("-c", calls[2])
+        self.assertTrue(result["running"])
+        self.assertEqual(result["service"], "Sysmon64")
+        self.assertEqual(result["observed_at"], stamp)
+        self.assertEqual(calls, [])
 
-    def test_restart_starts_service_even_if_config_apply_fails(self) -> None:
-        calls: list[list[str]] = []
-        states = iter(["RUNNING", "STOPPED"])
-
-        def run_fn(args, **kwargs):
-            calls.append(list(args))
-            if "-c" in args:
-                return subprocess.CompletedProcess(args, 1, stdout="", stderr="config failed")
-            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-
-        with self.assertRaises(RuntimeError):
-            sysmon_service.restart_sysmon(
-                Path("C:/Sysmon64.exe"),
-                Path("C:/sysmonconfig.xml"),
-                run_fn=run_fn,
-                query_fn=lambda: ("Sysmon64", next(states, "STOPPED")),
-                sleep_fn=lambda _: None,
-            )
-        start_calls = [c for c in calls if c[:2] == ["sc", "start"]]
-        self.assertGreaterEqual(len(start_calls), 2)
-
-    def test_restart_installs_when_service_missing(self) -> None:
-        calls: list[list[str]] = []
-
-        def run_fn(args, **kwargs):
-            calls.append(list(args))
-            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-
-        result = sysmon_service.restart_sysmon(
-            Path("C:/Sysmon64.exe"),
-            Path("C:/sysmonconfig.xml"),
-            run_fn=run_fn,
-            query_fn=lambda: (None, None),
-            sleep_fn=lambda _: None,
-        )
-        self.assertFalse(result["was_running"])
-        self.assertEqual(result["action"], "install")
-        self.assertIn("-i", calls[0])
+    def test_observe_missing_service_is_not_running(self) -> None:
+        result = sysmon_service.observe_sysmon(query_fn=lambda: (None, None))
+        self.assertFalse(result["running"])
+        self.assertIsNone(result["service"])
+        self.assertIsNone(result["state"])
 
 
 class ExportTests(unittest.TestCase):
@@ -283,7 +246,7 @@ class CollectorLoopTests(unittest.TestCase):
     def tearDown(self) -> None:
         _close_collector_log_handlers()
 
-    def test_day_change_exports_previous_then_today_on_stop(self) -> None:
+    def test_midnight_exports_previous_24_hours_not_on_stop(self) -> None:
         exported: list[date] = []
         today_values = [
             date(2026, 8, 22),
@@ -307,7 +270,7 @@ class CollectorLoopTests(unittest.TestCase):
             interval=0,
             wait_fn=wait_fn,
         )
-        self.assertEqual(exported, [date(2026, 8, 22), date(2026, 8, 23)])
+        self.assertEqual(exported, [date(2026, 8, 22)])
 
     def test_safe_export_day_continues_when_one_channel_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -361,37 +324,34 @@ class CollectorLoopTests(unittest.TestCase):
             self.assertEqual(killed, [])
             self.assertEqual(pid_path.read_text(encoding="utf-8"), "222")
 
-    def test_bootstrap_restarts_then_loops(self) -> None:
+    def test_bootstrap_observes_running_sysmon_then_loops(self) -> None:
+        from datetime import datetime
+
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            exe = base / "Sysmon64.exe"
-            exe.write_bytes(b"")
-            cfg = base / "sysmonconfig.xml"
-            cfg.write_text("<Sysmon/>", encoding="utf-8")
-            restarted: list[tuple[Path, Path]] = []
             exported: list[date] = []
             security_exported: list[date] = []
             event = threading.Event()
             event.set()
+            stamp = datetime(2026, 8, 22, 20, 15, 0)
 
             def loop_fn(**kwargs) -> None:
                 kwargs["export_day_fn"](date(2026, 8, 22))
 
             with mock.patch.dict(
                 os.environ,
-                {
-                    paths.HOLYFW_SYSMON: str(exe),
-                    paths.HOLYFW_SYSMON_CONFIG: str(cfg),
-                    paths.HOLYFW_SYSMON_LOG_DIR: str(base / "evtx"),
-                },
+                {paths.HOLYFW_SYSMON_LOG_DIR: str(base / "evtx")},
                 clear=False,
             ):
                 code = collector.bootstrap_and_run(
                     base_dir=base,
                     current_pid=4242,
-                    restart_fn=lambda exe_path, config_path, **kwargs: restarted.append(
-                        (exe_path, config_path)
-                    ),
+                    observe_fn=lambda: {
+                        "service": "Sysmon64",
+                        "state": "RUNNING",
+                        "running": True,
+                        "observed_at": stamp,
+                    },
                     export_fn=lambda day, out_dir, **kwargs: exported.append(day)
                     or (out_dir / f"sysmon_{day.isoformat()}.evtx"),
                     security_export_fn=lambda day, out_dir, **kwargs: security_exported.append(
@@ -404,12 +364,15 @@ class CollectorLoopTests(unittest.TestCase):
                 )
 
             self.assertEqual(code, 0)
-            self.assertEqual(len(restarted), 1)
             self.assertEqual(exported, [date(2026, 8, 22)])
             self.assertEqual(security_exported, [date(2026, 8, 22)])
+            self.assertEqual(
+                paths.observe_stamp_file(base).read_text(encoding="utf-8"),
+                stamp.isoformat(timespec="seconds"),
+            )
             self.assertFalse(paths.pid_file(base).exists())
 
-    def test_bootstrap_exports_after_sysmon_restart_fails(self) -> None:
+    def test_bootstrap_exports_after_sysmon_observe_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             exported: list[date] = []
@@ -431,7 +394,7 @@ class CollectorLoopTests(unittest.TestCase):
                 code = collector.bootstrap_and_run(
                     base_dir=base,
                     current_pid=4242,
-                    restart_fn=boom,
+                    observe_fn=boom,
                     export_fn=lambda day, out_dir, **kwargs: exported.append(day)
                     or (out_dir / f"sysmon_{day.isoformat()}.evtx"),
                     security_export_fn=lambda day, out_dir, **kwargs: security_exported.append(

@@ -47,6 +47,7 @@ SECURITY_LOGON_AUTH_EVENT_IDS = (
 )
 SECURITY_EVTX_PREFIX = "security_logon"
 PID_FILE_NAME = "sysmon_collector.pid"
+OBSERVE_FILE_NAME = "sysmon_observe.txt"
 EVTX_DIR_NAME = "sysmon"
 CONFIG_FILE_NAME = "sysmonconfig.xml"
 SYSMON_EXE_CANDIDATES = ("Sysmon64.exe", "Sysmon.exe", "Sysmon64", "Sysmon")
@@ -140,3 +141,7 @@ def pid_file(base_dir: Path | None = None) -> Path:
     runtime = _workspace(base_dir) / "runtime"
     runtime.mkdir(parents=True, exist_ok=True)
     return runtime / PID_FILE_NAME
+
+
+def observe_stamp_file(base_dir: Path | None = None) -> Path:
+    return pid_file(base_dir).with_name(OBSERVE_FILE_NAME)

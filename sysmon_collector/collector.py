@@ -1,4 +1,4 @@
-"""Long-running Sysmon collector: restart the service and export daily evtx files."""
+"""Long-running Sysmon collector: observe Sysmon and export the prior 24 hours at midnight."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import signal
 import subprocess
 import sys
 import threading
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Callable
 
@@ -19,11 +19,10 @@ from sysmon_collector.paths import (
     collector_log_path,
     collector_logs_dir,
     evtx_dir,
+    observe_stamp_file,
     pid_file,
-    resolve_sysmon_config,
-    resolve_sysmon_exe,
 )
-from sysmon_collector.sysmon_service import restart_sysmon
+from sysmon_collector.sysmon_service import observe_sysmon
 
 COLLECTOR_HANDLER_NAME = "sysmon_collector_dated_file"
 COLLECTOR_LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
@@ -201,6 +200,12 @@ def release_instance(pid_path: Path, current_pid: int) -> None:
             pass
 
 
+def write_observe_stamp(path: Path, observed_at: datetime) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(observed_at.isoformat(timespec="seconds"), encoding="utf-8")
+    return path
+
+
 def run_collection_loop(
     *,
     export_day_fn: Callable[[date], None],
@@ -210,7 +215,7 @@ def run_collection_loop(
     wait_fn: Callable[[float], bool] | None = None,
     on_day_change: Callable[[date], None] | None = None,
 ) -> None:
-    """Export yesterday when the calendar day changes; export today on shutdown."""
+    """At local 00:00, export the previous calendar day's 24 hours of events."""
     waiter = wait_fn or shutdown_event.wait
     current_day = today_fn()
     while not waiter(interval):
@@ -220,7 +225,6 @@ def run_collection_loop(
             if on_day_change is not None:
                 on_day_change(new_day)
             current_day = new_day
-    export_day_fn(today_fn())
 
 
 def _safe_export(
@@ -262,7 +266,7 @@ def bootstrap_and_run(
     *,
     base_dir: Path | None = None,
     current_pid: int | None = None,
-    restart_fn: Callable[..., object] = restart_sysmon,
+    observe_fn: Callable[..., object] = observe_sysmon,
     export_fn: Callable[..., Path] = export_day,
     security_export_fn: Callable[..., Path] = export_security_logon_day,
     loop_fn: Callable[..., None] = run_collection_loop,
@@ -278,6 +282,7 @@ def bootstrap_and_run(
     log_file = configure_collector_logging(logs_dir)
     logging.info("Sysmon collector starting, logs: %s", log_file)
     logging.info("EVTX output directory: %s", out_dir)
+    logging.info("Exports run at local 00:00 for the previous 24 hours")
 
     pid_path = pid_file(base_dir)
     pid = current_pid if current_pid is not None else os.getpid()
@@ -295,14 +300,24 @@ def bootstrap_and_run(
 
     try:
         try:
-            exe = resolve_sysmon_exe()
-            config = resolve_sysmon_config()
-            logging.info("Sysmon exe: %s", exe)
-            logging.info("Sysmon config: %s", config)
-            restart_fn(exe, config)
+            status = observe_fn()
+            if not isinstance(status, dict):
+                raise RuntimeError("Sysmon observe returned no status")
+            stamp = status.get("observed_at")
+            if isinstance(stamp, datetime):
+                stamp_path = write_observe_stamp(observe_stamp_file(base_dir), stamp)
+                logging.info("Recorded Sysmon observe timestamp %s at %s", stamp.isoformat(timespec="seconds"), stamp_path)
+            if status.get("running"):
+                logging.info("Sysmon service %s is running; not restarting it", status.get("service"))
+            else:
+                logging.warning(
+                    "Sysmon is not running (service=%s state=%s); midnight export still continues",
+                    status.get("service"),
+                    status.get("state"),
+                )
         except Exception as exc:
             logging.error(
-                "Sysmon setup/restart failed; continuing Security/Sysmon export: %s",
+                "Sysmon observe failed; continuing midnight Security/Sysmon export: %s",
                 exc,
             )
         loop_fn(

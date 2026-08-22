@@ -231,19 +231,19 @@ On Windows, `soldier listen` does not start Sysmon collection. Log collection is
 
 #### Collect Sysmon logs
 
-Prerequisite on each host that should record Sysmon events: Sysmon is already installed, and its executable path is in `HOLYFW_SYSMON` (or `SYSMON`). The collector applies `sysmonconfig.xml` (override with `HOLYFW_SYSMON_CONFIG`). Run the collector manually from an Administrator PowerShell when logs are needed:
+Prerequisite on each host that should record Sysmon events: Sysmon is already installed and running. The collector does not restart Sysmon; it records an observe timestamp and waits. Run it manually from an Administrator PowerShell when logs are needed:
 
 ```bash
 sysmon-collect
 python -m sysmon_collector
 ```
 
-Daily evtx files use the local calendar day and are written under `soldier/logs/sysmon/` (override with `HOLYFW_SYSMON_LOG_DIR`):
+At local 00:00 the collector exports the previous 24 hours under `soldier/logs/sysmon/` (override with `HOLYFW_SYSMON_LOG_DIR`):
 
 - `sysmon_YYYY-MM-DD.evtx` — Sysmon Operational
 - `security_logon_YYYY-MM-DD.evtx` — Security logon and authentication events (4624/4625/4768/4776 and related IDs)
 
-If Sysmon cannot be restarted, the collector still exports both channels.
+If Sysmon is not running when observed, midnight export still continues for both channels.
 
 #### Start commander
 

@@ -1,1 +1,1 @@
-"""Local Sysmon/Security collector: restart Sysmon and export daily evtx files."""
+"""Local Sysmon/Security collector: observe Sysmon and export daily evtx files."""
