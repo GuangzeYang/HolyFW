@@ -98,18 +98,24 @@ opencode run "Use the smb-access skill, connect to the SMB shared directory, use
 
 ## ftp-use
 
+Login initial directory is `/`. Task paths are real remote paths under `/accountancy`.
+
 ```text
 Use the ftp-use skill, connect to the FTPS server, use <op> to <detail>, {<field>: <value>, ...}
 ```
 
 ```text
-opencode run "Use the ftp-use skill, connect to the FTPS server, use list to list a folder, {path: /ftp-root/accountancy/}"
+opencode run "Use the ftp-use skill, connect to the FTPS server, use list to list a folder, {path: /accountancy/}"
 ```
 
 ```text
-opencode run "Use the ftp-use skill, connect to the FTPS server, use upload to upload a file, {path: /ftp-root/accountancy/ledger-notes.txt, topic: Q3 invoice draft, min_words: 500}"
+opencode run "Use the ftp-use skill, connect to the FTPS server, use upload to upload a file, {path: /accountancy/ledger-notes.txt, topic: Q3 invoice draft, min_words: 500}"
 ```
 
 ```text
-opencode run "Use the ftp-use skill, connect to the FTPS server, use download to download a file, {path: /ftp-root/accountancy/ledger-notes.txt}"
+opencode run "Use the ftp-use skill, connect to the FTPS server, use download to download a file, {path: /accountancy/ledger-notes.txt}"
+```
+
+```text
+opencode run "Use the ftp-use skill, connect to the FTPS server, use copy to copy a file, {source path: /accountancy/ledger-notes.txt, destination path: /accountancy/archive/ledger-notes.txt}"
 ```

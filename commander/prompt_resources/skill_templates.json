@@ -279,16 +279,17 @@
   },
   "ftp-use": {
     "name": "ftp-use",
-    "when": "Use when the role must list, upload, download, or delete files on the company FTPS server.",
+    "when": "Use when the role must list, upload, download, append, copy, move, rename, or delete files on the company FTPS server.",
     "template": "Use the ftp-use skill, connect to the FTPS server, use <op> to <detail>, {<field>: <value>, ...}",
     "params": "JSON-like object: no quotation marks around keys or values. Omit unused keys.",
     "rules": [
-      "Use POSIX paths that start with /ftp-root/. Stay under the FTP task path listed in context.env for this role.",
-      "Do not write to another role's FTP folder.",
+      "Use real POSIX paths under the FTP task path in context.env for this role (/hr, /accountancy, /manager, or /programmer). Login starts at /.",
+      "Do not write /ftp-root. That prefix is not on the server.",
+      "Do not write to another role's FTP folder. Do not write files at /.",
       "<detail> is a short phrase that restates the op (list a folder, upload a file, download a file). Do not add extra semantics.",
-      "Prefer upload and download over list-only folder listing.",
-      "For upload: set min_words to an integer from 500 to 800. Do not write a long content value; at most one short topic sentence. The soldier expands the prose and uploads it.",
-      "Do not put min_words on list, download, create folder, delete file, delete folder, or path fields."
+      "Prefer upload, download, append, copy, and update file over list-only folder listing.",
+      "For upload, append, and update file: set min_words to an integer from 500 to 800. Do not write a long content value; at most one short topic sentence. The soldier expands the prose and uploads it.",
+      "Do not put min_words on list, download, copy, move, rename, create folder, delete file, delete folder, or path fields."
     ],
     "actions": [
       {
@@ -302,9 +303,34 @@
         "optional": ["local path", "content"]
       },
       {
+        "name": "append",
+        "required": ["path", "min_words", "topic"],
+        "optional": ["content"]
+      },
+      {
+        "name": "update file",
+        "required": ["path", "min_words", "topic"],
+        "optional": ["content"]
+      },
+      {
         "name": "download",
         "required": ["path"],
         "optional": ["local path"]
+      },
+      {
+        "name": "copy",
+        "required": ["source path", "destination path"],
+        "optional": []
+      },
+      {
+        "name": "move",
+        "required": ["source path", "destination path"],
+        "optional": []
+      },
+      {
+        "name": "rename",
+        "required": ["path", "new name"],
+        "optional": []
       },
       {
         "name": "create folder",

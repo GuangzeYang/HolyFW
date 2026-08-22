@@ -8,7 +8,7 @@
     "Exchange email at https://i1-mail1-c02.ndrtest.local/owa/",
     "Odoo OA at http://172.16.24.14:8069/",
     "SMB share \\\\172.16.24.11\\Company_Data with Public, Exchange, HR-Private, accountancy, IT-Dev, and Management folders",
-    "FTPS server 172.16.24.15:21 with /ftp-root/hr, /ftp-root/accountancy, /ftp-root/manager, and /ftp-root/programmer"
+    "FTPS server 172.16.24.15:21 with role homes /hr, /accountancy, /manager, and /programmer (virtual root /)"
   ],
   "email_domain": "ndrtest.local",
   "roles": ["manager", "hr", "accountancy", "programmer"]
