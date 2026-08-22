@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -13,7 +14,7 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from sysmon_collector import collector, export, paths, sysmon_service
+from sysmon_collector import collector, elevate, export, paths, sysmon_service
 
 
 def _close_collector_log_handlers() -> None:
@@ -454,6 +455,33 @@ class CollectorLoopTests(unittest.TestCase):
         else:
             self.assertEqual(collector.main([]), 1)
 
+    def test_main_starts_privileged_task_when_not_elevated(self) -> None:
+        with mock.patch("sysmon_collector.collector.os.name", "nt"):
+            with mock.patch("sysmon_collector.collector.is_elevated", return_value=False):
+                with mock.patch(
+                    "sysmon_collector.collector._launch_privileged_collector",
+                    return_value=0,
+                ) as launch:
+                    with mock.patch(
+                        "sysmon_collector.collector.bootstrap_and_run"
+                    ) as boot:
+                        self.assertEqual(collector.main([]), 0)
+        launch.assert_called_once()
+        boot.assert_not_called()
+
+    def test_main_fails_when_privileged_launch_cannot_run(self) -> None:
+        with mock.patch("sysmon_collector.collector.os.name", "nt"):
+            with mock.patch("sysmon_collector.collector.is_elevated", return_value=False):
+                with mock.patch(
+                    "sysmon_collector.collector._launch_privileged_collector",
+                    side_effect=RuntimeError("need account"),
+                ):
+                    with mock.patch(
+                        "sysmon_collector.collector.bootstrap_and_run"
+                    ) as boot:
+                        self.assertEqual(collector.main([]), 1)
+        boot.assert_not_called()
+
 
 class SoldierSpawnTests(unittest.TestCase):
     def tearDown(self) -> None:
@@ -462,34 +490,42 @@ class SoldierSpawnTests(unittest.TestCase):
         soldier._ACTIVE_PROCESSES.clear()
         soldier._SHUTTING_DOWN.clear()
 
-    def test_spawn_does_not_register_active_process(self) -> None:
+    def test_spawn_uses_privileged_task_without_popen(self) -> None:
         import soldier.soldier as soldier
 
-        fake = mock.Mock()
-        fake.pid = 99
         with tempfile.TemporaryDirectory() as tmp:
             logs = Path(tmp)
+            runtime = Path(tmp) / "runtime"
+            runtime.mkdir()
             root = Path(tmp) / "HolyFW"
+            started: list[dict] = []
+
+            def fake_start(**kwargs):
+                started.append(kwargs)
+                return r".\admin"
+
             with (
                 mock.patch("soldier.soldier.os.name", "nt"),
-                mock.patch("soldier.soldier.subprocess.Popen", return_value=fake) as popen,
+                mock.patch("soldier.soldier.subprocess.Popen") as popen,
                 mock.patch("soldier.soldier.locate_holyfw_root", return_value=root),
                 mock.patch("soldier.soldier.get_logs_dir", return_value=logs),
+                mock.patch("soldier.soldier.get_runtime_dir", return_value=runtime),
+                mock.patch(
+                    "sysmon_collector.elevate.start_collector_privileged",
+                    side_effect=fake_start,
+                ),
             ):
                 proc = soldier.spawn_sysmon_collector()
 
-            self.assertIs(proc, fake)
-            self.assertNotIn(99, soldier._ACTIVE_PROCESSES)
-            argv = popen.call_args.args[0]
-            self.assertEqual(argv[-2:], ["-m", "sysmon_collector"])
-            kwargs = popen.call_args.kwargs
-            flags = kwargs["creationflags"]
-            self.assertTrue(flags & getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
-            self.assertTrue(flags & getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
-            self.assertEqual(kwargs["cwd"], str(root))
-            self.assertEqual(kwargs["env"]["HOLYFW_ROOT"], str(root))
-            self.assertNotEqual(kwargs["stdout"], subprocess.DEVNULL)
-            self.assertTrue((logs / "sysmon_collector_spawn.log").is_file())
+            self.assertIsNone(proc)
+            self.assertEqual(soldier._ACTIVE_PROCESSES, {})
+            popen.assert_not_called()
+            self.assertEqual(len(started), 1)
+            self.assertEqual(started[0]["cwd"], str(root))
+            self.assertEqual(started[0]["python"], sys.executable)
+            self.assertEqual(started[0]["wrapper_path"], runtime / "sysmon_collector.cmd")
+            self.assertEqual(started[0]["log_path"], logs / "sysmon_collector_spawn.log")
+            self.assertEqual(started[0]["env"]["HOLYFW_ROOT"], str(root))
 
     def test_maybe_start_skips_when_disabled_or_not_windows(self) -> None:
         import soldier.soldier as soldier
@@ -567,6 +603,211 @@ class SoldierSpawnTests(unittest.TestCase):
             ):
                 soldier.main(["listen", "--no-sysmon"])
         self.assertTrue(listen.call_args.kwargs["no_sysmon"])
+
+
+class ElevateTests(unittest.TestCase):
+    def test_write_system_wrapper_sets_env_and_python(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wrapper = Path(tmp) / "run.cmd"
+            log_path = Path(tmp) / "out.log"
+            elevate.write_system_wrapper(
+                python=r"C:\Python\python.exe",
+                env={"HOLYFW_ROOT": r"D:\HolyFW", "HOLYFW_SYSMON": r"C:\Sysmon64.exe"},
+                cwd=r"D:\HolyFW",
+                wrapper_path=wrapper,
+                log_path=log_path,
+            )
+            text = wrapper.read_text(encoding="utf-8")
+            self.assertIn('set "HOLYFW_ROOT=D:\\HolyFW"', text)
+            self.assertIn('cd /d "D:\\HolyFW"', text)
+            self.assertIn("-m sysmon_collector", text)
+
+    def test_write_system_wrapper_forwards_account_config_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wrapper = Path(tmp) / "run.cmd"
+            elevate.write_system_wrapper(
+                python=r"C:\Python\python.exe",
+                env={"HOLYFW_SYSMON_ACCOUNT_CONFIG": r"D:\HolyFW\sysmon_collector\config.json"},
+                cwd=None,
+                wrapper_path=wrapper,
+                log_path=Path(tmp) / "out.log",
+            )
+            text = wrapper.read_text(encoding="utf-8")
+            self.assertIn(
+                'set "HOLYFW_SYSMON_ACCOUNT_CONFIG=D:\\HolyFW\\sysmon_collector\\config.json"',
+                text,
+            )
+
+    def test_start_collector_as_system_registers_system_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wrapper = Path(tmp) / "run.cmd"
+            calls: list[list[str]] = []
+
+            def run_fn(args, **kwargs):
+                calls.append(list(args))
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+            elevate.start_collector_as_system(
+                python=r"C:\Python\python.exe",
+                env={"HOLYFW_ROOT": r"D:\HolyFW"},
+                cwd=r"D:\HolyFW",
+                wrapper_path=wrapper,
+                log_path=Path(tmp) / "out.log",
+                run_fn=run_fn,
+            )
+            self.assertTrue(wrapper.is_file())
+            self.assertEqual(calls[0][0], "powershell")
+            script = calls[0][-1]
+            self.assertIn(elevate.TASK_NAME, script)
+            self.assertIn("SYSTEM", script)
+            self.assertIn("Start-ScheduledTask", script)
+
+    def test_load_account_config_reads_plaintext_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(
+                '{"account": {"username": "labadmin", "password": "secret", "domain": "CORP"}}',
+                encoding="utf-8",
+            )
+            account = elevate.load_account_config(path)
+            self.assertIsNotNone(account)
+            self.assertEqual(account.username, "labadmin")
+            self.assertEqual(account.password, "secret")
+            self.assertEqual(account.task_user_id(), r"CORP\labadmin")
+
+    def test_load_account_config_empty_is_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(
+                '{"account": {"username": "", "password": "", "domain": ""}}',
+                encoding="utf-8",
+            )
+            self.assertIsNone(elevate.load_account_config(path))
+
+    def test_account_config_env_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "account.json"
+            cfg.write_text("{}", encoding="utf-8")
+            with mock.patch.dict(
+                os.environ, {paths.HOLYFW_SYSMON_ACCOUNT_CONFIG: str(cfg)}, clear=False
+            ):
+                self.assertEqual(paths.resolve_account_config_path(), cfg.resolve())
+
+    def test_start_collector_as_account_reads_password_from_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wrapper = Path(tmp) / "run.cmd"
+            cfg = Path(tmp) / "config.json"
+            cfg.write_text(
+                '{"account": {"username": "labadmin", "password": "s3cret", "domain": ""}}',
+                encoding="utf-8",
+            )
+            calls: list[list[str]] = []
+
+            def run_fn(args, **kwargs):
+                calls.append(list(args))
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+            elevate.start_collector_as_account(
+                account=elevate.Account(username="labadmin", password="s3cret"),
+                python=r"C:\Python\python.exe",
+                env={"HOLYFW_ROOT": r"D:\HolyFW"},
+                cwd=r"D:\HolyFW",
+                wrapper_path=wrapper,
+                log_path=Path(tmp) / "out.log",
+                config_path=cfg,
+                run_fn=run_fn,
+            )
+            script = calls[0][-1]
+            self.assertIn(elevate.TASK_NAME, script)
+            self.assertIn(r".\labadmin", script)
+            self.assertIn("RunLevel Highest", script)
+            self.assertIn(str(cfg.resolve()), script)
+            self.assertNotIn("s3cret", script)
+            self.assertIn("Start-ScheduledTask", script)
+            self.assertEqual(len(calls), 1)
+
+    def test_start_collector_as_account_falls_back_to_schtasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wrapper = Path(tmp) / "run.cmd"
+            cfg = Path(tmp) / "config.json"
+            cfg.write_text(
+                '{"account": {"username": "labadmin", "password": "s3cret"}}',
+                encoding="utf-8",
+            )
+            calls: list[list[str]] = []
+
+            def run_fn(args, **kwargs):
+                calls.append(list(args))
+                if args and args[0] == "powershell":
+                    return subprocess.CompletedProcess(args, 1, stdout="", stderr="access denied")
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+            elevate.start_collector_as_account(
+                account=elevate.Account(username="labadmin", password="s3cret"),
+                python=r"C:\Python\python.exe",
+                env={},
+                cwd=None,
+                wrapper_path=wrapper,
+                log_path=Path(tmp) / "out.log",
+                config_path=cfg,
+                run_fn=run_fn,
+            )
+            self.assertEqual(calls[0][0], "powershell")
+            self.assertEqual(calls[1][:2], ["schtasks", "/Create"])
+            self.assertIn("/RU", calls[1])
+            self.assertIn(r".\labadmin", calls[1])
+            self.assertIn("s3cret", calls[1])
+            self.assertIn("/RL", calls[1])
+            self.assertEqual(calls[2][:2], ["schtasks", "/Run"])
+
+    def test_start_collector_privileged_requires_account_when_not_elevated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch("sysmon_collector.elevate.load_account_config", return_value=None),
+                mock.patch("sysmon_collector.elevate.is_elevated", return_value=False),
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    elevate.start_collector_privileged(
+                        python=r"C:\Python\python.exe",
+                        env={},
+                        cwd=None,
+                        wrapper_path=Path(tmp) / "run.cmd",
+                        log_path=Path(tmp) / "out.log",
+                    )
+            self.assertIn("config.json", str(ctx.exception))
+
+    def test_start_collector_privileged_uses_account_before_system(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            account = elevate.Account(username="labadmin", password="x")
+            started: list[str] = []
+
+            def fake_account(**kwargs):
+                started.append("account")
+
+            def fake_system(**kwargs):
+                started.append("system")
+
+            with (
+                mock.patch("sysmon_collector.elevate.is_elevated", return_value=True),
+                mock.patch(
+                    "sysmon_collector.elevate.start_collector_as_account",
+                    side_effect=fake_account,
+                ),
+                mock.patch(
+                    "sysmon_collector.elevate.start_collector_as_system",
+                    side_effect=fake_system,
+                ),
+            ):
+                identity = elevate.start_collector_privileged(
+                    python=r"C:\Python\python.exe",
+                    env={},
+                    cwd=None,
+                    wrapper_path=Path(tmp) / "run.cmd",
+                    log_path=Path(tmp) / "out.log",
+                    account=account,
+                )
+            self.assertEqual(identity, r".\labadmin")
+            self.assertEqual(started, ["account"])
 
 
 if __name__ == "__main__":

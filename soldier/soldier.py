@@ -1139,18 +1139,8 @@ def handle_dispatch_connection(
         conn.close()
 
 
-def sysmon_collector_creationflags() -> int:
-    """Windows flags so the collector is a sibling process, not a listen child."""
-    if os.name != "nt":
-        return 0
-    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-    flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-    return flags
-
-
-def spawn_sysmon_collector() -> subprocess.Popen:
-    """Start ``python -m sysmon_collector`` without registering it for listen shutdown."""
-    creationflags = sysmon_collector_creationflags()
+def spawn_sysmon_collector() -> subprocess.Popen | None:
+    """Start the Sysmon collector via Task Scheduler. No UAC; not a listen child."""
     env = os.environ.copy()
     cwd: str | None = None
     try:
@@ -1162,28 +1152,26 @@ def spawn_sysmon_collector() -> subprocess.Popen:
 
     spawn_log = get_logs_dir() / "sysmon_collector_spawn.log"
     spawn_log.parent.mkdir(parents=True, exist_ok=True)
-    log_handle = spawn_log.open("a", encoding="utf-8")
-    popen_options: dict = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": log_handle,
-        "stderr": subprocess.STDOUT,
-        "close_fds": True,
-        "env": env,
-    }
-    if cwd:
-        popen_options["cwd"] = cwd
-    if creationflags:
-        popen_options["creationflags"] = creationflags
+    wrapper = get_runtime_dir() / "sysmon_collector.cmd"
+
     try:
-        proc = subprocess.Popen([sys.executable, "-m", "sysmon_collector"], **popen_options)
-    finally:
-        log_handle.close()
+        from sysmon_collector.elevate import start_collector_privileged
+    except ImportError as exc:
+        raise RuntimeError("sysmon_collector.elevate is unavailable") from exc
+
+    identity = start_collector_privileged(
+        python=sys.executable,
+        env=env,
+        cwd=cwd,
+        wrapper_path=wrapper,
+        log_path=spawn_log,
+    )
     logging.info(
-        "Started sysmon collector pid=%s (independent of listen shutdown); spawn log: %s",
-        proc.pid,
+        "Started sysmon collector as %s via scheduled task (no UAC); spawn log: %s",
+        identity,
         spawn_log,
     )
-    return proc
+    return None
 
 
 def maybe_start_sysmon_collector(*, enabled: bool = True) -> subprocess.Popen | None:
@@ -1195,7 +1183,7 @@ def maybe_start_sysmon_collector(*, enabled: bool = True) -> subprocess.Popen | 
         return None
     try:
         return spawn_sysmon_collector()
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         logging.warning("Failed to start sysmon collector: %s", exc)
         return None
 

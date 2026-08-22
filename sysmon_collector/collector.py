@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 from typing import Callable
 
+from sysmon_collector.elevate import is_elevated, start_collector_privileged
 from sysmon_collector.export import export_day, export_security_logon_day
 from sysmon_collector.paths import (
     collector_log_path,
@@ -316,14 +317,47 @@ def bootstrap_and_run(
     return 0
 
 
+def _launch_privileged_collector() -> int:
+    """Register a Highest-privilege scheduled task and exit. No UAC prompt."""
+    cwd: str | None
+    try:
+        from common import locate_holyfw_root
+
+        cwd = str(locate_holyfw_root(package_hint=Path(__file__).resolve().parent))
+    except FileNotFoundError:
+        cwd = os.getcwd() or None
+    wrapper = pid_file().parent / "sysmon_collector.cmd"
+    log_path = collector_logs_dir() / "sysmon_collector_spawn.log"
+    identity = start_collector_privileged(
+        python=sys.executable,
+        env=os.environ.copy(),
+        cwd=cwd,
+        wrapper_path=wrapper,
+        log_path=log_path,
+    )
+    logging.info("Started Sysmon collector as %s via scheduled task; exiting unelevated process", identity)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Collect local Sysmon and Security logon/auth logs into daily evtx files",
     )
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--skip-elevate",
+        action="store_true",
+        help="do not start a privileged scheduled task (used by tests)",
+    )
+    args = parser.parse_args(argv)
     if os.name != "nt":
         print("Sysmon collector requires Windows", file=sys.stderr)
         return 1
+    if not args.skip_elevate and not is_elevated():
+        try:
+            return _launch_privileged_collector()
+        except (FileNotFoundError, RuntimeError, OSError) as exc:
+            print(exc, file=sys.stderr)
+            return 1
     try:
         return bootstrap_and_run()
     except FileNotFoundError as exc:
