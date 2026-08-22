@@ -8,6 +8,7 @@ Grammar details live next to each skill:
 - [odoo-use/templates.md](odoo-use/templates.md)
 - [playwright-browser/templates.md](playwright-browser/templates.md)
 - [smb-access/templates.md](smb-access/templates.md)
+- [ftp-use/templates.md](ftp-use/templates.md)
 - [pdf/SKILL.md](pdf/SKILL.md) (copied unchanged; follow that skill for PDF work)
 
 ## exchange-use
@@ -93,4 +94,22 @@ opencode run "Use the smb-access skill, connect to the SMB shared directory, use
 
 ```text
 opencode run "Use the smb-access skill, connect to the SMB shared directory, use download to download a file, {path: /Company_Data/Exchange/spec-notes.docx}"
+```
+
+## ftp-use
+
+```text
+Use the ftp-use skill, connect to the FTPS server, use <op> to <detail>, {<field>: <value>, ...}
+```
+
+```text
+opencode run "Use the ftp-use skill, connect to the FTPS server, use list to list a folder, {path: /ftp-root/manager/}"
+```
+
+```text
+opencode run "Use the ftp-use skill, connect to the FTPS server, use upload to upload a file, {path: /ftp-root/manager/spec-notes.txt, topic: draft review notes for this week, min_words: 500}"
+```
+
+```text
+opencode run "Use the ftp-use skill, connect to the FTPS server, use download to download a file, {path: /ftp-root/manager/spec-notes.txt}"
 ```

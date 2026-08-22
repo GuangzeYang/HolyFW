@@ -680,9 +680,11 @@ class PromptTests(unittest.TestCase):
             tasks_per_role=2,
         )
         self.assertNotIn("reply to email", prompt)
-        self.assertIn("open the Exchange mailbox, reply,", prompt)
-        self.assertIn("min_words: 400", prompt)
-        self.assertIn("use view to view a folder", prompt)
+        self.assertIn("open the Exchange mailbox, send email,", prompt)
+        self.assertIn("min_words: 500", prompt)
+        self.assertIn("from 500 to 800", prompt)
+        self.assertIn("at least four numbered ops", prompt)
+        self.assertIn("use create file to create a file", prompt)
         self.assertIn(".docx", prompt)
         self.assertIn("download", prompt)
         self.assertIn("opencode run", prompt)
@@ -694,10 +696,14 @@ class PromptTests(unittest.TestCase):
             tasks_per_role=2,
         )
         self.assertIn("FORMAT reference only", prompt)
-        self.assertIn("Do not follow skills[] order", prompt)
+        self.assertIn("Do not copy the catalog's array order", prompt)
         self.assertIn("Do not copy task content from the catalog", prompt)
         self.assertIn("Format illustration only", prompt)
+        self.assertIn("Avoid long runs of the same skill", prompt)
         self.assertNotIn("Mix skills across the day", prompt)
+        self.assertNotIn("alternate skills", prompt)
+        self.assertNotIn("Adjacent tasks must use different skills", prompt)
+        self.assertNotIn("at most twice in a row", prompt)
 
     def test_generation_payload_strips_skill_examples(self) -> None:
         catalog = {
@@ -760,8 +766,13 @@ class PromptTests(unittest.TestCase):
         self.assertIn(".docx", " ".join(by_name["smb-access"]["rules"]))
         post = next(item for item in by_name["odoo-use"]["actions"] if item["name"] == "post message")
         self.assertEqual(post["required"], ["min_words"])
+        self.assertIn("ftp-use", by_name)
+        self.assertIn("connect to the FTPS server", by_name["ftp-use"]["template"])
+        upload = next(item for item in by_name["ftp-use"]["actions"] if item["name"] == "upload")
+        self.assertEqual(upload["required"], ["path", "min_words", "topic"])
         env_text = " ".join(payload["context"]["env"])
         self.assertIn("/Company_Data/HR-Private", env_text)
+        self.assertIn("/ftp-root/hr", env_text)
 
     def test_react_user_payload_contains_domain_skills_and_backward(self) -> None:
         payload = assemble_generation_payload(
@@ -789,6 +800,7 @@ class PromptTests(unittest.TestCase):
         self.assertIn("invocation-format catalog only", user)
         self.assertIn("Do not follow its order", user)
         self.assertIn("Do not copy its content", user)
+        self.assertIn("Avoid long runs of the same skill", user)
         self.assertEqual(payload["skill_catalog_contract"]["reference"], "format")
 
     def test_build_role_task_prompt_keeps_english_contract(self) -> None:
@@ -1446,7 +1458,8 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertIn("The previous output failed validation", client.prompts[1])
             self.assertIn("does not match schedule", client.prompts[1])
             self.assertIn("FORMAT ONLY", client.prompts[1])
-            self.assertIn("Do not walk skills[]", client.prompts[1])
+            self.assertIn("Avoid long runs of the same skill", client.prompts[1])
+            self.assertNotIn("Do not walk skills[]", client.prompts[1])
             self.assertEqual(client.response_formats[1], {"type": "json_object"})
 
     def test_generate_role_tasks_zips_algorithm_times_and_ignores_model_times(self) -> None:

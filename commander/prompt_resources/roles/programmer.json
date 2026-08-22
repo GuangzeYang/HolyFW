@@ -1,13 +1,15 @@
 {
   "role": "programmer",
   "duties": "Front-end programmer using Python, HTML, CSS, and JavaScript without frameworks. Reports progress to the manager, usually by email.",
-  "skills": ["exchange-use", "odoo-use", "smb-access", "playwright-browser"],
+  "skills": ["exchange-use", "odoo-use", "smb-access", "ftp-use", "playwright-browser"],
   "env": [
     "OWA: https://i1-mail1-c02.ndrtest.local/owa/",
     "Exchange account: ndrtest\\programmer",
     "Mailbox: programmer@ndrtest.local",
     "Odoo: http://172.16.24.14:8069/ with account programmer",
     "Allowed SMB: \\\\172.16.24.11\\Company_Data\\IT-Dev, \\\\172.16.24.11\\Company_Data\\Public, \\\\172.16.24.11\\Company_Data\\Exchange",
-    "SMB task paths: /Company_Data/IT-Dev, /Company_Data/Public, /Company_Data/Exchange"
+    "SMB task paths: /Company_Data/IT-Dev, /Company_Data/Public, /Company_Data/Exchange",
+    "FTPS: 172.16.24.15:21",
+    "FTP task paths: /ftp-root/programmer"
   ]
 }

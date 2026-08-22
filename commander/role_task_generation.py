@@ -88,7 +88,7 @@ def _build_retry_feedback(reason: str | None) -> str:
         "The previous output failed validation. Regenerate the complete JSON using the failure reason below.",
         f"Failure reason: {reason}",
         "Do not invent timestamps. Return exactly task_count items. Put responses in later schedule slots.",
-        "The skills catalog is FORMAT ONLY. Do not walk skills[] or actions[] in listed order. Do not copy catalog or example content.",
+        "The skills catalog is FORMAT ONLY. Do not copy catalog or example content. Avoid long runs of the same skill.",
     ]
     lowered = reason.lower()
     if "does not match schedule" in lowered or "too few" in lowered or "too many" in lowered:

@@ -8,7 +8,8 @@
       "target defaults to first email when omitted on view, reply, reply all, forward, delete, or flag.",
       "recipient, cc, and bcc must be a lab role short name (manager, hr, accountancy, programmer) or the matching *@ndrtest.local address. Do not send to the current role.",
       "Do not invent mailboxes outside the four lab roles.",
-      "For send email, reply, reply all, forward, and save draft: set min_words to an integer from 300 to 800. Do not write a long body; at most one short outline sentence. The soldier expands the prose.",
+      "Prefer send email, reply, and forward over view-only mailbox actions. Use attachment when a share file already exists in the day's story.",
+      "For send email, reply, reply all, forward, and save draft: set min_words to an integer from 500 to 800. Do not write a long body; at most one short outline sentence. The soldier expands the prose.",
       "Do not put min_words on view, search, delete, move, flag, mark unread, or recipient/subject/path fields."
     ],
     "actions": [
@@ -93,7 +94,8 @@
       "Do not mention playwright-browser in the task string; the odoo-use skill loads it.",
       "Use only listed module and operation names.",
       "Create and add operations need a unique name or job position; do not reuse a fixed demo name.",
-      "For post message: set min_words to an integer from 300 to 800. Do not write a long body; at most one short outline sentence. The soldier expands the prose."
+      "Prefer create, add, update, and post message over view-only module actions.",
+      "For post message: set min_words to an integer from 500 to 800. Do not write a long body; at most one short outline sentence. The soldier expands the prose."
     ],
     "actions": [
       {
@@ -217,7 +219,8 @@
       "Do not write to another role's private folder.",
       "<detail> is a short phrase that restates the op (view a folder, create a file, download a file). Do not add extra semantics.",
       "For create file prefer a .docx path with topic and min_words. The soldier writes a Word document about that topic and uploads it to the share. Do not write the document body in the task string.",
-      "For create file, append, and update file: set min_words to an integer from 300 to 800. Do not write a long content value; at most one short topic sentence.",
+      "Prefer create file, copy, download, and append over view-only folder listing.",
+      "For create file, append, and update file: set min_words to an integer from 500 to 800. Do not write a long content value; at most one short topic sentence.",
       "create file write paths should end in .docx (preferred), or .txt, .md, or .csv. append and update file stay on .txt, .md, or .csv.",
       "Use copy to place a .docx onto Exchange or Public (share-to-share). Use download to copy a share file onto the local Desktop."
     ],
@@ -274,6 +277,52 @@
       }
     ]
   },
+  "ftp-use": {
+    "name": "ftp-use",
+    "when": "Use when the role must list, upload, download, or delete files on the company FTPS server.",
+    "template": "Use the ftp-use skill, connect to the FTPS server, use <op> to <detail>, {<field>: <value>, ...}",
+    "params": "JSON-like object: no quotation marks around keys or values. Omit unused keys.",
+    "rules": [
+      "Use POSIX paths that start with /ftp-root/. Stay under the FTP task path listed in context.env for this role.",
+      "Do not write to another role's FTP folder.",
+      "<detail> is a short phrase that restates the op (list a folder, upload a file, download a file). Do not add extra semantics.",
+      "Prefer upload and download over list-only folder listing.",
+      "For upload: set min_words to an integer from 500 to 800. Do not write a long content value; at most one short topic sentence. The soldier expands the prose and uploads it.",
+      "Do not put min_words on list, download, create folder, delete file, delete folder, or path fields."
+    ],
+    "actions": [
+      {
+        "name": "list",
+        "required": ["path"],
+        "optional": []
+      },
+      {
+        "name": "upload",
+        "required": ["path", "min_words", "topic"],
+        "optional": ["local path", "content"]
+      },
+      {
+        "name": "download",
+        "required": ["path"],
+        "optional": ["local path"]
+      },
+      {
+        "name": "create folder",
+        "required": ["path"],
+        "optional": []
+      },
+      {
+        "name": "delete file",
+        "required": ["path"],
+        "optional": []
+      },
+      {
+        "name": "delete folder",
+        "required": ["path"],
+        "optional": []
+      }
+    ]
+  },
   "playwright-browser": {
     "name": "playwright-browser",
     "when": "Use when the role must browse the public web or visit a non-OWA, non-Odoo URL. Do not use for Exchange or Odoo.",
@@ -281,9 +330,9 @@
     "params": "JSON-like objects: no quotation marks around keys or values. Shared optional fields: name, role, nth, url, query, text, key, path, direction, amount, timeout_seconds.",
     "rules": [
       "Write the entire numbered list on one line inside the task string. Do not insert raw newlines.",
-      "Every playwright task must include numbered ops, a Verify: clause, and Close the browser after verification.",
+      "Every playwright task must include at least four numbered ops, a Verify: clause, and Close the browser after verification.",
       "Never use Google. Never open OWA or Odoo URLs with this skill.",
-      "After search, prefer follow with nth, then scroll, extract, wait, or back.",
+      "After search, prefer follow with nth, then scroll, extract.",
       "Do not invent in-page control names for unknown public sites.",
       "Do not emit REPLACE_ tokens or other placeholders."
     ],

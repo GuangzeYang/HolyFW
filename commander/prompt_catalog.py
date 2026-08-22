@@ -140,6 +140,7 @@ def build_react_generation_messages(
     user_lines = [
         f"Generate exactly {task_count} English task bodies for role '{role}'.",
         "The skills array is an invocation-format catalog only. Do not follow its order. Do not copy its content.",
+        "Avoid long runs of the same skill. A short related pair may sit together.",
         "Do not output time fields. Commander will attach the schedule times in list order.",
         "Task i is assigned schedule[i]. For each backward item, do not use that item's response_actions in forbidden_slot_indices.",
         "A response may use any slot in allowed_slot_indices. If that list is empty, do not emit that response.",
