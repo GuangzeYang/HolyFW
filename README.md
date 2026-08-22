@@ -227,6 +227,24 @@ Optional arguments:
 soldier listen --bind 0.0.0.0 --listen-port 38472 --commander-host 127.0.0.1 --commander-port 38471
 ```
 
+On Windows, `soldier listen` also starts a separate `sysmon-collect` process at the same time. That process does not share the listen timeout and is not stopped when listen exits. Skip it with `--no-sysmon`.
+
+#### Collect Sysmon logs
+
+Prerequisite on each host that should record Sysmon events: Sysmon is already installed, and its executable path is in `HOLYFW_SYSMON` (or `SYSMON`). The collector applies `sysmonconfig.xml` (override with `HOLYFW_SYSMON_CONFIG`). The process must run elevated.
+
+```bash
+sysmon-collect
+python -m sysmon_collector
+```
+
+Daily evtx files use the local calendar day and are written under `soldier/logs/sysmon/` (override with `HOLYFW_SYSMON_LOG_DIR`):
+
+- `sysmon_YYYY-MM-DD.evtx` — Sysmon Operational
+- `security_logon_YYYY-MM-DD.evtx` — Security logon and authentication events (4624/4625/4768/4776 and related IDs)
+
+If Sysmon cannot be restarted, the collector still exports both channels. Early spawn errors go to `soldier/logs/sysmon_collector_spawn.log`.
+
 #### Start commander
 
 ```bash

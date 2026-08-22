@@ -86,6 +86,27 @@ class WorkspaceLocatorTests(unittest.TestCase):
             self.assertEqual(logs, (root / "soldier" / "logs").resolve())
             self.assertNotIn("site-packages", logs.parts)
 
+    def test_sysmon_collector_hint_walks_up_to_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "commander").mkdir()
+            (root / "commander" / "config.json").write_text("{}", encoding="utf-8")
+            (root / "soldier").mkdir()
+            hint = root / "sysmon_collector"
+            hint.mkdir()
+            elsewhere = root / "elsewhere"
+            elsewhere.mkdir()
+            old = os.getcwd()
+            previous = os.environ.pop("HOLYFW_ROOT", None)
+            try:
+                os.chdir(elsewhere)
+                found = locate_holyfw_root(package_hint=hint)
+            finally:
+                os.chdir(old)
+                if previous is not None:
+                    os.environ["HOLYFW_ROOT"] = previous
+            self.assertEqual(found, root.resolve())
+
     def test_missing_workspace_does_not_use_site_packages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cwd = Path(tmp) / "elsewhere"

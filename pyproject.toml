@@ -17,6 +17,7 @@ dependencies = [
 [project.scripts]
 commander = "commander.cli:main"
 soldier = "soldier.soldier:main"
+sysmon-collect = "sysmon_collector.collector:main"
 
 [tool.hatch.build]
 # Always ship in-package data files, even when Git does not track them.
@@ -30,7 +31,7 @@ artifacts = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["commander", "soldier", "holyfw_assets"]
+packages = ["commander", "soldier", "holyfw_assets", "sysmon_collector"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "common.py" = "common.py"
@@ -38,12 +39,15 @@ packages = ["commander", "soldier", "holyfw_assets"]
 "mcp" = "holyfw_assets/mcp"
 "domain_resource.md" = "holyfw_assets/domain_resource.md"
 "task_generation_constraints.md" = "holyfw_assets/task_generation_constraints.md"
+"sysmonconfig.xml" = "sysmon_collector/sysmonconfig.xml"
 
 [tool.hatch.build.targets.sdist]
 include = [
   "/commander",
   "/soldier",
   "/holyfw_assets",
+  "/sysmon_collector",
+  "/sysmonconfig.xml",
   "/common.py",
   "/skills",
   "/mcp",

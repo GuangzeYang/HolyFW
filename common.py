@@ -17,7 +17,7 @@ WORK_WINDOWS = ((9 * 60, 12 * 60), (13 * 60, 18 * 60))
 HOLYFW_ROOT_ENV = "HOLYFW_ROOT"
 _INSTALL_TREE_MARKERS = frozenset({"site-packages", "dist-packages"})
 _OPENCODE_RUN_PREFIX = re.compile(r"^(?:opencode(?:\.cmd)?)\s+run\s+", re.IGNORECASE)
-_PACKAGE_DIR_NAMES = frozenset({"commander", "soldier"})
+_PACKAGE_DIR_NAMES = frozenset({"commander", "soldier", "sysmon_collector"})
 
 
 def is_install_tree(path: Path) -> bool:

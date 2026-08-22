@@ -34,7 +34,9 @@ except ImportError:
     colorlog = None
 
 from common import (
+    HOLYFW_ROOT_ENV,
     clean_old_files,
+    locate_holyfw_root,
     soldier_workspace_dir,
     strip_opencode_run_prefix,
     validate_task_id,
@@ -1137,12 +1139,75 @@ def handle_dispatch_connection(
         conn.close()
 
 
+def sysmon_collector_creationflags() -> int:
+    """Windows flags so the collector is a sibling process, not a listen child."""
+    if os.name != "nt":
+        return 0
+    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+    return flags
+
+
+def spawn_sysmon_collector() -> subprocess.Popen:
+    """Start ``python -m sysmon_collector`` without registering it for listen shutdown."""
+    creationflags = sysmon_collector_creationflags()
+    env = os.environ.copy()
+    cwd: str | None = None
+    try:
+        root = locate_holyfw_root(package_hint=Path(__file__).resolve().parent)
+        env.setdefault(HOLYFW_ROOT_ENV, str(root))
+        cwd = str(root)
+    except FileNotFoundError:
+        logging.warning("Could not resolve %s for sysmon collector spawn", HOLYFW_ROOT_ENV)
+
+    spawn_log = get_logs_dir() / "sysmon_collector_spawn.log"
+    spawn_log.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = spawn_log.open("a", encoding="utf-8")
+    popen_options: dict = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_handle,
+        "stderr": subprocess.STDOUT,
+        "close_fds": True,
+        "env": env,
+    }
+    if cwd:
+        popen_options["cwd"] = cwd
+    if creationflags:
+        popen_options["creationflags"] = creationflags
+    try:
+        proc = subprocess.Popen([sys.executable, "-m", "sysmon_collector"], **popen_options)
+    finally:
+        log_handle.close()
+    logging.info(
+        "Started sysmon collector pid=%s (independent of listen shutdown); spawn log: %s",
+        proc.pid,
+        spawn_log,
+    )
+    return proc
+
+
+def maybe_start_sysmon_collector(*, enabled: bool = True) -> subprocess.Popen | None:
+    if not enabled:
+        logging.info("Sysmon collector spawn skipped (--no-sysmon)")
+        return None
+    if os.name != "nt":
+        logging.warning("Sysmon collector skipped: not Windows")
+        return None
+    try:
+        return spawn_sysmon_collector()
+    except OSError as exc:
+        logging.warning("Failed to start sysmon collector: %s", exc)
+        return None
+
+
 def run_listen(
     config_path: Path,
     bind: str | None,
     port: int | None,
     commander_host: str | None,
     commander_port: int | None,
+    *,
+    no_sysmon: bool = False,
 ) -> None:
     _SHUTTING_DOWN.clear()
     b, lp = resolve_listen(bind, port, config_path)
@@ -1174,6 +1239,7 @@ def run_listen(
     soldier_logs = get_logs_dir(script_dir)
     current_log_day = date.today()
     start_report_retry_thread(script_dir)
+    maybe_start_sysmon_collector(enabled=not no_sysmon)
     try:
         executor = ThreadPoolExecutor(max_workers=worker_threads)
         execution_slots = threading.BoundedSemaphore(worker_threads)
@@ -1271,6 +1337,11 @@ Default reads {DEFAULT_CONFIG_NAME} in same directory:
     listen_p.add_argument("--listen-port", type=int, default=None, help="listen port")
     listen_p.add_argument("--commander-host", default=None, help="report commander address (override INI)")
     listen_p.add_argument("--commander-port", type=int, default=None, help="report commander port")
+    listen_p.add_argument(
+        "--no-sysmon",
+        action="store_true",
+        help="do not spawn the parallel Sysmon log collector process",
+    )
 
     report_p = sub.add_parser("report", help="manually report a receipt to commander")
     report_p.add_argument("--host", default=None, metavar="ADDR", help="commander address")
@@ -1322,6 +1393,7 @@ Default reads {DEFAULT_CONFIG_NAME} in same directory:
             getattr(args, "listen_port", None),
             getattr(args, "commander_host", None),
             getattr(args, "commander_port", None),
+            no_sysmon=bool(getattr(args, "no_sysmon", False)),
         )
         return 0
     if args.cmd == "report":
