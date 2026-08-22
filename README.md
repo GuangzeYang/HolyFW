@@ -227,11 +227,11 @@ Optional arguments:
 soldier listen --bind 0.0.0.0 --listen-port 38472 --commander-host 127.0.0.1 --commander-port 38471
 ```
 
-On Windows, `soldier listen` also starts a separate Sysmon collector through the scheduled task `HolyFW-SysmonCollector`. There is no UAC prompt. Fill a local Administrator account in `sysmon_collector/config.json` (plain `account.username` / `account.password`; optional `account.domain`). The collector reads that file and registers the task at **Highest** run level as that account. If the current process is already elevated and the account fields are empty, the task runs as **SYSTEM**. The collector does not share the listen timeout and is not stopped when listen exits. Skip it with `--no-sysmon`.
+On Windows, `soldier listen` does not start Sysmon collection. Log collection is manual-only so `soldier` can start cleanly from a normal user session. The `--no-sysmon` flag is accepted for compatibility but has no effect.
 
 #### Collect Sysmon logs
 
-Prerequisite on each host that should record Sysmon events: Sysmon is already installed, and its executable path is in `HOLYFW_SYSMON` (or `SYSMON`). The collector applies `sysmonconfig.xml` (override with `HOLYFW_SYSMON_CONFIG`). Put the admin account in `sysmon_collector/config.json` (override path with `HOLYFW_SYSMON_ACCOUNT_CONFIG`). Direct `sysmon-collect` uses the same scheduled task when it is not already elevated; it never shows a UAC prompt.
+Prerequisite on each host that should record Sysmon events: Sysmon is already installed, and its executable path is in `HOLYFW_SYSMON` (or `SYSMON`). The collector applies `sysmonconfig.xml` (override with `HOLYFW_SYSMON_CONFIG`). Run the collector manually from an Administrator PowerShell when logs are needed:
 
 ```bash
 sysmon-collect
@@ -243,7 +243,7 @@ Daily evtx files use the local calendar day and are written under `soldier/logs/
 - `sysmon_YYYY-MM-DD.evtx` — Sysmon Operational
 - `security_logon_YYYY-MM-DD.evtx` — Security logon and authentication events (4624/4625/4768/4776 and related IDs)
 
-If Sysmon cannot be restarted, the collector still exports both channels. Early spawn errors go to `soldier/logs/sysmon_collector_spawn.log`.
+If Sysmon cannot be restarted, the collector still exports both channels.
 
 #### Start commander
 

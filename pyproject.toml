@@ -28,7 +28,6 @@ artifacts = [
   "commander/commander.ini",
   "commander/prompt_resources/**",
   "soldier/soldier.ini",
-  "sysmon_collector/config.json",
 ]
 
 [tool.hatch.build.targets.wheel]

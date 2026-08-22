@@ -20,7 +20,7 @@ class PyprojectEntrypointTests(unittest.TestCase):
         self.assertIn('sysmon-collect = "sysmon_collector.collector:main"', text)
         self.assertIn("sysmon_collector", text)
         self.assertIn('"sysmonconfig.xml" = "sysmon_collector/sysmonconfig.xml"', text)
-        self.assertIn("sysmon_collector/config.json", text)
+        self.assertNotIn("sysmon_collector/config.json", text)
         self.assertIn("holyfw_assets", text)
         self.assertIn('"skills" = "holyfw_assets/skills"', text)
         self.assertIn('"mcp" = "holyfw_assets/mcp"', text)

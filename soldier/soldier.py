@@ -1140,52 +1140,14 @@ def handle_dispatch_connection(
 
 
 def spawn_sysmon_collector() -> subprocess.Popen | None:
-    """Start the Sysmon collector via Task Scheduler. No UAC; not a listen child."""
-    env = os.environ.copy()
-    cwd: str | None = None
-    try:
-        root = locate_holyfw_root(package_hint=Path(__file__).resolve().parent)
-        env.setdefault(HOLYFW_ROOT_ENV, str(root))
-        cwd = str(root)
-    except FileNotFoundError:
-        logging.warning("Could not resolve %s for sysmon collector spawn", HOLYFW_ROOT_ENV)
-
-    spawn_log = get_logs_dir() / "sysmon_collector_spawn.log"
-    spawn_log.parent.mkdir(parents=True, exist_ok=True)
-    wrapper = get_runtime_dir() / "sysmon_collector.cmd"
-
-    try:
-        from sysmon_collector.elevate import start_collector_privileged
-    except ImportError as exc:
-        raise RuntimeError("sysmon_collector.elevate is unavailable") from exc
-
-    identity = start_collector_privileged(
-        python=sys.executable,
-        env=env,
-        cwd=cwd,
-        wrapper_path=wrapper,
-        log_path=spawn_log,
-    )
-    logging.info(
-        "Started sysmon collector as %s via scheduled task (no UAC); spawn log: %s",
-        identity,
-        spawn_log,
-    )
+    """Sysmon collection is manual-only; ``soldier`` does not start it."""
+    logging.info("Sysmon collector is manual-only; run sysmon-collect as Administrator")
     return None
 
 
 def maybe_start_sysmon_collector(*, enabled: bool = True) -> subprocess.Popen | None:
-    if not enabled:
-        logging.info("Sysmon collector spawn skipped (--no-sysmon)")
-        return None
-    if os.name != "nt":
-        logging.warning("Sysmon collector skipped: not Windows")
-        return None
-    try:
-        return spawn_sysmon_collector()
-    except (OSError, RuntimeError) as exc:
-        logging.warning("Failed to start sysmon collector: %s", exc)
-        return None
+    logging.info("Sysmon collector is manual-only; run sysmon-collect as Administrator")
+    return None
 
 
 def run_listen(
@@ -1227,7 +1189,6 @@ def run_listen(
     soldier_logs = get_logs_dir(script_dir)
     current_log_day = date.today()
     start_report_retry_thread(script_dir)
-    maybe_start_sysmon_collector(enabled=not no_sysmon)
     try:
         executor = ThreadPoolExecutor(max_workers=worker_threads)
         execution_slots = threading.BoundedSemaphore(worker_threads)
@@ -1328,7 +1289,7 @@ Default reads {DEFAULT_CONFIG_NAME} in same directory:
     listen_p.add_argument(
         "--no-sysmon",
         action="store_true",
-        help="do not spawn the parallel Sysmon log collector process",
+        help="accepted for compatibility; Sysmon collection is manual-only",
     )
 
     report_p = sub.add_parser("report", help="manually report a receipt to commander")

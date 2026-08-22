@@ -17,7 +17,6 @@ HOLYFW_SYSMON = "HOLYFW_SYSMON"
 SYSMON_ENV = "SYSMON"
 HOLYFW_SYSMON_CONFIG = "HOLYFW_SYSMON_CONFIG"
 HOLYFW_SYSMON_LOG_DIR = "HOLYFW_SYSMON_LOG_DIR"
-HOLYFW_SYSMON_ACCOUNT_CONFIG = "HOLYFW_SYSMON_ACCOUNT_CONFIG"
 
 SYSMON_CHANNEL = "Microsoft-Windows-Sysmon/Operational"
 SECURITY_CHANNEL = "Security"
@@ -50,7 +49,6 @@ SECURITY_EVTX_PREFIX = "security_logon"
 PID_FILE_NAME = "sysmon_collector.pid"
 EVTX_DIR_NAME = "sysmon"
 CONFIG_FILE_NAME = "sysmonconfig.xml"
-ACCOUNT_CONFIG_FILE_NAME = "config.json"
 SYSMON_EXE_CANDIDATES = ("Sysmon64.exe", "Sysmon.exe", "Sysmon64", "Sysmon")
 
 
@@ -58,33 +56,6 @@ def _workspace(base_dir: Path | None = None) -> Path:
     if base_dir is not None:
         return Path(base_dir)
     return soldier_workspace_dir(package_hint=Path(__file__).resolve().parent)
-
-
-def resolve_account_config_path() -> Path:
-    raw = os.environ.get(HOLYFW_SYSMON_ACCOUNT_CONFIG, "").strip()
-    if raw:
-        path = Path(raw).expanduser()
-        if path.is_file():
-            return path.resolve()
-        raise FileNotFoundError(f"{HOLYFW_SYSMON_ACCOUNT_CONFIG} is set but is not a file: {raw}")
-
-    packaged = Path(__file__).resolve().parent / ACCOUNT_CONFIG_FILE_NAME
-    if packaged.is_file():
-        return packaged
-
-    try:
-        root = locate_holyfw_root(package_hint=Path(__file__).resolve().parent)
-    except FileNotFoundError:
-        root = None
-    if root is not None:
-        checkout = root / "sysmon_collector" / ACCOUNT_CONFIG_FILE_NAME
-        if checkout.is_file():
-            return checkout.resolve()
-
-    raise FileNotFoundError(
-        f"{ACCOUNT_CONFIG_FILE_NAME} not found. Set {HOLYFW_SYSMON_ACCOUNT_CONFIG} "
-        "or keep sysmon_collector/config.json in the HolyFW root."
-    )
 
 
 def resolve_sysmon_exe() -> Path:
