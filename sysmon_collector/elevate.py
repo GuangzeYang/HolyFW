@@ -113,6 +113,56 @@ def _ps_single(value: str) -> str:
     return value.replace("'", "''")
 
 
+def _split_connect_identity(user_id: str) -> tuple[str, str]:
+    """Return (user, domain) for Schedule.Service.Connect."""
+    raw = user_id.strip()
+    if "@" in raw and "\\" not in raw:
+        return raw, ""
+    if "\\" in raw:
+        domain, name = raw.split("\\", 1)
+        if domain in {"", "."}:
+            return name, "."
+        return name, domain
+    return raw, "."
+
+
+def _register_account_task_script(*, wrapper: str, user_id: str, config_path: str) -> str:
+    """Register Highest via COM as the configured account. No UAC, no mixed cmdlets."""
+    name, domain = _split_connect_identity(user_id)
+    connect = (
+        "if ([string]::IsNullOrEmpty($domain)) { $svc.Connect($null, $name, $null, $pw) } "
+        "else { $svc.Connect($null, $name, $domain, $pw) }; "
+    )
+    return (
+        f"$cfg = Get-Content -Raw -Encoding UTF8 '{_ps_single(config_path)}' "
+        "| ConvertFrom-Json; "
+        "$pw = [string]$cfg.account.password; "
+        f"$tn = '{TASK_NAME}'; "
+        f"$user = '{_ps_single(user_id)}'; "
+        f"$name = '{_ps_single(name)}'; "
+        f"$domain = '{_ps_single(domain)}'; "
+        f"$wrapper = '{_ps_single(wrapper)}'; "
+        "$ErrorActionPreference = 'Stop'; "
+        "$svc = New-Object -ComObject Schedule.Service; "
+        + connect
+        + "$folder = $svc.GetFolder('\\'); "
+        "$td = $svc.NewTask(0); "
+        "$td.RegistrationInfo.Description = 'HolyFW Sysmon collector'; "
+        "$td.Settings.AllowDemandStart = $true; "
+        "$td.Settings.Enabled = $true; "
+        "$td.Settings.StopIfGoingOnBatteries = $false; "
+        "$td.Settings.DisallowStartIfOnBatteries = $false; "
+        "$td.Settings.ExecutionTimeLimit = 'PT0S'; "
+        "$td.Principal.UserId = $user; "
+        "$td.Principal.LogonType = 1; "
+        "$td.Principal.RunLevel = 1; "
+        "$act = $td.Actions.Create(0); "
+        "$act.Path = $wrapper; "
+        "$folder.RegisterTaskDefinition($tn, $td, 6, $user, $pw, 1) | Out-Null; "
+        "$folder.GetTask($tn).Run($null) | Out-Null"
+    )
+
+
 def _register_task_script(
     *,
     wrapper: str,
@@ -125,41 +175,23 @@ def _register_task_script(
         and user_id.upper() not in {"SYSTEM", "NT AUTHORITY\\SYSTEM", "NT AUTHORITY\\SYSTEM"}
     )
     if use_account:
-        load_pw = (
-            f"$cfg = Get-Content -Raw -Encoding UTF8 '{_ps_single(config_path)}' "
-            "| ConvertFrom-Json; "
-            "$pw = [string]$cfg.account.password; "
+        assert user_id is not None and config_path is not None
+        return _register_account_task_script(
+            wrapper=wrapper,
+            user_id=user_id,
+            config_path=config_path,
         )
-        principal = (
-            f"$principal = New-ScheduledTaskPrincipal -UserId '{_ps_single(user_id)}' "
-            "-LogonType Password -RunLevel Highest; "
-        )
-        register = (
-            "Register-ScheduledTask -TaskName $tn -Action $action -Principal $principal "
-            f"-Settings $settings -User '{_ps_single(user_id)}' "
-            "-Password $pw -Force | Out-Null; "
-        )
-    else:
-        principal = (
-            "$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' "
-            "-LogonType ServiceAccount -RunLevel Highest; "
-        )
-        register = (
-            "Register-ScheduledTask -TaskName $tn -Action $action -Principal $principal "
-            "-Settings $settings -Force | Out-Null; "
-        )
-    body = (
+    return (
         f"$tn = '{TASK_NAME}'; "
         f"$action = New-ScheduledTaskAction -Execute '{_ps_single(wrapper)}'; "
-        + principal
-        + "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
+        "$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' "
+        "-LogonType ServiceAccount -RunLevel Highest; "
+        "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
         "-DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero); "
-        + register
-        + "Start-ScheduledTask -TaskName $tn"
+        "Register-ScheduledTask -TaskName $tn -Action $action -Principal $principal "
+        "-Settings $settings -Force | Out-Null; "
+        "Start-ScheduledTask -TaskName $tn"
     )
-    if use_account:
-        return load_pw + body
-    return body
 
 
 def _run_captured(run_fn: RunFn, args: list[str]) -> subprocess.CompletedProcess:

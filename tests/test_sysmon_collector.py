@@ -662,6 +662,14 @@ class ElevateTests(unittest.TestCase):
             self.assertIn("SYSTEM", script)
             self.assertIn("Start-ScheduledTask", script)
 
+    def test_split_connect_identity_local_and_domain(self) -> None:
+        self.assertEqual(elevate._split_connect_identity(r".\labadmin"), ("labadmin", "."))
+        self.assertEqual(
+            elevate._split_connect_identity(r"ndrtest.local\Administrator"),
+            ("Administrator", "ndrtest.local"),
+        )
+        self.assertEqual(elevate._split_connect_identity("admin@corp.local"), ("admin@corp.local", ""))
+
     def test_load_account_config_reads_plaintext_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
@@ -720,10 +728,16 @@ class ElevateTests(unittest.TestCase):
             script = calls[0][-1]
             self.assertIn(elevate.TASK_NAME, script)
             self.assertIn(r".\labadmin", script)
-            self.assertIn("RunLevel Highest", script)
+            self.assertIn("Schedule.Service", script)
+            self.assertIn("RegisterTaskDefinition", script)
+            self.assertIn("RunLevel", script)
             self.assertIn(str(cfg.resolve()), script)
             self.assertNotIn("s3cret", script)
-            self.assertIn("Start-ScheduledTask", script)
+            if "Register-ScheduledTask" in script:
+                self.assertFalse(
+                    "-Principal" in script and "-Password" in script,
+                    "Register-ScheduledTask cannot mix -Principal with -Password",
+                )
             self.assertEqual(len(calls), 1)
 
     def test_start_collector_as_account_falls_back_to_schtasks(self) -> None:
