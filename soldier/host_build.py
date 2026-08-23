@@ -38,6 +38,18 @@ def opencode_json_path() -> Path:
     return opencode_config_dir() / "opencode.json"
 
 
+def opencode_jsonc_path() -> Path:
+    return opencode_config_dir() / "opencode.jsonc"
+
+
+def opencode_agents_md_path() -> Path:
+    return opencode_config_dir() / "AGENTS.md"
+
+
+def opencode_cache_dir() -> Path:
+    return Path.home() / ".cache" / "opencode"
+
+
 def _strip_jsonc_comments(text: str) -> str:
     """Remove // and /* */ comments without touching JSON string contents."""
     out: list[str] = []
@@ -139,9 +151,36 @@ def merge_mcp_config(bundled_path: Path, dest_path: Path) -> dict[str, Any]:
     merged_mcp = dict(current_mcp) if isinstance(current_mcp, dict) else {}
     merged_mcp.update(incoming)
     existing["mcp"] = merged_mcp
+    if isinstance(bundled, dict) and "permission" in bundled:
+        existing["permission"] = bundled["permission"]
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     dest_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return merged_mcp
+
+
+def merge_host_opencode_configs(bundled_path: Path, config_dir: Path | None = None) -> dict[str, Any]:
+    root = config_dir if config_dir is not None else opencode_config_dir()
+    merged = merge_mcp_config(bundled_path, root / "opencode.json")
+    jsonc_path = root / "opencode.jsonc"
+    if jsonc_path.is_file():
+        merge_mcp_config(bundled_path, jsonc_path)
+    return merged
+
+
+def install_agents_md(role: str, template_path: Path, dest_path: Path | None = None) -> Path:
+    dest = dest_path if dest_path is not None else opencode_agents_md_path()
+    text = template_path.read_text(encoding="utf-8").replace("{{ROLE}}", role.strip().lower())
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(text, encoding="utf-8")
+    return dest
+
+
+def clear_opencode_cache(cache_dir: Path | None = None) -> bool:
+    target = cache_dir if cache_dir is not None else opencode_cache_dir()
+    if not target.is_dir():
+        return False
+    shutil.rmtree(target)
+    return True
 
 
 def _npx_executable() -> str | None:
@@ -187,18 +226,23 @@ def ensure_playwright(run: Any = subprocess.run) -> None:
 def run_build(role: str) -> int:
     try:
         pack_root = role_skill_source(role)
-        from holyfw_assets import mcp_config_path
+        from holyfw_assets import agents_md_path, mcp_config_path
 
+        role_key = role.strip().lower()
         installed = copy_skills(pack_root, opencode_skill_dir())
         legacy = opencode_legacy_skill_dir()
         if legacy.is_dir():
             shutil.rmtree(legacy)
-        merge_mcp_config(mcp_config_path(), opencode_json_path())
+        merge_host_opencode_configs(mcp_config_path())
+        install_agents_md(role_key, agents_md_path())
+        if clear_opencode_cache():
+            print(f"Cleared OpenCode cache: {opencode_cache_dir()}", flush=True)
         ensure_playwright()
     except (ValueError, FileNotFoundError, RuntimeError, OSError, json.JSONDecodeError) as exc:
         print(f"soldier build failed: {exc}", file=sys.stderr, flush=True)
         return 1
-    print(f"Installed skills for {role.strip().lower()}: {', '.join(installed)}", flush=True)
+    print(f"Installed skills for {role_key}: {', '.join(installed)}", flush=True)
     print(f"OpenCode config: {opencode_json_path()}", flush=True)
     print(f"OpenCode skills: {opencode_skill_dir()}", flush=True)
+    print(f"OpenCode rules: {opencode_agents_md_path()}", flush=True)
     return 0

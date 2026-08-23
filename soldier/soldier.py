@@ -25,7 +25,7 @@ import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 import logging
 
 try:
@@ -626,8 +626,21 @@ def resolve_opencode_executable() -> str:
     return found
 
 
+OPENCODE_PERMISSION_ALLOW: dict[str, object] = {
+    "*": "allow",
+    "doom_loop": "allow",
+    "external_directory": {"*": "allow"},
+}
+
+
 def build_opencode_argv(prompt: str) -> list[str]:
-    return [resolve_opencode_executable(), "run", prompt]
+    return [resolve_opencode_executable(), "run", "--auto", prompt]
+
+
+def opencode_run_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    env = dict(os.environ if base is None else base)
+    env["OPENCODE_PERMISSION"] = json.dumps(OPENCODE_PERMISSION_ALLOW, separators=(",", ":"))
+    return env
 
 
 def dispatch_prompt_from_payload(payload: dict) -> str:
@@ -645,6 +658,7 @@ def execute_command(
     max_output_bytes: int = MAX_COMMAND_OUTPUT_BYTES,
     *,
     task_ref: str = "",
+    env: Mapping[str, str] | None = None,
 ) -> tuple[str, str, int, str, str | None]:
     """Execute a command in its own process group and clean the whole tree on timeout."""
     if _SHUTTING_DOWN.is_set():
@@ -653,6 +667,8 @@ def execute_command(
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
     }
+    if env is not None:
+        popen_options["env"] = dict(env)
     if isinstance(command, str):
         popen_target: str | list[str] = command
         popen_options["shell"] = True
@@ -1065,7 +1081,7 @@ def handle_dispatch_connection(
             logging.error("Claimed but acknowledgment failed; not executing", extra=extras)
             return
 
-        argv = ["opencode", "run", prompt]
+        argv = ["opencode", "run", "--auto", prompt]
         try:
             argv = build_opencode_argv(prompt)
         except FileNotFoundError as exc:
@@ -1075,6 +1091,7 @@ def handle_dispatch_connection(
                 argv,
                 timeout_sec,
                 task_ref=full_ref,
+                env=opencode_run_env(),
             )
 
         report = {

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -75,10 +76,17 @@ class CommanderCliRouteTests(unittest.TestCase):
 
 class BundledAssetTests(unittest.TestCase):
     def test_repo_skills_and_mcp_are_visible(self) -> None:
-        from holyfw_assets import mcp_config_path, skills_root
+        from holyfw_assets import agents_md_path, mcp_config_path, skills_root
 
         self.assertTrue((skills_root() / "hr-skills").is_dir())
         self.assertTrue(mcp_config_path().is_file())
+        self.assertTrue(agents_md_path().is_file())
+        payload = json.loads(mcp_config_path().read_text(encoding="utf-8"))
+        permission = payload.get("permission")
+        self.assertIsInstance(permission, dict)
+        self.assertEqual(permission.get("*"), "allow")
+        self.assertEqual(permission.get("doom_loop"), "allow")
+        self.assertEqual(permission.get("external_directory"), {"*": "allow"})
 
     def test_config_relative_path_falls_back_to_bundled_basename(self) -> None:
         from commander.runtime_config import resolve_config_relative_path

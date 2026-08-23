@@ -11,15 +11,25 @@ from pathlib import Path
 from unittest import mock
 
 from soldier.host_build import (
+    clear_opencode_cache,
     copy_skills,
     ensure_playwright,
+    install_agents_md,
     load_jsonc,
+    merge_host_opencode_configs,
     merge_mcp_config,
     playwright_available,
     role_skill_source,
     run_build,
     skill_directories,
 )
+
+
+ALLOW_PERMISSION = {
+    "*": "allow",
+    "doom_loop": "allow",
+    "external_directory": {"*": "allow"},
+}
 
 
 def _write_skill(pack: Path, name: str, body: str = "# skill\n") -> Path:
@@ -121,6 +131,96 @@ class MergeMcpTests(unittest.TestCase):
             self.assertIn("excel", merged)
             self.assertEqual(saved["$schema"], "https://opencode.ai/config.json")
 
+    def test_writes_bundled_permission_without_dropping_mcp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bundled = Path(tmp) / "bundled.json"
+            dest = Path(tmp) / "opencode.json"
+            bundled.write_text(
+                json.dumps(
+                    {
+                        "permission": ALLOW_PERMISSION,
+                        "mcp": {"playwright": {"type": "local", "command": ["npx"]}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            dest.write_text(
+                json.dumps(
+                    {
+                        "$schema": "https://opencode.ai/config.json",
+                        "mcp": {"keep-me": {"type": "local"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            merge_mcp_config(bundled, dest)
+            saved = json.loads(dest.read_text(encoding="utf-8"))
+
+            self.assertEqual(saved["permission"], ALLOW_PERMISSION)
+            self.assertIn("keep-me", saved["mcp"])
+            self.assertIn("playwright", saved["mcp"])
+
+    def test_host_merge_writes_permission_into_existing_jsonc(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundled = root / "bundled.json"
+            bundled.write_text(
+                json.dumps(
+                    {
+                        "permission": ALLOW_PERMISSION,
+                        "mcp": {"playwright": {"type": "local", "command": ["npx"]}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "opencode.json").write_text(
+                json.dumps({"mcp": {"keep-me": {"type": "local"}}}),
+                encoding="utf-8",
+            )
+            (root / "opencode.jsonc").write_text(
+                '{\n  // stale ask\n  "permission": "ask",\n  "mcp": { "old": { "type": "local" } }\n}\n',
+                encoding="utf-8",
+            )
+
+            merge_host_opencode_configs(bundled, root)
+            saved_json = json.loads((root / "opencode.json").read_text(encoding="utf-8"))
+            saved_jsonc = load_jsonc((root / "opencode.jsonc").read_text(encoding="utf-8"))
+
+            self.assertEqual(saved_json["permission"], ALLOW_PERMISSION)
+            self.assertEqual(saved_jsonc["permission"], ALLOW_PERMISSION)
+            self.assertIn("keep-me", saved_json["mcp"])
+            self.assertIn("old", saved_jsonc["mcp"])
+            self.assertIn("playwright", saved_jsonc["mcp"])
+
+
+class AgentsAndCacheTests(unittest.TestCase):
+    def test_install_agents_md_stamps_role(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "AGENTS.md"
+            dest = Path(tmp) / "out" / "AGENTS.md"
+            template.write_text(
+                "You are the **{{ROLE}}** employee.\nNever ask the user a question.\n",
+                encoding="utf-8",
+            )
+
+            written = install_agents_md("HR", template, dest)
+
+            text = written.read_text(encoding="utf-8")
+            self.assertIn("**hr**", text)
+            self.assertNotIn("{{ROLE}}", text)
+            self.assertIn("Never ask the user a question", text)
+
+    def test_clear_opencode_cache_removes_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            cache.mkdir()
+            (cache / "stale.bin").write_text("x", encoding="utf-8")
+
+            self.assertTrue(clear_opencode_cache(cache))
+            self.assertFalse(cache.exists())
+            self.assertFalse(clear_opencode_cache(cache))
+
 
 class PlaywrightTests(unittest.TestCase):
     def test_unavailable_without_npx(self) -> None:
@@ -160,18 +260,37 @@ class RunBuildTests(unittest.TestCase):
             _write_skill(pack, "exchange-use")
             mcp_file = root / "mcp.json"
             mcp_file.write_text(
-                json.dumps({"mcp": {"playwright": {"type": "local", "command": ["npx"]}}}),
+                json.dumps(
+                    {
+                        "permission": ALLOW_PERMISSION,
+                        "mcp": {"playwright": {"type": "local", "command": ["npx"]}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agents_template = root / "AGENTS.md"
+            agents_template.write_text(
+                "You are the **{{ROLE}}** employee.\nNever ask the user a question.\n",
                 encoding="utf-8",
             )
             oc = root / "opencode"
             existing = oc / "skill" / "exchange-use"
             existing.mkdir(parents=True)
             (existing / "SKILL.md").write_text("old\n", encoding="utf-8")
+            (oc / "opencode.jsonc").write_text(
+                '{"permission": "ask", "mcp": {"stale": {"type": "local"}}}\n',
+                encoding="utf-8",
+            )
+            cache = root / "cache"
+            cache.mkdir()
+            (cache / "stale.bin").write_text("x", encoding="utf-8")
 
             with (
                 mock.patch("holyfw_assets.skills_root", return_value=skills),
                 mock.patch("holyfw_assets.mcp_config_path", return_value=mcp_file),
+                mock.patch("holyfw_assets.agents_md_path", return_value=agents_template),
                 mock.patch("soldier.host_build.opencode_config_dir", return_value=oc),
+                mock.patch("soldier.host_build.opencode_cache_dir", return_value=cache),
                 mock.patch("soldier.host_build.ensure_playwright"),
             ):
                 code = run_build("hr")
@@ -182,8 +301,15 @@ class RunBuildTests(unittest.TestCase):
                 "# skill\n",
             )
             self.assertFalse((oc / "skill").exists())
+            self.assertFalse(cache.exists())
             saved = json.loads((oc / "opencode.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["mcp"]["playwright"]["command"], ["npx"])
+            self.assertEqual(saved["permission"], ALLOW_PERMISSION)
+            saved_jsonc = json.loads((oc / "opencode.jsonc").read_text(encoding="utf-8"))
+            self.assertEqual(saved_jsonc["permission"], ALLOW_PERMISSION)
+            agents_text = (oc / "AGENTS.md").read_text(encoding="utf-8")
+            self.assertIn("**hr**", agents_text)
+            self.assertIn("Never ask the user a question", agents_text)
 
     def test_run_build_unknown_role_returns_one(self) -> None:
         self.assertEqual(run_build("not-a-role"), 1)

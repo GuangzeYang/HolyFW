@@ -207,7 +207,7 @@ Start `soldier` first, then start `commander`. After `pip install .` the command
 
 #### Install OpenCode skills/MCP on a soldier host
 
-Run once per role host. Copies that role's skills into `~/.config/opencode/skills/` (overwriting existing skill directories), merges MCP servers into `~/.config/opencode/opencode.json`, and installs Playwright Chromium if `npx playwright` is missing.
+Run once per role host. Copies that role's skills into `~/.config/opencode/skills/` (overwriting existing skill directories), merges MCP servers and an explicit `permission` object (`*`, `doom_loop`, and `external_directory["*"]` all `allow`) into `~/.config/opencode/opencode.json` and into `opencode.jsonc` when that file already exists, writes a role-stamped `~/.config/opencode/AGENTS.md`, deletes `%USERPROFILE%\.cache\opencode` (not `auth.json`), and installs Playwright Chromium if `npx playwright` is missing. Soldier then runs tasks as `opencode run --auto` with `OPENCODE_PERMISSION` set so workspace-outside paths (Desktop, UNC shares) do not wait for Enter. Do not leave an old `opencode serve` process attached to these hosts; each task starts a fresh `opencode run`.
 
 ```bash
 soldier build hr

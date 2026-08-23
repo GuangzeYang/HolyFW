@@ -32,5 +32,15 @@ def mcp_config_path() -> Path:
     return found
 
 
+def agents_md_path() -> Path:
+    found = _first_existing(
+        _PACKAGE_DIR / "mcp" / "AGENTS.md",
+        _REPO_ROOT / "mcp" / "AGENTS.md",
+    )
+    if found is None:
+        raise FileNotFoundError("Bundled mcp/AGENTS.md not found")
+    return found
+
+
 def bundled_file(name: str) -> Path | None:
     return _first_existing(_PACKAGE_DIR / name, _REPO_ROOT / name)

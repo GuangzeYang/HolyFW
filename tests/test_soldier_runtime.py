@@ -370,8 +370,22 @@ class SoldierRuntimeTests(unittest.TestCase):
 
         execute_mock.assert_called_once()
         argv = execute_mock.call_args[0][0]
-        self.assertEqual(list(argv), ["opencode", "run", prompt])
-        self.assertNotIn("opencode run", argv[2])
+        self.assertEqual(list(argv), ["opencode", "run", "--auto", prompt])
+        self.assertNotIn("opencode run", argv[3])
+        env = execute_mock.call_args.kwargs.get("env")
+        self.assertIsNotNone(env)
+        permission = json.loads(env["OPENCODE_PERMISSION"])
+        self.assertEqual(permission["*"], "allow")
+        self.assertEqual(permission["doom_loop"], "allow")
+        self.assertEqual(permission["external_directory"], {"*": "allow"})
+
+    def test_opencode_run_env_sets_permission_without_mutating_base(self) -> None:
+        base = {"PATH": "/bin", "KEEP": "yes"}
+        env = soldier.opencode_run_env(base)
+        self.assertEqual(env["KEEP"], "yes")
+        self.assertNotIn("OPENCODE_PERMISSION", base)
+        permission = json.loads(env["OPENCODE_PERMISSION"])
+        self.assertEqual(permission, soldier.OPENCODE_PERMISSION_ALLOW)
 
     def test_windows_tree_termination_uses_taskkill_t_and_f(self) -> None:
         proc = mock.Mock()
