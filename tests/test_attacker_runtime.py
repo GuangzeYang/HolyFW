@@ -18,6 +18,7 @@ from attacker.runtime import run_loop, step
 from attacker.task_file import (
     all_completed,
     empty_slot_indices,
+    load_attacker_payload,
     load_attacker_tasks,
     pending_ready,
     save_attacker_tasks,
@@ -279,6 +280,179 @@ class RunLoopTests(unittest.TestCase):
             stored = load_attacker_tasks(workspace / "role_task" / "tasks_08-23.json")
             self.assertTrue(all_completed(stored))
             self.assertEqual([item["task"] for item in stored], ["generated-0", "generated-1", "generated-2"])
+
+
+class BaseTimeTests(unittest.TestCase):
+    def test_shift_rewrites_planned_time_and_stamps_file(self) -> None:
+        from datetime import date
+
+        from commander.schedule_shift import SCHEDULE_SHIFT_KEY
+
+        from attacker.runtime import apply_attacker_base_time
+
+        tasks = tasks_from_schedule(["09:06", "13:03", "17:46"])
+        shifted, stamp, changed = apply_attacker_base_time(
+            tasks,
+            base_time=21,
+            file_day=date(2026, 8, 21),
+        )
+        self.assertTrue(changed)
+        self.assertEqual([item["planned_time"] for item in shifted], ["21:06", "01:03", "05:46"])
+        assert stamp is not None
+        self.assertEqual(stamp["base_time"], 21)
+        self.assertEqual(stamp["origin_hour"], 9)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tasks_08-21.json"
+            save_attacker_tasks(path, shifted, shift=stamp)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload[SCHEDULE_SHIFT_KEY]["base_time"], 21)
+            loaded, loaded_stamp = load_attacker_payload(path)
+            self.assertEqual(loaded[0]["planned_time"], "21:06")
+            assert loaded_stamp is not None
+            self.assertEqual(loaded_stamp["base_time"], 21)
+
+    def test_wrapped_midnight_task_is_not_due_before_next_day(self) -> None:
+        from datetime import date
+
+        from attacker.runtime import due_ready
+
+        tasks = tasks_from_schedule(["21:06", "01:03"])
+        tasks[0]["task"] = "evening"
+        tasks[1]["task"] = "after-midnight"
+        file_day = date(2026, 8, 21)
+        evening_due = due_ready(tasks, datetime(2026, 8, 21, 22, 0), file_day=file_day)
+        self.assertEqual([item["task"] for item in evening_due], ["evening"])
+        morning_due = due_ready(tasks, datetime(2026, 8, 22, 1, 10), file_day=file_day)
+        self.assertEqual([item["task"] for item in morning_due], ["evening", "after-midnight"])
+
+    def test_cli_base_time_forwards_and_rejects_24(self) -> None:
+        import attacker.cli as attacker_cli
+
+        parser = attacker_cli.build_parser()
+        args = parser.parse_args(["--base-time", "21"])
+        self.assertEqual(args.base_time, 21)
+        args = parser.parse_args(["run", "--base-time", "21"])
+        self.assertEqual(args.base_time, 21)
+        args = parser.parse_args(["--base-time", "21", "run"])
+        self.assertEqual(args.base_time, 21)
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["--base-time", "24"])
+
+    def test_existing_list_file_is_restamped(self) -> None:
+        from datetime import date
+
+        from attacker.runtime import ensure_task_file
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tasks_08-21.json"
+            save_attacker_tasks(path, tasks_from_schedule(["09:06", "13:03"]))
+            tasks, stamp = ensure_task_file(
+                path,
+                expected_count=2,
+                day=date(2026, 8, 21),
+                time_model={"tasks_per_role": 2},
+                base_time=21,
+            )
+            self.assertEqual([item["planned_time"] for item in tasks], ["21:06", "01:03"])
+            assert stamp is not None
+            self.assertEqual(stamp["base_time"], 21)
+            loaded, loaded_stamp = load_attacker_payload(path)
+            self.assertEqual([item["planned_time"] for item in loaded], ["21:06", "01:03"])
+            assert loaded_stamp is not None
+            self.assertEqual(loaded_stamp["base_time"], 21)
+
+    def test_resolve_run_day_pins_yesterday_while_window_open(self) -> None:
+        from datetime import date
+
+        from attacker.runtime import resolve_run_day
+
+        yesterday = date(2026, 8, 21)
+        tasks = tasks_from_schedule(["21:06", "01:03"])
+        stamp = {"origin_hour": 9, "base_time": 21, "file_day": yesterday.isoformat()}
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            save_attacker_tasks(data_dir / "tasks_08-21.json", tasks, shift=stamp)
+            self.assertEqual(
+                resolve_run_day(
+                    data_dir,
+                    now=datetime(2026, 8, 22, 1, 0),
+                ),
+                yesterday,
+            )
+            self.assertEqual(
+                resolve_run_day(
+                    data_dir,
+                    now=datetime(2026, 8, 22, 6, 0),
+                ),
+                date(2026, 8, 22),
+            )
+
+    def test_loop_applies_cli_base_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "config.json").write_text(
+                json.dumps(
+                    {
+                        "batch_size": 5,
+                        "poll_interval_seconds": 1,
+                        "base_time": 9,
+                        "exec": {"timeout_seconds": 30},
+                        "generator": {
+                            "max_attempts": 1,
+                            "time_model": {
+                                "tasks_per_role": 3,
+                                "mu_am_minutes": 630,
+                                "mu_pm_minutes": 900,
+                                "sigma_am_minutes": 50,
+                                "sigma_pm_minutes": 65,
+                                "a_am": 1.0,
+                                "a_pm": 1.0,
+                                "phi": 0.85,
+                                "sigma_eta": 0.18,
+                                "avoid_five_minutes": True,
+                            },
+                        },
+                        "paths": {"data_dir": "role_task", "logs_dir": "logs"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def fill(current: list[dict[str, str]], size: int) -> list[dict[str, str]]:
+                filled = 0
+                for item in current:
+                    if not item["task"] and filled < size:
+                        item["task"] = f"generated-{filled}"
+                        filled += 1
+                return current
+
+            def execute_one(item: dict[str, str]) -> None:
+                item["started_at"] = "start"
+                item["completed_at"] = "done"
+
+            with mock.patch("attacker.runtime.resolve_workspace", return_value=workspace):
+                with mock.patch(
+                    "attacker.runtime.generate_schedule",
+                    return_value=["09:11", "09:22", "10:03"],
+                ):
+                    code = run_loop(
+                        config_path=workspace / "config.json",
+                        day=datetime(2026, 8, 23).date(),
+                        now_fn=lambda: _now(23, 0),
+                        sleep_fn=lambda _seconds: None,
+                        fill_batch=fill,
+                        execute_one=execute_one,
+                        base_time=21,
+                    )
+            self.assertEqual(code, 0)
+            stored, stamp = load_attacker_payload(workspace / "role_task" / "tasks_08-23.json")
+            self.assertEqual(
+                [item["planned_time"] for item in stored],
+                ["21:11", "21:22", "22:03"],
+            )
+            assert stamp is not None
+            self.assertEqual(stamp["base_time"], 21)
+            self.assertTrue(all_completed(stored))
 
 
 class GenerationMessageTests(unittest.TestCase):

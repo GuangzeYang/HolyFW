@@ -6,6 +6,7 @@ import os
 import re
 import random
 import time
+import uuid
 from datetime import date
 from pathlib import Path
 from typing import Any, Mapping
@@ -129,6 +130,32 @@ def validate_task_id(task_id: str) -> str | None:
     if UUID_HEX_NO_HYPHEN.match(task_id):
         return None
     return "Task ID must be hyphen-free hex (uuid.uuid4().hex truncated or full 32 chars)"
+
+
+def new_task_id() -> str:
+    """Hyphen-free UUID hex truncated to 16 characters."""
+    return uuid.uuid4().hex[:16]
+
+
+def existing_task_id(value: Any) -> str:
+    """Return a valid task_id string, or empty when missing/invalid."""
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text or validate_task_id(text) is not None:
+        return ""
+    return text.lower()
+
+
+def assign_task_id(item: dict[str, Any]) -> str:
+    """Keep a valid existing task_id, otherwise mint one and write it back."""
+    current = existing_task_id(item.get("task_id"))
+    if current:
+        item["task_id"] = current
+        return current
+    assigned = new_task_id()
+    item["task_id"] = assigned
+    return assigned
 
 
 def expand_date_segment(seg: str) -> tuple[str | None, str | None]:
@@ -656,6 +683,7 @@ def normalize_role_tasks(
         descriptions: list[str] = []
         load_flags: list[bool] = []
         explicit_times: list[str | None] = []
+        existing_ids: list[str] = []
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -667,6 +695,7 @@ def normalize_role_tasks(
                 continue
             descriptions.append(desc)
             load_flags.append(bool(item.get("is_load", False)))
+            existing_ids.append(existing_task_id(item.get("task_id")))
             raw_time = item.get("time")
             if isinstance(raw_time, str) and parse_hhmm_to_minute(raw_time) is not None:
                 explicit_times.append(raw_time)
@@ -675,19 +704,22 @@ def normalize_role_tasks(
 
         target_count = len(descriptions)
         if preserve_generated_times and target_count:
-            ordered_items: list[tuple[int, str, bool, str | None]] = []
+            ordered_items: list[tuple[int, str, bool, str | None, str]] = []
             can_preserve_ordered_times = True
-            for desc, is_load, raw_time in zip(descriptions, load_flags, explicit_times):
+            for desc, is_load, raw_time, task_id in zip(
+                descriptions, load_flags, explicit_times, existing_ids
+            ):
                 minute = parse_hhmm_to_minute(raw_time) if isinstance(raw_time, str) else None
                 if minute is None:
                     can_preserve_ordered_times = False
                     break
-                ordered_items.append((minute, desc, is_load, raw_time))
+                ordered_items.append((minute, desc, is_load, raw_time, task_id))
             if can_preserve_ordered_times:
                 ordered_items.sort(key=lambda item: item[0])
                 descriptions = [item[1] for item in ordered_items]
                 load_flags = [item[2] for item in ordered_items]
                 explicit_times = [item[3] for item in ordered_items]
+                existing_ids = [item[4] for item in ordered_items]
 
         preserved_times: list[str] = []
         if preserve_generated_times and target_count:
@@ -701,6 +733,7 @@ def normalize_role_tasks(
                 target_count = len(schedule)
                 descriptions = descriptions[:target_count]
                 load_flags = load_flags[:target_count]
+                existing_ids = existing_ids[:target_count]
         else:
             schedule = []
 
@@ -711,7 +744,7 @@ def normalize_role_tasks(
                     "time": preserved_times[i] if preserved_times else minute_to_hhmm(schedule[i]),
                     "is_load": bool(load_flags[i]),
                     "task": descriptions[i],
-                    "task_id": "",
+                    "task_id": existing_ids[i] or new_task_id(),
                     "status": "planned",
                     "issued_at": "",
                     "expiry_time": "",

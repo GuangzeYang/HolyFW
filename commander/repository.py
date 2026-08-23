@@ -12,7 +12,7 @@ from typing import Any
 
 from filelock import FileLock
 
-from common import load_json_file, parse_task_ref, save_json_atomic, tasks_path
+from common import existing_task_id, load_json_file, parse_task_ref, save_json_atomic, tasks_path
 
 try:
     from runtime_config import get_storage_config, load_runtime_config
@@ -124,26 +124,28 @@ class DailyTaskRepository:
 
             matched: dict[str, Any] | None = None
             for item in tasks:
-                if not isinstance(item, dict):
-                    continue
-                if not item.get("is_load", False):
-                    continue
-                if item.get("task_id"):
-                    continue
-                if planned_time and item.get("time") != planned_time:
-                    continue
-                if item.get("task") != task_text:
-                    continue
-                matched = item
-                break
+                if isinstance(item, dict) and item.get("task_id") == task_id:
+                    matched = item
+                    break
 
             if matched is None:
                 for item in tasks:
                     if not isinstance(item, dict):
                         continue
-                    if not item.get("is_load", False):
+                    if item.get("issued_at") or item.get("status") in {"waiting", "successed", "failed"}:
                         continue
-                    if item.get("task_id"):
+                    if planned_time and item.get("time") != planned_time:
+                        continue
+                    if item.get("task") != task_text:
+                        continue
+                    matched = item
+                    break
+
+            if matched is None:
+                for item in tasks:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("issued_at") or item.get("status") in {"waiting", "successed", "failed"}:
                         continue
                     if planned_time and item.get("time") != planned_time:
                         continue
@@ -155,6 +157,7 @@ class DailyTaskRepository:
                     "time": planned_time or "",
                     "is_load": True,
                     "task": task_text,
+                    "task_id": task_id,
                 }
                 tasks.append(matched)
 
@@ -190,18 +193,71 @@ class DailyTaskRepository:
 
     def find_task_index(self, date_str: str, role: str, task_id: str) -> int | None:
         """Return the list index of ``task_id`` for *role*, or None if missing."""
-        path = self.day_path(date_str)
-        if not path.exists():
+        location = self.find_task_location(task_id, role=role, date_hint=date_str)
+        if location is None:
             return None
-        lock_path = str(path) + ".lock"
-        with FileLock(lock_path, timeout=self.lock_timeout):
-            data = load_json_file(path)
-            tasks = data.get(role)
-            if not isinstance(tasks, list):
-                return None
-            for index, item in enumerate(tasks):
-                if isinstance(item, dict) and item.get("task_id") == task_id:
-                    return index
+        _found_day, _found_role, index = location
+        return index
+
+    def _iter_task_files(self) -> list[Path]:
+        if not self.data_dir.is_dir():
+            return []
+        return sorted(
+            path
+            for path in self.data_dir.glob("tasks_*.json")
+            if path.is_file() and ".candidate." not in path.name
+        )
+
+    def _iso_date_for_tasks_path(self, path: Path, hint: str | None) -> str:
+        try:
+            from schedule_shift import file_day_from_tasks_path
+        except ImportError:
+            from commander.schedule_shift import file_day_from_tasks_path
+        today = date.today()
+        if hint:
+            try:
+                today = date.fromisoformat(hint)
+            except ValueError:
+                pass
+        return file_day_from_tasks_path(path, today=today)
+
+    def find_task_location(
+        self,
+        task_id: str,
+        *,
+        role: str | None = None,
+        date_hint: str | None = None,
+    ) -> tuple[str, str, int] | None:
+        """Locate ``task_id`` even when the task_ref date does not match the file day."""
+        wanted = existing_task_id(task_id) or (task_id.strip() if isinstance(task_id, str) else "")
+        if not wanted:
+            return None
+        paths: list[Path] = []
+        if date_hint:
+            hint_path = self.day_path(date_hint)
+            if hint_path.is_file():
+                paths.append(hint_path)
+        for path in self._iter_task_files():
+            if path not in paths:
+                paths.append(path)
+        for path in paths:
+            lock_path = str(path) + ".lock"
+            with FileLock(lock_path, timeout=self.lock_timeout):
+                data = load_json_file(path)
+                roles: list[str]
+                if role:
+                    roles = [role]
+                else:
+                    roles = [key for key, value in data.items() if key != "_schedule_shift" and isinstance(value, list)]
+                for role_name in roles:
+                    tasks = data.get(role_name)
+                    if not isinstance(tasks, list):
+                        continue
+                    for index, item in enumerate(tasks):
+                        if not isinstance(item, dict):
+                            continue
+                        if existing_task_id(item.get("task_id")) == wanted or item.get("task_id") == wanted:
+                            return self._iso_date_for_tasks_path(path, date_hint), role_name, index
         return None
 
     def update_task_expiry(
@@ -279,8 +335,15 @@ class DailyTaskRepository:
         fields: dict[str, Any],
         *,
         only_if_no_task_id: bool = False,
+        only_if_unissued: bool | None = None,
     ) -> bool:
-        """Atomically update one task by role/index and save when changed."""
+        """Atomically update one task by role/index and save when changed.
+
+        ``only_if_unissued`` (and the older ``only_if_no_task_id`` alias) skips
+        tasks that already have ``issued_at`` or a waiting/terminal status.
+        Task IDs are assigned at creation, so they no longer mean "already dispatched".
+        """
+        guard_unissued = only_if_unissued if only_if_unissued is not None else only_if_no_task_id
         path = self.day_path(date_str)
         lock_path = str(path) + ".lock"
         with FileLock(lock_path, timeout=self.lock_timeout):
@@ -293,7 +356,9 @@ class DailyTaskRepository:
             item = tasks[index]
             if not isinstance(item, dict):
                 return False
-            if only_if_no_task_id and item.get("task_id"):
+            if guard_unissued and (
+                item.get("issued_at") or item.get("status") in {"waiting", "successed", "failed"}
+            ):
                 return False
 
             changed = False
@@ -325,19 +390,24 @@ class DailyTaskRepository:
 
         assert parsed is not None
         date_str, role, task_id = parsed
-        path = self.day_path(date_str)
+        location = self.find_task_location(task_id, role=role, date_hint=date_str)
+        if location is None:
+            return {"ok": False, "error": f"Task not found: {task_id}"}
+        found_day, found_role, _index = location
+        path = self.day_path(found_day)
         lock_path = str(path) + ".lock"
 
         with FileLock(lock_path, timeout=self.lock_timeout):
             data = load_json_file(path)
-            if role not in data:
-                return {"ok": False, "error": f"Role does not exist: {role}"}
-            tasks = data[role]
+            tasks = data.get(found_role)
             if not isinstance(tasks, list):
-                return {"ok": False, "error": f"Task list format error under role {role}"}
+                return {"ok": False, "error": f"Task list format error under role {found_role}"}
 
+            wanted = existing_task_id(task_id) or task_id
             for item in tasks:
-                if isinstance(item, dict) and item.get("task_id") == task_id:
+                if isinstance(item, dict) and (
+                    existing_task_id(item.get("task_id")) == wanted or item.get("task_id") == task_id
+                ):
                     item["status"] = status
                     item["completed_at"] = datetime.now().astimezone().isoformat()
                     if message is not None:
@@ -353,7 +423,7 @@ class DailyTaskRepository:
             else:
                 return {"ok": False, "error": f"Task not found: {task_id}"}
 
-        return {"ok": True}
+        return {"ok": True, "date": found_day, "role": found_role}
 
     def rollback_dispatched_task(
         self,
@@ -373,7 +443,6 @@ class DailyTaskRepository:
             for item in tasks:
                 if not isinstance(item, dict) or item.get("task_id") != task_id:
                     continue
-                item["task_id"] = ""
                 item["status"] = "planned"
                 item["is_load"] = False
                 item["issued_at"] = ""

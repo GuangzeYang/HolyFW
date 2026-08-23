@@ -45,10 +45,10 @@ CONSTRAINTS_TEMPLATE = CONSTRAINTS_PATH.read_text(encoding="utf-8")
 
 
 class PolicyTests(unittest.TestCase):
-    def test_loaded_without_task_id_is_pending(self) -> None:
+    def test_loaded_without_issued_at_is_pending(self) -> None:
         task = {
             "is_load": True,
-            "task_id": "",
+            "task_id": "aabbccddeeff0011",
             "status": "planned",
         }
         self.assertTrue(task_needs_dispatch(task))
@@ -56,9 +56,9 @@ class PolicyTests(unittest.TestCase):
     def test_policy_finds_earliest_pending_index(self) -> None:
         policy = EarliestPendingSelectionPolicy()
         tasks = [
-            {"is_load": True, "task_id": "abc", "status": "waiting"},
-            {"is_load": True, "task_id": "", "status": "planned"},
-            {"is_load": False, "task_id": "", "status": "planned"},
+            {"is_load": True, "task_id": "abc12345", "status": "waiting", "issued_at": "now"},
+            {"is_load": True, "task_id": "def12345", "status": "planned"},
+            {"is_load": False, "task_id": "ghi12345", "status": "planned"},
         ]
         self.assertEqual(policy.find_next_pending_index(tasks), 1)
         self.assertEqual(policy.find_next_pending_index(tasks, start_index=2), 2)
@@ -78,7 +78,7 @@ class RepositoryTests(unittest.TestCase):
                     "time": "09:01",
                     "is_load": True,
                     "task": "t1",
-                    "task_id": "",
+                    "task_id": "abc12345",
                     "status": STATUS_PLANNED,
                     "issued_at": "",
                     "expiry_time": "",
@@ -113,7 +113,7 @@ class RepositoryTests(unittest.TestCase):
 
     def test_report_requires_waiting_transition(self) -> None:
         result = self.repo.update_task_report(
-            task_ref=f"{self.today}_hr_abc12345",
+            task_ref=f"{self.today}_hr_ffffffff00000000",
             status="successed",
             message="",
             exit_code=0,
@@ -237,7 +237,7 @@ class RepositoryTests(unittest.TestCase):
             role="hr",
             index=0,
             fields={"is_load": True, "report_message": "queued"},
-            only_if_no_task_id=True,
+            only_if_unissued=True,
         )
         self.assertTrue(changed)
         item = self.repo.load_day(self.today)["hr"][0]
@@ -259,8 +259,8 @@ class RepositoryTests(unittest.TestCase):
             date_str=self.today,
             role="hr",
             index=0,
-            fields={"is_load": False, "status": STATUS_PLANNED, "task_id": ""},
-            only_if_no_task_id=True,
+            fields={"is_load": False, "status": STATUS_PLANNED, "issued_at": ""},
+            only_if_unissued=True,
         )
         self.assertFalse(changed)
 
@@ -288,7 +288,7 @@ class RepositoryTests(unittest.TestCase):
 
         self.assertTrue(rolled_back)
         item = self.repo.load_day(self.today)["hr"][0]
-        self.assertEqual(item["task_id"], "")
+        self.assertEqual(item["task_id"], "abc12345")
         self.assertEqual(item["status"], STATUS_PLANNED)
         self.assertFalse(item["is_load"])
         self.assertEqual(item["report_message"], "dispatch failed")
@@ -328,8 +328,47 @@ class RepositoryTests(unittest.TestCase):
 
         self.assertEqual(rc, 1)
         item = self.repo.load_day(self.today)["hr"][0]
-        self.assertEqual(item["task_id"], "")
+        self.assertTrue(item["task_id"])
+        self.assertEqual(len(item["task_id"]), 16)
         self.assertEqual(item["status"], STATUS_PLANNED)
+
+    def test_report_finds_task_when_task_ref_date_does_not_match_file_day(self) -> None:
+        expiry = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        self.repo.save_day(
+            yesterday,
+            {
+                "hr": [
+                    {
+                        "time": "21:06",
+                        "is_load": True,
+                        "task": "t1",
+                        "task_id": "deadbeefcafebabe",
+                        "status": STATUS_WAITING,
+                        "issued_at": "issued",
+                        "expiry_time": expiry,
+                        "completed_at": "",
+                        "report_message": "",
+                        "exit_code": None,
+                        "stdout": "",
+                        "stderr": "",
+                    }
+                ]
+            },
+        )
+        result = self.repo.update_task_report(
+            task_ref=f"{self.today}_hr_deadbeefcafebabe",
+            status="successed",
+            message="ok",
+            exit_code=0,
+            stdout="done",
+            stderr="",
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result.get("date"), yesterday)
+        item = self.repo.load_day(yesterday)["hr"][0]
+        self.assertEqual(item["status"], "successed")
+        self.assertEqual(item["stdout"], "done")
 
 
 class LoggingSetupTests(unittest.TestCase):
@@ -552,6 +591,7 @@ class FileContractTests(unittest.TestCase):
             self.assertGreater(file_size, 0)
             assert data is not None
             self.assertIn("task_id", data["hr"][0])
+            self.assertTrue(data["hr"][0]["task_id"])
             self.assertEqual(data["hr"][0]["task"], "Process onboarding documents")
 
     def test_validate_generated_task_file_distinguishes_parse_and_schema_failures(self) -> None:
@@ -984,7 +1024,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
             "time": time,
             "is_load": False,
             "task": task,
-            "task_id": "",
+            "task_id": "aabbccddeeff0011",
             "status": "planned",
             "issued_at": "",
             "expiry_time": "",

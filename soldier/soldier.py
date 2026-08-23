@@ -23,10 +23,13 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import IO, Mapping, Sequence
 import logging
+
+from filelock import FileLock, Timeout as FileLockTimeout
 
 try:
     import colorlog
@@ -56,7 +59,7 @@ MAX_LINE_BYTES = 65536
 MAX_COMMAND_OUTPUT_BYTES = 65536
 LOGS_DIR_NAME = "logs"
 RUNTIME_DIR_NAME = "runtime"
-TASK_STATE_FILE_PREFIX = "task_state"
+TASK_RECORDS_DIR_NAME = "tasks"
 PENDING_REPORTS_FILE_NAME = "pending_reports.jsonl"
 FAILED_REPORTS_FILE_NAME = "failed_reports.jsonl"
 REPORT_RETRY_LIMIT = 3
@@ -68,7 +71,6 @@ SOLDIER_DATED_FILE_HANDLER_NAME = "soldier_dated_file"
 SOLDIER_LOG_FORMAT = "%(asctime)s - %(levelname)s - %(task)s - %(message)s"
 LOG_DATE_CHECK_INTERVAL_SECONDS = 1.0
 _PENDING_REPORTS_LOCK = threading.Lock()
-_TASK_STATE_LOCK = threading.Lock()
 _ACTIVE_PROCESSES_LOCK = threading.Lock()
 _ACTIVE_PROCESSES: dict[int, subprocess.Popen] = {}
 _SHUTTING_DOWN = threading.Event()
@@ -179,10 +181,155 @@ def get_runtime_dir(base_dir: Path | None = None) -> Path:
     return path
 
 
-def tasks_log_path(date_str: str, base_dir: Path | None = None) -> Path:
-    """Unified per-day JSONL of received tasks and execution results under logs/."""
-    day = date_str if DATE_FULL.match(date_str) else date.today().isoformat()
-    return get_logs_dir(base_dir) / f"tasks_{day}.jsonl"
+def get_task_records_dir(base_dir: Path | None = None) -> Path:
+    path = get_runtime_dir(base_dir) / TASK_RECORDS_DIR_NAME
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def task_record_path(task_id: str, base_dir: Path | None = None) -> Path:
+    return get_task_records_dir(base_dir) / f"{task_id}.json"
+
+
+def _read_json_object(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+class TaskRecordFile:
+    """Exclusive per-task JSON file. The handle stays open until complete/abort/close."""
+
+    def __init__(self, path: Path, lock: FileLock, handle: IO[bytes], record: dict) -> None:
+        self.path = path
+        self.record = record
+        self._lock: FileLock | None = lock
+        self._handle: IO[bytes] | None = handle
+
+    def persist(self) -> None:
+        if self._handle is None or self._handle.closed:
+            raise OSError(f"Task record file is closed: {self.path}")
+        self.record["updated_at"] = datetime.now(timezone.utc).isoformat()
+        payload = (json.dumps(self.record, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        self._handle.seek(0)
+        self._handle.write(payload)
+        self._handle.truncate()
+        self._handle.flush()
+        os.fsync(self._handle.fileno())
+
+    def complete(self, report: dict, *, status: str, exit_code: int, stdout_text: str, stderr_text: str, message: str | None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self.record["status"] = "completed"
+        self.record["completed_at"] = now
+        self.record["report"] = report
+        self.record["exit_code"] = exit_code
+        self.record["stdout"] = stdout_text
+        self.record["stderr"] = stderr_text
+        self.record["message"] = message or ""
+        self.record["result_status"] = status
+        self.persist()
+
+    def abort(self) -> None:
+        self.close()
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def close(self) -> None:
+        handle = self._handle
+        self._handle = None
+        if handle is not None and not handle.closed:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        lock = self._lock
+        self._lock = None
+        if lock is not None and lock.is_locked:
+            try:
+                lock.release()
+            except OSError:
+                pass
+
+
+@dataclass
+class ClaimResult:
+    status: str
+    record: dict | None = None
+    handle: TaskRecordFile | None = None
+
+
+def claim_task_execution(
+    date_str: str,
+    task_id: str,
+    task_ref: str,
+    command: str,
+    received_at: str,
+    stale_after_seconds: int,
+    *,
+    base_dir: Path | None = None,
+) -> ClaimResult:
+    """Open ``runtime/tasks/{task_id}.json`` exclusively for the life of the task."""
+    path = task_record_path(task_id, base_dir)
+    lock = FileLock(str(path) + ".lock", timeout=0)
+    try:
+        lock.acquire()
+    except FileLockTimeout:
+        existing = _read_json_object(path)
+        return ClaimResult("running", existing or {"status": "running", "task_id": task_id})
+
+    handle: IO[bytes] | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.touch()
+        handle = path.open("r+b")
+        handle.seek(0)
+        raw_bytes = handle.read()
+        raw = raw_bytes.decode("utf-8") if raw_bytes else ""
+        existing: dict = {}
+        if raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = {}
+            if isinstance(parsed, dict):
+                existing = parsed
+        if existing.get("status") == "completed":
+            handle.close()
+            handle = None
+            lock.release()
+            return ClaimResult("completed", existing)
+        if existing.get("status") == "running":
+            logging.warning("Task %s has leftover running state; allowing re-execution", task_ref)
+
+        record = {
+            "task_id": task_id,
+            "task_ref": task_ref,
+            "date": date_str,
+            "status": "running",
+            "received_at": received_at,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "command": command,
+            "execution_deadline": (
+                datetime.now(timezone.utc) + timedelta(seconds=stale_after_seconds)
+            ).isoformat(),
+        }
+        owned = TaskRecordFile(path, lock, handle, record)
+        owned.persist()
+        clean_old_files(get_task_records_dir(base_dir), "*.json", days=20)
+        return ClaimResult("claimed", record, owned)
+    except Exception:
+        if handle is not None and not handle.closed:
+            handle.close()
+        if lock.is_locked:
+            lock.release()
+        raise
 
 
 def append_task_execution_log(
@@ -201,9 +348,9 @@ def append_task_execution_log(
     argv: list[str] | None = None,
     task: str | None = None,
 ) -> Path:
-    """Append one task lifecycle record (receive + opencode result) to logs/tasks_*.jsonl."""
-    path = tasks_log_path(date_str, base_dir)
+    """Write a completed task record keyed by task_id (used by tests and late writers)."""
     prompt = strip_opencode_run_prefix(task if task is not None else command)
+    path = task_record_path(task_id, base_dir)
     record = {
         "received_at": received_at,
         "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -213,18 +360,25 @@ def append_task_execution_log(
         "task": prompt,
         "command": prompt,
         "argv": list(argv) if argv is not None else [],
-        "status": status,
+        "status": "completed",
+        "result_status": status,
         "exit_code": exit_code,
         "message": message or "",
         "stdout": stdout_text,
         "stderr": stderr_text,
+        "report": {
+            "task_ref": task_ref,
+            "status": status,
+            "exit_code": exit_code,
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+        },
     }
-    _append_jsonl(path, record)
-    clean_old_files(get_logs_dir(base_dir), "tasks_*.jsonl", days=20)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
 
 
-# Backward-compatible aliases used by older tests/callers during transition.
 def save_task_record(
     task_id: str,
     date_str: str,
@@ -274,116 +428,6 @@ def save_command_output(
         stdout_text=stdout_text,
         stderr_text=stderr_text,
     )
-
-def task_state_path(date_str: str, base_dir: Path | None = None) -> Path:
-    root = get_runtime_dir(base_dir)
-    month_day = date_str[5:] if len(date_str) >= 10 else date_str
-    return root / f"{TASK_STATE_FILE_PREFIX}_{month_day}.jsonl"
-
-
-def _load_task_state_records(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    records: list[dict] = []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                parsed = json.loads(line)
-            except json.JSONDecodeError:
-                logging.warning(f"Skipping invalid task state line in {path}")
-                continue
-            if isinstance(parsed, dict):
-                records.append(parsed)
-    return records
-
-
-def _latest_task_state(records: list[dict], task_id: str) -> dict | None:
-    for record in reversed(records):
-        if record.get("task_id") == task_id:
-            return record
-    return None
-
-
-def _is_running_state_stale(record: dict, stale_after_seconds: int) -> bool:
-    updated_at = record.get("updated_at") or record.get("received_at")
-    if not isinstance(updated_at, str):
-        return False
-    try:
-        dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - dt).total_seconds() > stale_after_seconds
-
-
-def claim_task_execution(
-    date_str: str,
-    task_id: str,
-    task_ref: str,
-    command: str,
-    received_at: str,
-    stale_after_seconds: int,
-    *,
-    base_dir: Path | None = None,
-) -> tuple[str, dict | None]:
-    """Atomically decide whether a task should execute, replay, or be ignored."""
-    path = task_state_path(date_str, base_dir)
-    now = datetime.now(timezone.utc).isoformat()
-    with _TASK_STATE_LOCK:
-        latest = _latest_task_state(_load_task_state_records(path), task_id)
-        if latest is not None:
-            status = latest.get("status")
-            if status == "completed":
-                return "completed", latest
-            if status == "running" and not _is_running_state_stale(latest, stale_after_seconds):
-                return "running", latest
-            if status == "running":
-                logging.warning(f"Task {task_ref} has stale running state; allowing re-execution")
-
-        record = {
-            "task_id": task_id,
-            "task_ref": task_ref,
-            "status": "running",
-            "received_at": received_at,
-            "updated_at": now,
-            "command": command,
-            "execution_deadline": (
-                datetime.now(timezone.utc) + timedelta(seconds=stale_after_seconds)
-            ).isoformat(),
-        }
-        _append_jsonl(path, record)
-        return "claimed", record
-
-
-def mark_task_completed(
-    date_str: str,
-    task_id: str,
-    task_ref: str,
-    command: str,
-    received_at: str,
-    report: dict,
-    task_log_file: Path | None,
-    *,
-    base_dir: Path | None = None,
-) -> None:
-    record = {
-        "task_id": task_id,
-        "task_ref": task_ref,
-        "status": "completed",
-        "received_at": received_at,
-        "completed_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "command": command,
-        "report": report,
-        "task_log_file": str(task_log_file) if task_log_file is not None else "",
-        # Keep legacy key for older readers.
-        "output_file": str(task_log_file) if task_log_file is not None else "",
-    }
-    with _TASK_STATE_LOCK:
-        _append_jsonl(task_state_path(date_str, base_dir), record)
 
 
 def pending_reports_path(base_dir: Path | None = None) -> Path:
@@ -900,6 +944,7 @@ def handle_dispatch_connection(
     timeout_sec: int,
 ) -> None:
     logging.debug("Dispatch connection accepted")
+    claim: ClaimResult | None = None
     try:
         conn.settimeout(timeout_sec + RUNNING_STALE_GRACE_SECONDS)
         try:
@@ -1009,7 +1054,7 @@ def handle_dispatch_connection(
         received_at = datetime.now().astimezone().isoformat(timespec="seconds")
         extras = task_extra(task_id)
         logging.info("Received — %s", prompt, extra=extras)
-        claim_status, previous_state = claim_task_execution(
+        claim = claim_task_execution(
             date_str,
             task_id,
             full_ref,
@@ -1017,7 +1062,8 @@ def handle_dispatch_connection(
             received_at,
             timeout_sec + RUNNING_STALE_GRACE_SECONDS,
         )
-        if claim_status == "completed":
+        previous_state = claim.record
+        if claim.status == "completed":
             previous_report = previous_state.get("report") if isinstance(previous_state, dict) else None
             if not isinstance(previous_report, dict):
                 logging.warning(
@@ -1052,7 +1098,7 @@ def handle_dispatch_connection(
                 except OSError as e:
                     logging.error("Failed to queue replay report: %s", e, extra=extras)
             return
-        if claim_status == "running":
+        if claim.status == "running":
             logging.info("Duplicate already running; ignoring", extra=extras)
             send_dispatch_response(
                 conn,
@@ -1060,7 +1106,7 @@ def handle_dispatch_connection(
                     "ok": True,
                     "status": "running",
                     "task_ref": full_ref,
-                    "execution_deadline": str(previous_state.get("execution_deadline") or ""),
+                    "execution_deadline": str(previous_state.get("execution_deadline") or "") if isinstance(previous_state, dict) else "",
                 },
             )
             return
@@ -1079,6 +1125,8 @@ def handle_dispatch_connection(
             },
         ):
             logging.error("Claimed but acknowledgment failed; not executing", extra=extras)
+            if claim.handle is not None:
+                claim.handle.abort()
             return
 
         argv = ["opencode", "run", "--auto", prompt]
@@ -1104,34 +1152,36 @@ def handle_dispatch_connection(
         if msg is not None:
             report["message"] = msg
 
-        task_log_file: Path | None = None
         try:
-            task_log_file = append_task_execution_log(
-                task_id=task_id,
-                task_ref=full_ref,
-                date_str=date_str,
-                received_at=received_at,
-                command=prompt,
-                status=status,
-                exit_code=exit_code,
-                stdout_text=out,
-                stderr_text=err_out,
-                message=msg,
-                argv=argv,
-                task=prompt,
-            )
+            if claim.handle is not None:
+                claim.handle.record["argv"] = list(argv)
+                claim.handle.record["task"] = prompt
+                claim.handle.complete(
+                    report,
+                    status=status,
+                    exit_code=exit_code,
+                    stdout_text=out,
+                    stderr_text=err_out,
+                    message=msg,
+                )
+            else:
+                append_task_execution_log(
+                    task_id=task_id,
+                    task_ref=full_ref,
+                    date_str=date_str,
+                    received_at=received_at,
+                    command=prompt,
+                    status=status,
+                    exit_code=exit_code,
+                    stdout_text=out,
+                    stderr_text=err_out,
+                    message=msg,
+                    argv=argv,
+                    task=prompt,
+                )
         except OSError as e:
             logging.error("Failed to write task log: %s", e, extra=extras)
 
-        mark_task_completed(
-            date_str,
-            task_id,
-            full_ref,
-            prompt,
-            received_at,
-            report,
-            task_log_file,
-        )
         logging.info(
             "Finished — %s — exit_code=%s",
             status,
@@ -1153,6 +1203,8 @@ def handle_dispatch_connection(
             return
         logging.debug("Reported successfully to commander", extra=extras)
     finally:
+        if claim is not None and claim.handle is not None:
+            claim.handle.close()
         conn.close()
 
 

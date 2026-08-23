@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Protocol
+
+from common import existing_task_id, new_task_id
 
 try:
     from logging_setup import log_extra
@@ -131,7 +132,7 @@ class TaskScanService:
                         role_key,
                         pointer,
                         {"is_load": True},
-                        only_if_no_task_id=True,
+                        only_if_unissued=True,
                     )
                     pointer += 1
                     role_pointers[role_key] = pointer
@@ -166,7 +167,7 @@ class TaskScanService:
                         role_key,
                         pointer,
                         fields,
-                        only_if_no_task_id=True,
+                        only_if_unissued=True,
                     )
                     task.update(fields)
                     pointer = self._move_pointer_after_success(role_key, tasks, pointer, role_pointers)
@@ -183,7 +184,7 @@ class TaskScanService:
                         role_key,
                         pointer,
                         {"is_load": True},
-                        only_if_no_task_id=True,
+                        only_if_unissued=True,
                     )
                     latest = self.repository.get_task_by_index(date_str, role_key, pointer)
                     if latest is not None:
@@ -192,7 +193,15 @@ class TaskScanService:
                         pointer = self._move_pointer_after_success(role_key, tasks, pointer, role_pointers)
                         continue
 
-                task_id = uuid.uuid4().hex[:16]
+                task_id = existing_task_id(task.get("task_id")) or new_task_id()
+                if task.get("task_id") != task_id:
+                    self.repository.update_task_fields_by_index(
+                        date_str,
+                        role_key,
+                        pointer,
+                        {"task_id": task_id},
+                    )
+                    task["task_id"] = task_id
                 extras = log_extra(role_key, pointer)
                 logging.info("Running — %s", task_id, extra=extras)
                 outcome = self.dispatch_task(
@@ -235,7 +244,7 @@ class TaskScanService:
                     role_key,
                     pointer,
                     update_fields,
-                    only_if_no_task_id=True,
+                    only_if_unissued=True,
                 )
                 is_busy = bool(getattr(outcome, "busy", False))
                 if self.failure_governor is not None and not is_busy:

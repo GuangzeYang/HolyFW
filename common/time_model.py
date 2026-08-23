@@ -18,7 +18,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Sequence
 
-from common import _in_work_window, _next_work_minute, minute_to_hhmm, parse_hhmm_to_minute
+from common import _in_work_window, _next_work_minute, assign_task_id, minute_to_hhmm, parse_hhmm_to_minute
 
 DAY_START_MINUTE = 9 * 60
 DAY_END_MINUTE = 18 * 60
@@ -263,6 +263,7 @@ def zip_tasks_with_schedule(
         row["time"] = time_text
         if "is_load" not in row:
             row["is_load"] = False
+        assign_task_id(row)
         zipped.append(row)
     return zipped
 

@@ -73,7 +73,7 @@ class SoldierRuntimeTests(unittest.TestCase):
         self.assertIsInstance(dated_handlers[0], logging.FileHandler)
         self.assertNotIsInstance(dated_handlers[0], logging.handlers.TimedRotatingFileHandler)
 
-    def test_append_task_execution_log_writes_unified_jsonl(self) -> None:
+    def test_append_task_execution_log_writes_task_id_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             path = soldier.append_task_execution_log(
@@ -88,25 +88,26 @@ class SoldierRuntimeTests(unittest.TestCase):
                 stderr_text="",
                 base_dir=base,
             )
-            self.assertEqual(path, base / "logs" / "tasks_2026-04-29.jsonl")
+            self.assertEqual(path, base / "runtime" / "tasks" / "c01b883dfefd4c85.json")
             payload = json.loads(path.read_text(encoding="utf-8").strip())
             self.assertEqual(payload["received_at"], "2026-04-29T09:08:09+08:00")
             self.assertEqual(payload["command"], "Check email")
             self.assertEqual(payload["task"], "Check email")
-            self.assertEqual(payload["status"], "successed")
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["result_status"], "successed")
             self.assertEqual(payload["exit_code"], 0)
             self.assertEqual(payload["stdout"], "done")
             self.assertEqual(payload["task_id"], "c01b883dfefd4c85")
 
-    def test_pending_and_task_state_live_under_runtime(self) -> None:
+    def test_pending_and_task_records_live_under_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             pending = soldier.pending_reports_path(base)
             failed = soldier.failed_reports_path(base)
-            state = soldier.task_state_path("2026-04-29", base)
+            record = soldier.task_record_path("c01b883dfefd4c85", base)
             self.assertEqual(pending, base / "runtime" / "pending_reports.jsonl")
             self.assertEqual(failed, base / "runtime" / "failed_reports.jsonl")
-            self.assertEqual(state, base / "runtime" / "task_state_04-29.jsonl")
+            self.assertEqual(record, base / "runtime" / "tasks" / "c01b883dfefd4c85.json")
 
     def test_reattach_replaces_only_soldier_dated_file_handler(self) -> None:
         td = tempfile.mkdtemp()
@@ -145,10 +146,9 @@ class SoldierRuntimeTests(unittest.TestCase):
 
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
-            mock.patch("soldier.soldier.claim_task_execution", return_value=("claimed", {})),
+            mock.patch("soldier.soldier.claim_task_execution", return_value=soldier.ClaimResult("claimed", {})),
             mock.patch("soldier.soldier.execute_command", return_value=("ok", "", 0, "successed", None)),
-            mock.patch("soldier.soldier.append_task_execution_log", return_value=Path("logs/tasks_2026-04-29.jsonl")),
-            mock.patch("soldier.soldier.mark_task_completed"),
+            mock.patch("soldier.soldier.append_task_execution_log", return_value=Path("runtime/tasks/c01b883dfefd4c85.json")),
             mock.patch("soldier.soldier.send_report", return_value=({"ok": True}, None)),
         ):
             soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)
@@ -169,10 +169,9 @@ class SoldierRuntimeTests(unittest.TestCase):
 
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
-            mock.patch("soldier.soldier.claim_task_execution", return_value=("claimed", {})),
+            mock.patch("soldier.soldier.claim_task_execution", return_value=soldier.ClaimResult("claimed", {})),
             mock.patch("soldier.soldier.execute_command", return_value=("ok", "", 0, "successed", None)),
-            mock.patch("soldier.soldier.append_task_execution_log", return_value=Path("logs/tasks_2026-04-29.jsonl")),
-            mock.patch("soldier.soldier.mark_task_completed"),
+            mock.patch("soldier.soldier.append_task_execution_log", return_value=Path("runtime/tasks/c01b883dfefd4c85.json")),
             mock.patch("soldier.soldier.send_report", return_value=(None, "boom")),
             mock.patch("soldier.soldier.enqueue_pending_report"),
         ):
@@ -223,7 +222,7 @@ class SoldierRuntimeTests(unittest.TestCase):
     def test_claim_task_execution_blocks_running_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
-            first, _ = soldier.claim_task_execution(
+            first = soldier.claim_task_execution(
                 "2026-04-29",
                 "c01b883dfefd4c85",
                 "2026-04-29_accountancy_c01b883dfefd4c85",
@@ -232,34 +231,46 @@ class SoldierRuntimeTests(unittest.TestCase):
                 999,
                 base_dir=base_dir,
             )
-            second, state = soldier.claim_task_execution(
-                "2026-04-29",
-                "c01b883dfefd4c85",
-                "2026-04-29_accountancy_c01b883dfefd4c85",
-                "echo ok",
-                "2026-04-29T01:00:01+00:00",
-                999,
-                base_dir=base_dir,
-            )
+            try:
+                second = soldier.claim_task_execution(
+                    "2026-04-29",
+                    "c01b883dfefd4c85",
+                    "2026-04-29_accountancy_c01b883dfefd4c85",
+                    "echo ok",
+                    "2026-04-29T01:00:01+00:00",
+                    999,
+                    base_dir=base_dir,
+                )
+                self.assertEqual(first.status, "claimed")
+                self.assertIsNotNone(first.handle)
+                self.assertEqual(second.status, "running")
+                self.assertEqual((second.record or {})["status"], "running")
+                payload = json.loads(soldier.task_record_path("c01b883dfefd4c85", base_dir).read_text(encoding="utf-8"))
+                self.assertEqual(payload["task_id"], "c01b883dfefd4c85")
+                self.assertEqual(payload["status"], "running")
+            finally:
+                if first.handle is not None:
+                    first.handle.close()
 
-            self.assertEqual(first, "claimed")
-            self.assertEqual(second, "running")
-            self.assertEqual(state["status"], "running")
-
-    def test_claim_task_execution_allows_stale_running(self) -> None:
+    def test_claim_task_execution_reclaims_orphan_running_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
-            path = soldier.task_state_path("2026-04-29", base_dir)
-            stale = {
-                "task_id": "c01b883dfefd4c85",
-                "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
-                "status": "running",
-                "updated_at": "2000-01-01T00:00:00+00:00",
-                "command": "echo old",
-            }
-            soldier._append_jsonl(path, stale)
+            path = soldier.task_record_path("c01b883dfefd4c85", base_dir)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "task_id": "c01b883dfefd4c85",
+                        "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
+                        "status": "running",
+                        "updated_at": "2000-01-01T00:00:00+00:00",
+                        "command": "echo old",
+                    }
+                ),
+                encoding="utf-8",
+            )
 
-            status, _ = soldier.claim_task_execution(
+            claimed = soldier.claim_task_execution(
                 "2026-04-29",
                 "c01b883dfefd4c85",
                 "2026-04-29_accountancy_c01b883dfefd4c85",
@@ -268,8 +279,51 @@ class SoldierRuntimeTests(unittest.TestCase):
                 1,
                 base_dir=base_dir,
             )
+            try:
+                self.assertEqual(claimed.status, "claimed")
+                self.assertIsNotNone(claimed.handle)
+            finally:
+                if claimed.handle is not None:
+                    claimed.handle.close()
 
-            self.assertEqual(status, "claimed")
+    def test_task_record_complete_writes_result_then_releases_handle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            claimed = soldier.claim_task_execution(
+                "2026-04-29",
+                "c01b883dfefd4c85",
+                "2026-04-29_accountancy_c01b883dfefd4c85",
+                "echo ok",
+                "2026-04-29T01:00:00+00:00",
+                999,
+                base_dir=base_dir,
+            )
+            assert claimed.handle is not None
+            claimed.handle.complete(
+                {"task_ref": "2026-04-29_accountancy_c01b883dfefd4c85", "status": "successed", "exit_code": 0},
+                status="successed",
+                exit_code=0,
+                stdout_text="done",
+                stderr_text="",
+                message=None,
+            )
+            claimed.handle.close()
+            path = soldier.task_record_path("c01b883dfefd4c85", base_dir)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["exit_code"], 0)
+            self.assertEqual(payload["stdout"], "done")
+            replay = soldier.claim_task_execution(
+                "2026-04-29",
+                "c01b883dfefd4c85",
+                "2026-04-29_accountancy_c01b883dfefd4c85",
+                "echo ok",
+                "2026-04-29T01:00:01+00:00",
+                999,
+                base_dir=base_dir,
+            )
+            self.assertEqual(replay.status, "completed")
+            self.assertIsNone(replay.handle)
 
     def test_completed_task_replays_report_without_executing(self) -> None:
         conn = FakeDispatchConnection()
@@ -288,7 +342,7 @@ class SoldierRuntimeTests(unittest.TestCase):
 
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
-            mock.patch("soldier.soldier.claim_task_execution", return_value=("completed", {"report": report})),
+            mock.patch("soldier.soldier.claim_task_execution", return_value=soldier.ClaimResult("completed", {"report": report})),
             mock.patch("soldier.soldier.execute_command") as execute_mock,
             mock.patch("soldier.soldier.send_report", return_value=({"ok": True}, None)) as send_mock,
         ):
@@ -308,7 +362,7 @@ class SoldierRuntimeTests(unittest.TestCase):
 
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
-            mock.patch("soldier.soldier.claim_task_execution", return_value=("running", {"status": "running"})),
+            mock.patch("soldier.soldier.claim_task_execution", return_value=soldier.ClaimResult("running", {"status": "running"})),
             mock.patch("soldier.soldier.execute_command") as execute_mock,
             mock.patch("soldier.soldier.send_report") as send_mock,
         ):
@@ -335,7 +389,7 @@ class SoldierRuntimeTests(unittest.TestCase):
 
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
-            mock.patch("soldier.soldier.claim_task_execution", return_value=("completed", {"report": report})),
+            mock.patch("soldier.soldier.claim_task_execution", return_value=soldier.ClaimResult("completed", {"report": report})),
             mock.patch("soldier.soldier.send_report", return_value=(None, "down")),
             mock.patch("soldier.soldier.enqueue_pending_report") as enqueue_mock,
         ):
@@ -356,14 +410,13 @@ class SoldierRuntimeTests(unittest.TestCase):
 
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
-            mock.patch("soldier.soldier.claim_task_execution", return_value=("claimed", {})),
+            mock.patch("soldier.soldier.claim_task_execution", return_value=soldier.ClaimResult("claimed", {})),
             mock.patch("soldier.soldier.execute_command", execute_mock),
             mock.patch("soldier.soldier.resolve_opencode_executable", return_value="opencode"),
             mock.patch(
                 "soldier.soldier.append_task_execution_log",
-                return_value=Path("logs/tasks_2026-04-29.jsonl"),
+                return_value=Path("runtime/tasks/c01b883dfefd4c85.json"),
             ),
-            mock.patch("soldier.soldier.mark_task_completed"),
             mock.patch("soldier.soldier.send_report", return_value=({"ok": True}, None)),
         ):
             soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)

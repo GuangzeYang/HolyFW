@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """TCP commander: receive task completion reports and update per-day JSON task files.
 
-task_id: only hyphen-free hex from UUID (uuid.uuid4().hex), length 8..32.
+task_id is assigned when the daily file is generated (uuid.uuid4().hex, 16 chars).
+Reports are matched by task_id even if the task_ref date is wrong.
 task_ref first segment: YYYY-MM-DD or MM-DD (latter expands with current year).
 """
 

@@ -126,7 +126,7 @@ Daily task files are stored at `commander/role_task/tasks_MM-DD.json` and organi
 - `time`
 - `is_load`
 - `task`
-- `task_id`
+- `task_id` (assigned when the daily file is generated, not at dispatch)
 - `status`
 - `issued_at`
 - `expiry_time`
@@ -136,7 +136,7 @@ Daily task files are stored at `commander/role_task/tasks_MM-DD.json` and organi
 - `stdout`
 - `stderr`
 
-Status transitions follow `planned -> waiting -> successed/failed`.
+Status transitions follow `planned -> waiting -> successed/failed`. `task_id` is unique across days; commander looks up reports by that ID if the date in `task_ref` does not match the task file.
 
 ### Role Source
 
@@ -304,6 +304,8 @@ attacker
 ```
 
 `attacker` samples the day's time nodes, writes `attacker/role_task/tasks_MM-DD.json`, requests up to five task strings from the model whenever no filled task is waiting, and executes due or overdue tasks serially with local `opencode run --auto`. Inspect the list with `attacker show`.
+
+`base_time` (0–23) shifts the generated 09:00 workday the same way commander does. Set it in `attacker/config.json` or pass `--base-time` (`attacker --base-time 21`). Times that wrap past midnight stay on the next calendar day and are not treated as already due.
 
 ### 4. Common Utility Commands
 
@@ -547,11 +549,11 @@ Format: `time - LEVEL - role[index] - message`. Production (`INFO`) records task
 All soldier observability logs live under `soldier/logs/`:
 
 - `soldier_YYYY-MM-DD.log` — human-readable execution log (`time - LEVEL - task_id - message`), including receive time/content and finish status
-- `tasks_YYYY-MM-DD.jsonl` — one JSON record per task with `received_at`, `command`, `status`, `exit_code`, `stdout`, and `stderr`
 
-Operational state (not task logs) lives under `soldier/runtime/`:
+Each dispatched task is stored under `soldier/runtime/tasks/<task_id>.json`. Soldier creates that file as soon as the task is received, keeps the file handle open for the whole run, writes the result into the same file, then releases the handle. Query by `task_id` even when the soldier calendar day does not match commander.
 
-- `task_state_MM-DD.jsonl` — idempotent execution state
+Operational state (not the per-task record) also lives under `soldier/runtime/`:
+
 - `pending_reports.jsonl` — reports waiting to retry to commander
 - `failed_reports.jsonl` — reports that still failed after three retries
 

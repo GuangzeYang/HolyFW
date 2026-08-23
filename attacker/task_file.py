@@ -8,6 +8,7 @@ from typing import Any
 import json
 
 from common import parse_hhmm_to_minute, save_json_atomic, strip_opencode_run_prefix
+from commander.schedule_shift import SCHEDULE_SHIFT_KEY
 
 TASK_FIELDS = ("task", "planned_time", "started_at", "completed_at")
 
@@ -49,25 +50,42 @@ def normalize_task_item(raw: Any) -> dict[str, str]:
     }
 
 
-def load_attacker_tasks(path: Path) -> list[dict[str, str]]:
+def load_attacker_payload(path: Path) -> tuple[list[dict[str, str]], dict[str, Any] | None]:
     if not path.exists():
-        return []
+        return [], None
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid attacker task JSON in {path}: {exc}") from exc
+    stamp: dict[str, Any] | None = None
     if isinstance(parsed, list):
         rows = parsed
     elif isinstance(parsed, dict) and isinstance(parsed.get("tasks"), list):
         rows = parsed["tasks"]
+        raw_stamp = parsed.get(SCHEDULE_SHIFT_KEY)
+        if isinstance(raw_stamp, dict):
+            stamp = dict(raw_stamp)
     else:
-        raise ValueError(f"Attacker task file must be a JSON list: {path}")
-    return [normalize_task_item(item) for item in rows]
+        raise ValueError(f"Attacker task file must be a JSON list or {{\"tasks\": [...]}}: {path}")
+    return [normalize_task_item(item) for item in rows], stamp
 
 
-def save_attacker_tasks(path: Path, tasks: list[dict[str, str]]) -> None:
+def load_attacker_tasks(path: Path) -> list[dict[str, str]]:
+    tasks, _stamp = load_attacker_payload(path)
+    return tasks
+
+
+def save_attacker_tasks(
+    path: Path,
+    tasks: list[dict[str, str]],
+    *,
+    shift: dict[str, Any] | None = None,
+) -> None:
     normalized = [normalize_task_item(item) for item in tasks]
-    save_json_atomic(path, normalized)
+    if shift:
+        save_json_atomic(path, {"tasks": normalized, SCHEDULE_SHIFT_KEY: dict(shift)})
+    else:
+        save_json_atomic(path, normalized)
 
 
 def task_has_content(item: dict[str, str]) -> bool:

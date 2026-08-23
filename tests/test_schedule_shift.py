@@ -100,6 +100,21 @@ class ApplyBaseTimeShiftTests(unittest.TestCase):
         out, _ = apply_base_time_shift(data, 21)
         self.assertEqual(out["note"], "keep")
 
+    def test_time_key_planned_time_for_attacker_lists(self) -> None:
+        data = {
+            "tasks": [
+                {"task": "", "planned_time": "09:06", "started_at": "", "completed_at": ""},
+                {"task": "", "planned_time": "13:03", "started_at": "", "completed_at": ""},
+            ]
+        }
+        out, changed = apply_base_time_shift(
+            data, 21, file_day="2026-08-21", time_key="planned_time"
+        )
+        self.assertTrue(changed)
+        self.assertEqual(out["tasks"][0]["planned_time"], "21:06")
+        self.assertEqual(out["tasks"][1]["planned_time"], "01:03")
+        self.assertEqual(clock_wrap_day_offset(out["tasks"], 1, time_key="planned_time"), 1)
+
 
 class ClockWrapTests(unittest.TestCase):
     def test_offset_increments_when_clock_goes_backwards(self) -> None:

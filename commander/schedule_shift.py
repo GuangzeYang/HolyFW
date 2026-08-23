@@ -77,8 +77,9 @@ def apply_base_time_shift(
     *,
     origin_hour: int = ORIGIN_HOUR,
     file_day: str | None = None,
+    time_key: str = "time",
 ) -> tuple[dict[str, Any], bool]:
-    """Rewrite role task ``time`` fields. Returns (payload, changed)."""
+    """Rewrite role task time fields. Returns (payload, changed)."""
     requested = validate_base_time(base_time)
     origin = validate_base_time(origin_hour, origin="origin_hour")
     current = stamp_base_time(data, origin)
@@ -111,10 +112,10 @@ def apply_base_time_shift(
                 rows.append(item)
                 continue
             row = dict(item)
-            raw = row.get("time")
+            raw = row.get(time_key)
             shifted = shift_hhmm(str(raw or ""), hour_delta)
             if shifted is not None:
-                row["time"] = shifted
+                row[time_key] = shifted
             rows.append(row)
         out[key] = rows
 
@@ -125,7 +126,7 @@ def apply_base_time_shift(
     return out, True
 
 
-def clock_wrap_day_offset(tasks: list[Any], index: int) -> int:
+def clock_wrap_day_offset(tasks: list[Any], index: int, *, time_key: str = "time") -> int:
     """Count HH:MM backward jumps in ``tasks[0..index]`` (array order)."""
     offset = 0
     previous: int | None = None
@@ -134,7 +135,7 @@ def clock_wrap_day_offset(tasks: list[Any], index: int) -> int:
         item = tasks[cursor]
         if not isinstance(item, dict):
             continue
-        minute = parse_hhmm_to_minute(str(item.get("time") or ""))
+        minute = parse_hhmm_to_minute(str(item.get(time_key) or ""))
         if minute is None:
             continue
         if previous is not None and minute < previous:
@@ -156,7 +157,12 @@ def task_datetime_on_file_day(
     return datetime(day.year, day.month, day.day, hour, minute)
 
 
-def shifted_window_end(data: dict[str, Any], file_day: date) -> datetime | None:
+def shifted_window_end(
+    data: dict[str, Any],
+    file_day: date,
+    *,
+    time_key: str = "time",
+) -> datetime | None:
     """Latest task datetime on the shifted timeline, or None when empty."""
     latest: datetime | None = None
     for key, tasks in data.items():
@@ -166,9 +172,9 @@ def shifted_window_end(data: dict[str, Any], file_day: date) -> datetime | None:
             if not isinstance(item, dict):
                 continue
             parsed = task_datetime_on_file_day(
-                str(item.get("time") or ""),
+                str(item.get(time_key) or ""),
                 file_day,
-                clock_wrap_day_offset(tasks, index),
+                clock_wrap_day_offset(tasks, index, time_key=time_key),
             )
             if parsed is None:
                 continue
@@ -181,9 +187,12 @@ def shifted_window_still_active(
     data: dict[str, Any],
     file_day: date,
     now: datetime,
+    *,
+    time_key: str = "time",
 ) -> bool:
-    end = shifted_window_end(data, file_day)
-    return end is not None and now < end
+    end = shifted_window_end(data, file_day, time_key=time_key)
+    naive = now.replace(tzinfo=None) if now.tzinfo is not None else now
+    return end is not None and naive < end
 
 
 def resolve_active_task_day(

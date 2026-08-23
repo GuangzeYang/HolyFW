@@ -12,6 +12,16 @@ from attacker.runtime import load_config, resolve_workspace, run_loop
 from attacker.task_file import load_attacker_tasks, tasks_file_path
 
 
+def _parse_base_time_arg(value: str) -> int:
+    try:
+        hour = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("base_time must be an integer 0..23") from exc
+    if not 0 <= hour <= 23:
+        raise argparse.ArgumentTypeError("base_time must be an integer 0..23")
+    return hour
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="HolyFW attacker: generate a day's time nodes, fill tasks in batches of 5, execute locally.",
@@ -23,21 +33,33 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="attacker config.json path (default: attacker/config.json in the workspace)",
     )
+    parser.add_argument(
+        "--base-time",
+        type=_parse_base_time_arg,
+        default=None,
+        help="Hour (0-23) when the generated 09:00 workday should start. Default from config (9).",
+    )
     sub = parser.add_subparsers(dest="cmd", help="subcommand")
 
     run_p = sub.add_parser("run", help="start the attacker scheduler (default)")
-    run_p.add_argument("--date", default="", help="YYYY-MM-DD used for the task file (default: today)")
+    run_p.add_argument("--date", default="", help="YYYY-MM-DD used for the task file (default: today, or yesterday if that shifted window is still open)")
     run_p.add_argument("--seed", type=int, default=None, help="Override the NHPP seed")
+    run_p.add_argument(
+        "--base-time",
+        type=_parse_base_time_arg,
+        default=argparse.SUPPRESS,
+        help="Hour (0-23) when the generated 09:00 workday should start. Default from config (9).",
+    )
 
     show_p = sub.add_parser("show", help="print today's attacker task JSON")
     show_p.add_argument("--date", default="", help="YYYY-MM-DD (default: today)")
     return parser
 
 
-def _parse_day(raw: str) -> date:
+def _parse_day(raw: str) -> date | None:
     text = (raw or "").strip()
     if not text:
-        return date.today()
+        return None
     return date.fromisoformat(text)
 
 
@@ -48,7 +70,7 @@ def cmd_show(*, config_path: Path | None, day: date) -> int:
     data_dir = Path(data_dir_raw)
     if not data_dir.is_absolute():
         data_dir = workspace / data_dir
-    path = tasks_file_path(data_dir, day)
+    path = tasks_file_path(data_dir, day or date.today())
     if not path.is_file():
         print(f"# no task file: {path}", file=sys.stderr)
         return 1
@@ -67,9 +89,10 @@ def main(argv: list[str] | None = None) -> int:
             config_path=args.config,
             day=day,
             seed=getattr(args, "seed", None),
+            base_time=getattr(args, "base_time", None),
         )
     if args.cmd == "show":
-        return cmd_show(config_path=args.config, day=_parse_day(args.date))
+        return cmd_show(config_path=args.config, day=_parse_day(args.date) or date.today())
     parser.error(f"unknown command {args.cmd}")
     return 2
 

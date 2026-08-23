@@ -97,6 +97,19 @@ class AttackerCliRouteTests(unittest.TestCase):
         kwargs = run.call_args.kwargs
         self.assertEqual(str(kwargs["day"]), "2026-08-23")
 
+    def test_base_time_flag_forwards_to_loop(self) -> None:
+        import attacker.cli as attacker_cli
+
+        with mock.patch("attacker.cli.run_loop", return_value=0) as run:
+            code = attacker_cli.main(["--base-time", "21"])
+        self.assertEqual(code, 0)
+        self.assertEqual(run.call_args.kwargs["base_time"], 21)
+
+        with mock.patch("attacker.cli.run_loop", return_value=0) as run:
+            code = attacker_cli.main(["run", "--base-time", "21"])
+        self.assertEqual(code, 0)
+        self.assertEqual(run.call_args.kwargs["base_time"], 21)
+
 
 class BundledAssetTests(unittest.TestCase):
     def test_repo_skills_and_mcp_are_visible(self) -> None:

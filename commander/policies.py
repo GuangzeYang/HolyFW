@@ -13,14 +13,24 @@ class PendingSelectionPolicy(Protocol):
         ...
 
 
+def task_is_issued(task: dict[str, Any]) -> bool:
+    """Return True when a task has already been dispatched (or finished)."""
+    if not isinstance(task, dict):
+        return False
+    status = task.get("status")
+    if status in ("waiting", "successed", "failed"):
+        return True
+    return bool(task.get("issued_at"))
+
+
 def task_needs_dispatch(task: dict[str, Any]) -> bool:
     """Return True when task still requires dispatch."""
     if not isinstance(task, dict):
         return False
+    if task_is_issued(task):
+        return False
     if not task.get("is_load", False):
         return True
-    if task.get("task_id"):
-        return False
     status = task.get("status")
     return status in (None, "", "planned")
 

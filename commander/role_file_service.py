@@ -21,7 +21,9 @@ from common.agent_request_abc import AgentRequestABC
 from common.deepseek_client import build_deepseek_client
 
 from common import (
+    assign_task_id,
     candidate_task_path,
+    existing_task_id,
     load_task_file,
     normalize_role_tasks,
     role_tasks_are_complete,
@@ -211,11 +213,9 @@ class RoleTaskFileService:
                         if not isinstance(item, dict):
                             continue
                         status_value = item.get("status")
-                        task_id_value = item.get("task_id")
                         issued_value = item.get("issued_at")
                         if (
                             status_value in {"waiting", "successed", "failed"}
-                            or bool(task_id_value)
                             or bool(issued_value)
                             or bool(item.get("is_load", False))
                         ):
@@ -245,10 +245,10 @@ class RoleTaskFileService:
                                 schema_updated = True
                             base_desc = item.get("task") if isinstance(item.get("task"), str) else ""
                             status_value = item.get("status")
-                            task_id_value = item.get("task_id")
+                            issued_value = item.get("issued_at")
                             if (
                                 status_value == "planned"
-                                and not task_id_value
+                                and not issued_value
                                 and bool(item.get("is_load", False))
                             ):
                                 item["is_load"] = False
@@ -259,7 +259,6 @@ class RoleTaskFileService:
                                 "time": "",
                                 "is_load": False,
                                 "task": base_desc,
-                                "task_id": "",
                                 "status": "planned",
                                 "issued_at": "",
                                 "expiry_time": "",
@@ -273,6 +272,9 @@ class RoleTaskFileService:
                                 if key not in item:
                                     item[key] = value
                                     schema_updated = True
+                            if not existing_task_id(item.get("task_id")):
+                                assign_task_id(item)
+                                schema_updated = True
                     if missing_roles:
                         logging.warning(
                             f"Role file {role_file} missing role lists {missing_roles}; auto-filled as empty lists"
