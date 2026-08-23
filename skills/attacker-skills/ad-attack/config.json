@@ -1,11 +1,12 @@
 {
   "python": "python",
   "traffic": {
-    "interface": "Ethernet0",
+    "interface": "Ethernet1",
     "tshark": "tshark"
   },
   "logs": {
     "sysmon_log": "Microsoft-Windows-Sysmon/Operational",
+    "security_log": "Security",
     "wevtutil": "wevtutil"
   },
   "output_dir": "output"

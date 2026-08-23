@@ -124,12 +124,23 @@ def _parse_value(raw: str):
     try:
         return json.loads(raw)
     except ValueError:
+        stripped = raw.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            raise ValueError(
+                "value looks like JSON but is not valid (inner double quotes may "
+                "have been stripped by the shell); re-quote the argument so it "
+                "reaches python intact: " + raw
+            )
         return raw
 
 
 def _require_dict(value, path: str):
     if not isinstance(value, dict):
-        raise TypeError(f"target at '{path}' is not an object")
+        raise TypeError(
+            f"target at '{path}' is not an object (it is a scalar value); "
+            f"scalar fields cannot be marked stale — re-run the producing "
+            f"technique and overwrite with `set` instead"
+        )
 
 
 def cmd_read(args) -> int:
@@ -150,7 +161,11 @@ def cmd_get(args) -> int:
 
 def cmd_set(args) -> int:
     data = _load()
-    value = _parse_value(args.value)
+    try:
+        value = _parse_value(args.value)
+    except ValueError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
     try:
         _set(data, _split_path(args.path), value)
     except (KeyError, TypeError) as exc:
@@ -164,7 +179,11 @@ def cmd_set(args) -> int:
 
 def cmd_add(args) -> int:
     data = _load()
-    value = _parse_value(args.value)
+    try:
+        value = _parse_value(args.value)
+    except ValueError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
     try:
         target = _get(data, _split_path(args.path))
     except (KeyError, IndexError, TypeError) as exc:

@@ -13,6 +13,7 @@ actions MUST NOT be started.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import importlib.util
 import json
 import shutil
@@ -22,6 +23,122 @@ from pathlib import Path
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = SKILL_ROOT / "config.json"
+
+
+def check_admin() -> dict:
+    """Detect whether the current process is elevated (Windows).
+
+    This is a *reference* field only. Elevation does not guarantee log access
+    (and SYSTEM can read the log without being in the Administrators group),
+    so the authoritative gate is `check_log_readable`, which actually reads a
+    record from the configured log.
+    """
+    if sys.platform != "win32":
+        return {"is_admin": None}
+    try:
+        return {"is_admin": bool(ctypes.windll.shell32.IsUserAnAdmin())}
+    except Exception as exc:  # pragma: no cover - defensive
+        return {"is_admin": None, "error": str(exc)}
+
+
+def check_log_readable(log_name: str) -> dict:
+    """Actually read one record from a log to prove it can be exported.
+
+    `wevtutil epl` (used by capture_logs.py stop) requires read access to the
+    log. Group membership (Administrators, SYSTEM, Event Log Readers, Backup
+    Operators, Server Operators) is an unreliable proxy, so probe the real
+    capability with `wevtutil qe`.
+    """
+    rc, out, err = _run(["wevtutil", "qe", log_name, "/c:1", "/rd:true"], timeout=30)
+    combined = (out + "\n" + err).lower()
+    if rc == 0:
+        return {"readable": True, "returncode": rc, "detail": ""}
+    # An empty but accessible log can return non-zero with "no events"; that is
+    # still readable for export purposes.
+    if "no events" in combined or "0 events" in combined:
+        return {"readable": True, "returncode": rc, "detail": "empty log (accessible)"}
+    return {
+        "readable": False,
+        "returncode": rc,
+        "detail": (err or out or "").strip()[:200],
+    }
+
+
+AUDIT_GUIDS = {
+    "logon": "{0CCE9215-69AE-11D9-BED3-505054503030}",
+    "logoff": "{0CCE9216-69AE-11D9-BED3-505054503030}",
+    "account_lockout": "{0CCE9217-69AE-11D9-BED3-505054503030}",
+    "special_logon": "{0CCE921B-69AE-11D9-BED3-505054503030}",
+    "other_logon_logoff": "{0CCE921C-69AE-11D9-BED3-505054503030}",
+    "credential_validation": "{0CCE923F-69AE-11D9-BED3-505054503030}",
+    "kerberos_service_ticket": "{0CCE9240-69AE-11D9-BED3-505054503030}",
+    "kerberos_auth_service": "{0CCE9242-69AE-11D9-BED3-505054503030}",
+}
+
+AUDIT_EXPECTED = {
+    "logon": "成功和失败",
+    "logoff": "成功",
+    "account_lockout": "成功和失败",
+    "special_logon": "成功",
+    "other_logon_logoff": "成功和失败",
+    "credential_validation": "成功和失败",
+    "kerberos_service_ticket": "成功和失败",
+    "kerberos_auth_service": "成功和失败",
+}
+
+AUDIT_EVENT_IDS = {
+    "logon": "4624/4625",
+    "logoff": "4634",
+    "account_lockout": "4740",
+    "special_logon": "4672",
+    "other_logon_logoff": "4648",
+    "credential_validation": "4776",
+    "kerberos_service_ticket": "4769",
+    "kerberos_auth_service": "4768",
+}
+
+
+def check_security_auditing() -> dict:
+    """Report whether the key logon/authentication audit subcategories are on.
+
+    Queries each subcategory by GUID (ASCII — no locale/encoding issues) via
+    `auditpol /get /subcategory:<GUID>`, which needs elevation. The localized
+    state string is matched by its numeric value: "成功和失败"/success+failure
+    is the required state for most; "成功"/success for logoff/special-logon.
+    """
+    state_ok = ("成功和失败", "成功")
+    subcats: dict[str, dict] = {}
+    for key, guid in AUDIT_GUIDS.items():
+        entry = {"guid": guid, "expected": AUDIT_EXPECTED[key], "event_ids": AUDIT_EVENT_IDS[key]}
+        rc, out, err = _run(["auditpol", "/get", "/subcategory:" + guid], timeout=20)
+        text = (out + "\n" + err)
+        if rc != 0:
+            entry["status"] = "unknown"
+            entry["detail"] = (err or out or "").strip()[:160]
+            subcats[key] = entry
+            continue
+        # auditpol prints a single subcategory line: <name>   <state>
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if not lines:
+            entry["status"] = "unknown"
+            entry["detail"] = "no output"
+            subcats[key] = entry
+            continue
+        state = lines[-1].split()[-1] if lines[-1].split() else ""
+        if any(state == s for s in state_ok):
+            entry["status"] = "enabled"
+        else:
+            entry["status"] = "disabled"
+        entry["detail"] = state
+        subcats[key] = entry
+
+    enabled_count = sum(1 for v in subcats.values() if v.get("status") == "enabled")
+    return {
+        "available": True,
+        "enabled_count": enabled_count,
+        "total": len(subcats),
+        "subcategories": subcats,
+    }
 
 REQUIRED_EXECUTABLES = [
     "nmap",
@@ -36,6 +153,7 @@ IMPACKET_BASE_SCRIPTS = [
     "lookupsid",
     "GetNPUsers",
     "GetUserSPNs",
+    "Get-GPPPassword",
     "getTGT",
     "getST",
     "ticketer",
@@ -45,6 +163,10 @@ IMPACKET_BASE_SCRIPTS = [
     "smbexec",
     "atexec",
     "dcomexec",
+    "smbclient",
+    "addcomputer",
+    "rbcd",
+    "smbpasswd",
 ]
 
 
@@ -190,6 +312,7 @@ def main() -> int:
     logs_cfg = config.get("logs", {})
     configured_iface = traffic_cfg.get("interface", "")
     configured_log = logs_cfg.get("sysmon_log", "Microsoft-Windows-Sysmon/Operational")
+    configured_security_log = logs_cfg.get("security_log") or None
     configured_python = (config.get("python") or "python").strip()
 
     executables = check_executables()
@@ -229,7 +352,7 @@ def main() -> int:
     if configured_python and configured_python.lower() != sys.executable.lower():
         configured_runnable = check_impacket_runnable(configured_python)
         if not configured_runnable["ran"]:
-            warnings.append(
+            errors.append(
                 f"configured python '{configured_python}' cannot run impacket "
                 f"(returncode={configured_runnable['returncode']})"
             )
@@ -244,20 +367,57 @@ def main() -> int:
         if configured_iface:
             matched = any(configured_iface in iface for iface in tshark_interfaces)
             if not matched:
-                warnings.append(
+                errors.append(
                     f"configured traffic interface '{configured_iface}' not found in tshark -D output"
                 )
         if not tshark_interfaces:
-            warnings.append("tshark reported no capture interfaces")
+            errors.append("tshark reported no capture interfaces")
 
     if not sysmon["logs_found"]:
         errors.append("no Sysmon event log found via wevtutil el")
     elif configured_log not in sysmon["logs_found"]:
-        warnings.append(
+        errors.append(
             f"configured sysmon log '{configured_log}' not found; found: {sysmon['logs_found']}"
         )
     if not sysmon["service_running"]:
-        warnings.append("Sysmon service is not running (logs may still be present)")
+        errors.append("Sysmon service is not running (logs may still be present)")
+
+    admin = check_admin()
+
+    # Per-channel readability for every channel capture_logs.py will export.
+    channels = [configured_log]
+    if configured_security_log and configured_security_log not in channels:
+        channels.append(configured_security_log)
+    channels_readable: dict[str, dict] = {}
+    for ch in channels:
+        channels_readable[ch] = check_log_readable(ch)
+    all_readable = all(cr["readable"] for cr in channels_readable.values())
+    if not all_readable:
+        bad = [ch for ch, cr in channels_readable.items() if not cr["readable"]]
+        errors.append(
+            f"not all capture log channels are readable: {bad}; "
+            f"`wevtutil epl` export (capture_logs.py stop) will fail — run the "
+            f"agent elevated or as a log-reader"
+        )
+
+    # Logon / authentication audit policy status (informational; not a gate).
+    auditing = check_security_auditing()
+    if auditing.get("available"):
+        disabled = [
+            k for k, v in auditing["subcategories"].items()
+            if v.get("status") == "disabled"
+        ]
+        if disabled:
+            warnings.append(
+                "audit subcategories not fully enabled: "
+                + ", ".join(f"{k} (produces {AUDIT_EVENT_IDS[k]})" for k in disabled)
+                + " — enable them with auditpol to capture logon/Kerberos events"
+            )
+    else:
+        warnings.append(
+            "could not read audit policy (auditpol needs elevation); logon/Kerberos "
+            "audit status unknown"
+        )
 
     report = {
         "ok": not errors,
@@ -269,9 +429,14 @@ def main() -> int:
         "configured_python_runnable": configured_runnable,
         "executables": executables,
         "sysmon": sysmon,
+        "admin": admin,
+        "log_readable": channels_readable[configured_log],
+        "channels_readable": channels_readable,
+        "auditing": auditing,
         "tshark_interfaces": tshark_interfaces,
         "configured_traffic_interface": configured_iface,
         "configured_sysmon_log": configured_log,
+        "configured_security_log": configured_security_log,
         "errors": errors,
         "warnings": warnings,
     }

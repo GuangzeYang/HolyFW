@@ -1,38 +1,168 @@
 {
   "schema_version": 2,
-  "last_updated": "",
-
+  "last_updated": "2026-08-21T14:50:19Z",
   "domain": {
-    "name": "",
-    "netbios": "",
-    "dc_fqdn": "",
-    "dc_ip": "",
-    "dcs": [],
-    "domain_sid": "",
-    "user_count": 0,
+    "name": "ndrtest.local",
+    "netbios": "ndrtest",
+    "dc_fqdn": "i1-dc1-c01.ndrtest.local",
+    "dc_ip": "172.16.24.11",
+    "dcs": [
+      {
+        "fqdn": "i1-dc1-c01.ndrtest.local",
+        "ip": "172.16.24.11",
+        "is_pdc": true
+      },
+      {
+        "fqdn": "i1-dc2-vc11.ndrtest.local",
+        "ip": "172.16.24.21",
+        "is_pdc": false
+      }
+    ],
+    "domain_sid": "S-1-5-21-3362522014-3837673876-23709428",
+    "user_count": 13,
     "computer_count": 0,
-    "usernames": [],
-    "spns": [],
-    "delegation": [],
+    "usernames": [
+      "accountancy",
+      "administrator",
+      "attdemo",
+      "guest",
+      "hr",
+      "krbtgt",
+      "manager",
+      "operator-ftp",
+      "operator-mail",
+      "operator-sql",
+      "operator-web",
+      "programmer",
+      "test01"
+    ],
+    "spns": [
+      {
+        "spn": "ftp/i1-iis1-c08.ndrtest.local",
+        "account": "operator-ftp",
+        "ticket_file": "",
+        "stale": false,
+        "updated_at": ""
+      }
+    ],
+    "delegation": [
+      {
+        "account": "operator-ftp",
+        "type": "constrained",
+        "allowed_spns": [
+          "cifs/i1-dc1-c01.ndrtest.local"
+        ],
+        "stale": false,
+        "updated_at": ""
+      }
+    ],
+    "groups": [],
+    "password_policy": {},
+    "trusts": [],
+    "rbcd": [],
     "updated_at": ""
   },
-
-  "hosts": [],
-
-  "users": [],
-
+  "hosts": [
+    {
+      "ip": "172.16.24.11",
+      "role": "dc",
+      "open_ports": [
+        53,
+        88,
+        135,
+        139,
+        389,
+        445,
+        464,
+        593,
+        636,
+        3268,
+        3269,
+        5985,
+        9389
+      ],
+      "services": [
+        "DNS",
+        "Kerberos",
+        "MS-RPC",
+        "NetBIOS",
+        "LDAP",
+        "SMB",
+        "kpasswd",
+        "LDAPS",
+        "GC",
+        "WSMan",
+        "ADWS"
+      ],
+      "compromised": true,
+      "source": "discovery.host-scan",
+      "os": "Windows Server"
+    },
+    {
+      "ip": "172.16.24.21",
+      "role": "dc",
+      "open_ports": [],
+      "services": [],
+      "compromised": false,
+      "source": "discovery.host-scan"
+    },
+    {
+      "ip": "172.16.24.202",
+      "role": "member",
+      "open_ports": [],
+      "services": [],
+      "compromised": false,
+      "source": "discovery.host-scan"
+    }
+  ],
+  "users": [
+    {
+      "username": "attdemo",
+      "upn": "attdemo@ndrtest.local",
+      "password": "Njupt@241",
+      "source": "credential.brute-user",
+      "stale": false,
+      "updated_at": ""
+    },
+    {
+      "username": "operator-ftp",
+      "upn": "operator-ftp@ndrtest.local",
+      "password": "Njupt@241",
+      "spns": [
+        "ftp/i1-iis1-c08.ndrtest.local"
+      ],
+      "is_service_account": true,
+      "source": "credential.kerberoast",
+      "stale": false,
+      "updated_at": ""
+    }
+  ],
   "wordlists": {
     "usernames": "wordlists/usernames.txt",
-    "passwords": "wordlists/passwords.txt"
+    "passwords": "wordlists/passwords.txt",
+    "combos": "wordlists/combos.txt"
   },
-
+  "campaign": {
+    "machine_account": {
+      "name": "",
+      "password": ""
+    },
+    "tools_dir": "tools",
+    "tools": []
+  },
   "tickets": {
     "tgt": [],
-    "service": [],
+    "service": [
+      {
+        "spn": "cifs/i1-dc1-c01.ndrtest.local",
+        "principal": "administrator",
+        "impersonated_user": "administrator",
+        "ccache_file": "administrator@cifs_i1-dc1-c01.ndrtest.local@NDRTEST.LOCAL.ccache"
+      }
+    ],
     "golden": [],
     "silver": []
   },
-
   "files": [],
   "techniques": {},
   "notes": []

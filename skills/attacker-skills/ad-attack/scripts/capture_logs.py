@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Wrap a single atomic attack action with Sysmon event log capture.
+"""Wrap a single atomic attack action with Windows event log capture.
 
 Usage:
     python capture_logs.py start --label <technique-id>
     python capture_logs.py stop
     python capture_logs.py status
 
-`start` records the current UTC time as the window start. `stop` exports all
-Sysmon events recorded between that start time and now into an .evtx file in
-the configured output directory using `wevtutil epl` with a time-based XPath
-query.
+`start` records the current UTC time as the window start. `stop` exports the
+events recorded between that start time and now into one .evtx file per
+configured channel (Sysmon + Security, see config.json `logs.channels` /
+`logs.security_log`) in the output directory using `wevtutil epl` with a
+time-based XPath query.
 
-The Sysmon log name and output directory are read from config.json.
+The log channels, wevtutil path and output directory are read from config.json.
+A channel that fails to export does not block the others.
 """
 
 from __future__ import annotations
@@ -52,6 +54,47 @@ def sysmon_log() -> str:
     return cfg.get("logs", {}).get("sysmon_log", "Microsoft-Windows-Sysmon/Operational")
 
 
+def security_log() -> str | None:
+    cfg = load_config()
+    return cfg.get("logs", {}).get("security_log") or None
+
+
+def capture_channels() -> list[str]:
+    """Log channels to export per atomic action (Sysmon first, then Security)."""
+    channels = [sysmon_log()]
+    sec = security_log()
+    if sec and sec not in channels:
+        channels.append(sec)
+    return channels
+
+
+def channel_short(log_name: str) -> str:
+    """Short label for a log channel used in output file names."""
+    low = log_name.lower()
+    if "sysmon" in low:
+        return "Sysmon"
+    if low in ("security",) or low.endswith("security"):
+        return "Security"
+    if "kerberos" in low:
+        return "Kerberos"
+    if "ntlm" in low:
+        return "NTLM"
+    if "powershell" in low:
+        return "PowerShell"
+    if "terminalservices" in low or "rdp" in low:
+        return "RDP"
+    if "openssh" in low or low.startswith("openssh"):
+        return "SSH"
+    if "smbserver" in low or "smb" in low:
+        return "SMBServer"
+    if "winrm" in low:
+        return "WinRM"
+    # fall back to a sanitised fragment of the channel name
+    frag = log_name.replace("Microsoft-Windows-", "").split("/")[0]
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in frag)
+    return cleaned or "logs"
+
+
 def wevtutil_path() -> str:
     cfg = load_config()
     configured = cfg.get("logs", {}).get("wevtutil", "wevtutil")
@@ -85,10 +128,12 @@ def cmd_start(args: argparse.Namespace) -> int:
         return 1
 
     label = _safe_label(args.label)
+    channels = capture_channels()
     state = {
         "label": label,
         "started_at": _now_utc_query(),
-        "log": sysmon_log(),
+        "log": channels[0],
+        "channels": channels,
     }
     state_file().write_text(
         json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -101,6 +146,7 @@ def cmd_start(args: argparse.Namespace) -> int:
                 "label": label,
                 "started_at": state["started_at"],
                 "log": state["log"],
+                "channels": channels,
             }
         )
     )
@@ -121,11 +167,10 @@ def cmd_stop(args: argparse.Namespace) -> int:
 
     started_at = state.get("started_at")
     label = state.get("label", "logs")
-    log_name = state.get("log", sysmon_log())
+    channels = state.get("channels") or [state.get("log") or sysmon_log()]
 
     out_dir = output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / f"{label}_{_now_stamp()}.evtx"
 
     query = (
         f"*[System[TimeCreated[@SystemTime>='{started_at}' "
@@ -133,48 +178,48 @@ def cmd_stop(args: argparse.Namespace) -> int:
     )
 
     wevtutil = wevtutil_path()
-    wevtutil_args = [wevtutil, "epl", log_name, str(out_file), f"/q:{query}"]
-    try:
-        proc = subprocess.run(
-            wevtutil_args, capture_output=True, text=True, timeout=120
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        print(json.dumps({"ok": False, "error": f"wevtutil failed: {exc}"}))
-        return 1
-
-    if proc.returncode != 0:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": (
-                        proc.stderr or proc.stdout or "wevtutil export failed"
-                    ).strip(),
-                }
+    files: list[dict] = []
+    errors: list[str] = []
+    for log_name in channels:
+        short = channel_short(log_name)
+        out_file = out_dir / f"{label}_{short}_{_now_stamp()}.evtx"
+        wevtutil_args = [wevtutil, "epl", log_name, str(out_file), f"/q:{query}"]
+        try:
+            proc = subprocess.run(
+                wevtutil_args, capture_output=True, text=True, timeout=120
             )
-        )
-        return 1
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            errors.append(f"{log_name}: wevtutil failed: {exc}")
+            continue
+        if proc.returncode != 0:
+            errors.append(
+                f"{log_name}: {(proc.stderr or proc.stdout or 'export failed').strip()}"
+            )
+            continue
+        files.append({"log": log_name, "file": str(out_file)})
 
     try:
         sf.unlink()
     except OSError:
         pass
 
+    ok = bool(files) and not errors
     print(
         json.dumps(
             {
-                "ok": True,
+                "ok": ok,
                 "label": label,
-                "file": str(out_file),
-                "log": log_name,
+                "files": files,
+                "channels": channels,
                 "started_at": started_at,
                 "stopped_at": _now_utc_query(),
+                "errors": errors,
             },
             ensure_ascii=False,
             indent=2,
         )
     )
-    return 0
+    return 0 if ok else 1
 
 
 def cmd_status(args: argparse.Namespace) -> int:
