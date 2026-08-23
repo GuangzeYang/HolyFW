@@ -20,15 +20,16 @@ from commander.victim_campaign import (
 
 
 class DailyGenerationRoleTests(unittest.TestCase):
-    def test_victim_is_excluded_from_daily_generation_but_kept_in_all_roles(self) -> None:
+    def test_victim_and_attacker_are_excluded_from_daily_generation_but_kept_in_all_roles(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ini = Path(tmp) / "commander.ini"
             ini.write_text(
                 "[hr]\nhost = 127.0.0.1\nport = 38472\n\n"
-                "[victim]\nhost = 127.0.0.1\nport = 38473\n",
+                "[victim]\nhost = 127.0.0.1\nport = 38473\n\n"
+                "[attacker]\nhost = 127.0.0.1\nport = 38474\n",
                 encoding="utf-8",
             )
-            self.assertEqual(load_all_roles(ini), ("hr", "victim"))
+            self.assertEqual(load_all_roles(ini), ("hr", "victim", "attacker"))
             self.assertEqual(load_daily_generation_roles(ini), ("hr",))
 
 

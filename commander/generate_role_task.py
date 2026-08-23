@@ -11,13 +11,13 @@ from datetime import date
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from common.deepseek_client import build_deepseek_client
 try:
     from target_config import load_daily_generation_roles
 except ImportError:
     from commander.target_config import load_daily_generation_roles
 
 try:
-    from deepseek_client import build_deepseek_client
     from role_task_generation import generate_role_tasks
     from runtime_config import (
         get_generator_config,
@@ -27,7 +27,6 @@ try:
         resolve_config_relative_path,
     )
 except ImportError:
-    from commander.deepseek_client import build_deepseek_client
     from commander.role_task_generation import generate_role_tasks
     from commander.runtime_config import (
         get_generator_config,
@@ -101,18 +100,11 @@ def main(argv: list[str] | None = None) -> int:
             )
             if result.success:
                 if args.statistic:
-                    try:
-                        from time_model import (
-                            _statistic_output_dir,
-                            format_statistic_report,
-                            write_role_schedule_statistics_from_tasks,
-                        )
-                    except ImportError:
-                        from commander.time_model import (
-                            _statistic_output_dir,
-                            format_statistic_report,
-                            write_role_schedule_statistics_from_tasks,
-                        )
+                    from common.time_model import (
+                        _statistic_output_dir,
+                        format_statistic_report,
+                        write_role_schedule_statistics_from_tasks,
+                    )
                     payload = write_role_schedule_statistics_from_tasks(
                         load_task_file(output_file),
                         roles=roles,

@@ -68,7 +68,7 @@ def _run_victim(argv: list[str]) -> int:
 
 
 def _run_schedule(argv: list[str]) -> int:
-    from commander.time_model import main as schedule_main
+    from common.time_model import main as schedule_main
 
     return int(schedule_main(argv))
 

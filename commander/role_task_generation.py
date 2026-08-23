@@ -19,18 +19,16 @@ from common import (
     save_json_atomic,
     validate_generated_task_file,
 )
+from common.agent_request_abc import AgentRequestABC, AgentRequestError, AgentTimeoutError
+from common.time_model import TimeModelConfig, generate_schedule, zip_tasks_with_schedule
 try:
-    from agent_request_abc import AgentRequestABC, AgentRequestError, AgentTimeoutError
     from prompt_catalog import assemble_generation_payload, build_react_generation_messages, load_prompt_catalog
     from role_dependency_provider import build_backward_items
     from target_config import load_role_time_model
-    from time_model import TimeModelConfig, generate_schedule, zip_tasks_with_schedule
 except ImportError:
-    from commander.agent_request_abc import AgentRequestABC, AgentRequestError, AgentTimeoutError
     from commander.prompt_catalog import assemble_generation_payload, build_react_generation_messages, load_prompt_catalog
     from commander.role_dependency_provider import build_backward_items
     from commander.target_config import load_role_time_model
-    from commander.time_model import TimeModelConfig, generate_schedule, zip_tasks_with_schedule
 
 try:
     from logging_setup import write_interactive_log

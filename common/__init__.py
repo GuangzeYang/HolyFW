@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Common utilities for HolyFramework commander and soldier components."""
+"""Common utilities for HolyFramework commander, soldier, and attacker components."""
 
 import json
 import os
@@ -17,7 +17,7 @@ WORK_WINDOWS = ((9 * 60, 12 * 60), (13 * 60, 18 * 60))
 HOLYFW_ROOT_ENV = "HOLYFW_ROOT"
 _INSTALL_TREE_MARKERS = frozenset({"site-packages", "dist-packages"})
 _OPENCODE_RUN_PREFIX = re.compile(r"^(?:opencode(?:\.cmd)?)\s+run\s+", re.IGNORECASE)
-_PACKAGE_DIR_NAMES = frozenset({"commander", "soldier", "sysmon_collector"})
+_PACKAGE_DIR_NAMES = frozenset({"attacker", "commander", "common", "soldier", "sysmon_collector"})
 
 
 def is_install_tree(path: Path) -> bool:
@@ -81,6 +81,11 @@ def commander_workspace_dir(*, package_hint: Path | None = None) -> Path:
 def soldier_workspace_dir(*, package_hint: Path | None = None) -> Path:
     """Return the writable soldier/ directory in the source workspace."""
     return locate_holyfw_root(package_hint=package_hint) / "soldier"
+
+
+def attacker_workspace_dir(*, package_hint: Path | None = None) -> Path:
+    """Return the writable attacker/ directory in the source workspace."""
+    return locate_holyfw_root(package_hint=package_hint) / "attacker"
 
 
 def strip_opencode_run_prefix(text: str) -> str:
@@ -178,7 +183,7 @@ def load_json_file(path: Path) -> dict[str, Any]:
         return json.load(f)
 
 
-def save_json_atomic(path: Path, data: dict[str, Any]) -> None:
+def save_json_atomic(path: Path, data: dict[str, Any] | list[Any]) -> None:
     """Save JSON data atomically using temporary file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")

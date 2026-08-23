@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "holyfw"
 version = "0.1.0"
-description = "HolyFramework: commander/soldier office-traffic simulation"
+description = "HolyFramework: commander/soldier/attacker intranet exercise"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -17,6 +17,7 @@ dependencies = [
 [project.scripts]
 commander = "commander.cli:main"
 soldier = "soldier.soldier:main"
+attacker = "attacker.cli:main"
 sysmon-collect = "sysmon_collector.collector:main"
 
 [tool.hatch.build]
@@ -28,13 +29,13 @@ artifacts = [
   "commander/commander.ini",
   "commander/prompt_resources/**",
   "soldier/soldier.ini",
+  "attacker/config.json",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["commander", "soldier", "holyfw_assets", "sysmon_collector"]
+packages = ["commander", "soldier", "attacker", "common", "holyfw_assets", "sysmon_collector"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"common.py" = "common.py"
 "skills" = "holyfw_assets/skills"
 "mcp" = "holyfw_assets/mcp"
 "domain_resource.md" = "holyfw_assets/domain_resource.md"
@@ -45,10 +46,11 @@ packages = ["commander", "soldier", "holyfw_assets", "sysmon_collector"]
 include = [
   "/commander",
   "/soldier",
+  "/attacker",
+  "/common",
   "/holyfw_assets",
   "/sysmon_collector",
   "/sysmonconfig.xml",
-  "/common.py",
   "/skills",
   "/mcp",
   "/domain_resource.md",

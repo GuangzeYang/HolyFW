@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from commander.time_model import (
+from common.time_model import (
     TimeModelConfig,
     bin_times_half_hour,
     generate_schedule,
@@ -97,7 +97,7 @@ class StatisticFromTasksTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from commander.time_model import write_role_schedule_statistics_from_tasks
+        from common.time_model import write_role_schedule_statistics_from_tasks
 
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -120,7 +120,7 @@ class StatisticCliTests(unittest.TestCase):
         from contextlib import redirect_stdout
         from pathlib import Path
 
-        from commander.time_model import main
+        from common.time_model import main
 
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

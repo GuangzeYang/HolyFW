@@ -14,10 +14,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class PyprojectEntrypointTests(unittest.TestCase):
-    def test_console_scripts_point_at_commander_and_soldier(self) -> None:
+    def test_console_scripts_point_at_commander_soldier_and_attacker(self) -> None:
         text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn('commander = "commander.cli:main"', text)
         self.assertIn('soldier = "soldier.soldier:main"', text)
+        self.assertIn('attacker = "attacker.cli:main"', text)
         self.assertIn('sysmon-collect = "sysmon_collector.collector:main"', text)
         self.assertIn("sysmon_collector", text)
         self.assertIn('"sysmonconfig.xml" = "sysmon_collector/sysmonconfig.xml"', text)
@@ -25,6 +26,10 @@ class PyprojectEntrypointTests(unittest.TestCase):
         self.assertIn("holyfw_assets", text)
         self.assertIn('"skills" = "holyfw_assets/skills"', text)
         self.assertIn('"mcp" = "holyfw_assets/mcp"', text)
+        self.assertNotIn('"common.py" = "common.py"', text)
+        self.assertIn("common", text)
+        self.assertIn("attacker", text)
+        self.assertIn("attacker/config.json", text)
         self.assertNotIn(
             '"commander/prompt_resources" = "commander/prompt_resources"',
             text,
@@ -41,7 +46,7 @@ class CommanderCliRouteTests(unittest.TestCase):
         generate.assert_called_once_with(["--statistic"])
 
     def test_schedule_subcommand_forwards_argv(self) -> None:
-        with mock.patch("commander.time_model.main", return_value=0) as schedule:
+        with mock.patch("common.time_model.main", return_value=0) as schedule:
             with self.assertRaises(SystemExit) as ctx:
                 commander_cli.main(["schedule", "--statistic"])
         self.assertEqual(ctx.exception.code, 0)
@@ -74,11 +79,31 @@ class CommanderCliRouteTests(unittest.TestCase):
         serve.assert_called_once_with(["--statistic"])
 
 
+class AttackerCliRouteTests(unittest.TestCase):
+    def test_no_subcommand_runs_attacker_loop(self) -> None:
+        import attacker.cli as attacker_cli
+
+        with mock.patch("attacker.cli.run_loop", return_value=0) as run:
+            code = attacker_cli.main([])
+        self.assertEqual(code, 0)
+        run.assert_called_once()
+
+    def test_run_subcommand_forwards_to_loop(self) -> None:
+        import attacker.cli as attacker_cli
+
+        with mock.patch("attacker.cli.run_loop", return_value=0) as run:
+            code = attacker_cli.main(["run", "--date", "2026-08-23"])
+        self.assertEqual(code, 0)
+        kwargs = run.call_args.kwargs
+        self.assertEqual(str(kwargs["day"]), "2026-08-23")
+
+
 class BundledAssetTests(unittest.TestCase):
     def test_repo_skills_and_mcp_are_visible(self) -> None:
         from holyfw_assets import agents_md_path, mcp_config_path, skills_root
 
         self.assertTrue((skills_root() / "hr-skills").is_dir())
+        self.assertTrue((skills_root() / "attacker-skills" / "generator_system.md").is_file())
         self.assertTrue(mcp_config_path().is_file())
         self.assertTrue(agents_md_path().is_file())
         payload = json.loads(mcp_config_path().read_text(encoding="utf-8"))

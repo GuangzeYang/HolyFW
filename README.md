@@ -2,7 +2,7 @@
 
 HolyFramework is a distributed task execution framework designed for enterprise intranet scenarios. The project uses `commander` to generate and schedule daily tasks, while `soldier` executes those tasks on different hosts and reports the results, continuously producing observable business traffic that resembles routine office activity.
 
-The task-generation pipeline uses the DeepSeek API by default, but the invocation layer is abstracted in `commander/agent_request_abc.py` so that other model implementations can be added later. Domain scenarios, role responsibilities, and task templates are defined in `domain_resource.md`. Hard requirements for the generation prompt live in `task_generation_constraints.md`. Both are runtime resources read when building model prompts.
+The task-generation pipeline uses the DeepSeek API by default, but the invocation layer is abstracted in `common/agent_request_abc.py` so that other model implementations can be added later. Domain scenarios, role responsibilities, and task templates are defined in `domain_resource.md`. Hard requirements for the generation prompt live in `task_generation_constraints.md`. Both are runtime resources read when building model prompts.
 
 ## What the Project Does
 
@@ -16,7 +16,7 @@ Key features include:
 - Continuously writes task status, output, and error information back to the shared task file.
 - Supports manual task generation, manual task dispatch, and manual result reporting.
 - Dynamically defines the role set through `commander.ini`, where each section represents one role.
-- Encapsulates model requests behind an abstract interface; the default implementation is currently `commander/deepseek_client.py`.
+- Encapsulates model requests behind an abstract interface; the default implementation is currently `common/deepseek_client.py`.
 
 ## Workflow
 
@@ -37,15 +37,20 @@ flowchart TD
 ```text
 HolyFramework/
 ├── README.md                              # Main project documentation and current entry point
-├── common.py                              # Shared validation, path, task-format, and prompt utilities
+├── common/                                # Shared path, task-format, time-model, and LLM client utilities
+│   ├── __init__.py                        # Validation, workspace paths, and task-file helpers
+│   ├── time_model.py                      # Thesis 3.4 NHPP schedule generator
+│   ├── agent_request_abc.py               # Abstract model-request interface
+│   └── deepseek_client.py                 # Default DeepSeek API client
 ├── domain_resource.md                     # Domain scenarios and task-template resource read at runtime
 ├── task_generation_constraints.md         # Hard-requirement prompt template read at runtime
 ├── requirements.txt                       # Python dependencies
-├── skill/                                 # Per-role Skill bundles installed on role hosts
+├── skills/                                # Per-role Skill bundles installed on role hosts
 │   ├── accountancy-skills/                # Accountancy host Skills
 │   ├── hr-skills/                         # HR host Skills
 │   ├── manager-skills/                    # Manager host Skills
 │   ├── programmer-skills/                 # Programmer host Skills
+│   ├── attacker-skills/                   # Attacker host Skills plus generator prompts
 │   └── victim-skills/                     # Compromised-host adversary-emulation Skills
 ├── commander/
 │   ├── commander.py                       # Main entry point: TCP server, scanner thread, and dependency wiring
@@ -54,12 +59,9 @@ HolyFramework/
 │   ├── dispatch_client.py                 # Subprocess adapter used by the scanner to invoke dispatch.py
 │   ├── scanner_service.py                 # Main scanning and scheduling workflow
 │   ├── role_file_service.py               # Daily task-file generation, repair, loading, and saving
-│   ├── time_model.py                      # Thesis 3.4 NHPP schedule generator
 │   ├── prompt_catalog.py                  # Assembles domain/role/skills/context prompts
 │   ├── prompt_resources/                  # Compact generation catalog (not full SKILL.md bodies)
 │   ├── role_task_generation.py            # Task generation: ReAct parse, zip times, validate
-│   ├── agent_request_abc.py               # Abstract model-request interface and common response/exception types
-│   ├── deepseek_client.py                  # Default model implementation: DeepSeek API client
 │   ├── repository.py                      # Task-file repository: I/O, locking, and status updates
 │   ├── domain.py                          # Task status-transition rules
 │   ├── policies.py                        # Task-selection policies; selects the earliest pending task by default
@@ -71,11 +73,21 @@ HolyFramework/
 │   ├── commander.ini                      # Role-to-soldier host/port mapping
 │   ├── role_task/                         # Directory containing shared daily task files
 │   └── logs/                              # Commander and dispatch log directory
+├── attacker/
+│   ├── cli.py                             # Default command starts the attacker scheduler
+│   ├── runtime.py                         # NHPP schedule, batch-of-5 fill, serial local execution
+│   ├── generation.py                      # LLM batch requests using skill prompts and state.json
+│   ├── execute.py                         # Local opencode run plus per-task result log
+│   ├── task_file.py                       # Attacker task-list JSON schema
+│   ├── config.json                        # Time model, batch size, and model settings
+│   ├── role_task/                         # Daily attacker task lists
+│   └── logs/                              # Per-task Agent result and exit-code JSONL
 ├── soldier/
 │   ├── soldier.py                         # Main program: receives tasks, executes commands, and reports results
 │   ├── soldier.ini                        # Soldier configuration file
 │   └── logs/                              # Soldier log directory
 └── tests/
+    ├── test_attacker_runtime.py           # Attacker batch fill, serial execution, and result logs
     ├── test_commander_logging_hook.py     # Commander log-switch hook tests
     ├── test_commander_refactor.py         # Core commander regression tests
     ├── test_common_work_windows.py        # Shared work-window utility tests
@@ -93,6 +105,19 @@ HolyFramework/
 ### Soldier
 
 `soldier` is the task execution endpoint. It listens for TCP requests from `commander`, executes the received commands, and then reports status, output, and error information back to `commander`.
+
+### Attacker
+
+`attacker` is a standalone scheduler on the attacker host. It uses the same NHPP time-node model as office roles, writes a day's task list, asks the model for at most five task strings at a time, and runs due tasks locally with `opencode run --auto`. It does not go through commander dispatch. Install skills first with `soldier build attacker`.
+
+Each attacker task object has:
+
+- `task`
+- `planned_time`
+- `started_at`
+- `completed_at`
+
+Per-task Agent output and exit code are appended to `attacker/logs/tasks_YYYY-MM-DD.jsonl`.
 
 ### Shared Task File
 
@@ -149,7 +174,7 @@ For local development, use an editable install:
 pip install -e .
 ```
 
-This provides the `commander` and `soldier` commands. Python dependencies are `filelock`, `colorlog`, and `matplotlib`.
+This provides the `commander`, `soldier`, and `attacker` commands. Python dependencies are `filelock`, `colorlog`, and `matplotlib`.
 
 You also need:
 
@@ -262,11 +287,23 @@ Without installing, from the repository root:
 ```bash
 python soldier/soldier.py listen
 python commander/commander.py
+python -m attacker.cli
 ```
 
 By default, tasks wait until their planned time and are then dispatched in generated order,
 regardless of how late they are. With `--debug`, tasks more than
 `scanner.max_dispatch_lateness_minutes` late are marked failed instead of being dispatched.
+
+#### Start attacker
+
+On the attacker host, install skills once, set `DEEPSEEK_API_KEY`, then start the scheduler. With no subcommand it runs immediately, same as `attacker run`:
+
+```bash
+soldier build attacker
+attacker
+```
+
+`attacker` samples the day's time nodes, writes `attacker/role_task/tasks_MM-DD.json`, requests up to five task strings from the model whenever no filled task is waiting, and executes due or overdue tasks serially with local `opencode run --auto`. Inspect the list with `attacker show`.
 
 ### 4. Common Utility Commands
 
@@ -423,7 +460,7 @@ Controls logging:
 - Adding a section adds a role.
 - Removing a section removes that role from scheduling.
 - Section names are normalized to lowercase.
-- `victim` remains dispatchable but is omitted from daily task generation (`load_daily_generation_roles()`). Drive it with `victim_campaign.py`.
+- `victim` and `attacker` remain omitted from daily office-role generation (`load_daily_generation_roles()`). Drive victim with `victim_campaign.py`. Drive attacker with the `attacker` command.
 
 ## Advanced `soldier.ini` Details
 
@@ -481,7 +518,7 @@ Command-line arguments in `soldier.py` take precedence over `soldier.ini`:
 
 The current task-generation workflow is:
 
-1. `commander/time_model.py` samples a strictly increasing work-window schedule from the thesis 3.4 NHPP (dual Gaussian intensity, lunch mask, AR(1) busyness). `tasks_per_role` is the expected daily count E[N]; the realized list length is random.
+1. `common/time_model.py` samples a strictly increasing work-window schedule from the thesis 3.4 NHPP (dual Gaussian intensity, lunch mask, AR(1) busyness). `tasks_per_role` is the expected daily count E[N]; the realized list length is random.
 2. `commander/role_task_generation.py` counts that list, then builds a ReAct prompt from `commander/prompt_resources/` (domain, role skills, env, schedule, backward facts) with `task_count = len(schedule)`.
 3. The LLM returns exactly that many English task bodies and must not invent timestamps. Output is `Thought` then `Action: Finish` plus JSON.
 4. Commander zips algorithm times onto the task list, validates content and cross-role response order, and persists `tasks_MM-DD.json`.
@@ -490,8 +527,8 @@ Working hours are 09:00-12:00 and 13:00-18:00 (lunch 12:00-13:00). Backward item
 
 In this design:
 
-- `commander/agent_request_abc.py` defines the common model-request interface.
-- `commander/deepseek_client.py` is the current default implementation.
+- `common/agent_request_abc.py` defines the common model-request interface.
+- `common/deepseek_client.py` is the current default implementation.
 - To add another model client, implement the interface and inject the new client; the main task-generation workflow does not need to be rewritten.
 
 ## Logs and Runtime Artifacts
@@ -517,6 +554,12 @@ Operational state (not task logs) lives under `soldier/runtime/`:
 - `task_state_MM-DD.jsonl` — idempotent execution state
 - `pending_reports.jsonl` — reports waiting to retry to commander
 - `failed_reports.jsonl` — reports that still failed after three retries
+
+### attacker
+
+Attacker execution records live under `attacker/logs/`:
+
+- `tasks_YYYY-MM-DD.jsonl` — one JSON object per executed task with `planned_time`, `task`, `result`, and `exit_code`
 
 ## Important Notes
 
@@ -545,7 +588,8 @@ When extending the project, start with these entry points:
 - `commander/commander.py`
 - `commander/scanner_service.py`
 - `commander/role_file_service.py`
-- `commander/time_model.py`
+- `common/time_model.py`
 - `commander/role_task_generation.py`
-- `commander/agent_request_abc.py`
+- `common/agent_request_abc.py`
+- `attacker/runtime.py`
 - `soldier/soldier.py`

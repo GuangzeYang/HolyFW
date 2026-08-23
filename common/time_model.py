@@ -18,8 +18,6 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Sequence
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from common import _in_work_window, _next_work_minute, minute_to_hhmm, parse_hhmm_to_minute
 
 DAY_START_MINUTE = 9 * 60

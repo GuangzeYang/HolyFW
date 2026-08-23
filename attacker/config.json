@@ -1,0 +1,30 @@
+{
+  "batch_size": 5,
+  "poll_interval_seconds": 15,
+  "exec": {
+    "timeout_seconds": 900
+  },
+  "generator": {
+    "max_attempts": 5,
+    "time_model": {
+      "tasks_per_role": 39,
+      "mu_am_minutes": 630,
+      "mu_pm_minutes": 900,
+      "sigma_am_minutes": 50,
+      "sigma_pm_minutes": 65,
+      "a_am": 1.0,
+      "a_pm": 1.0,
+      "phi": 0.85,
+      "sigma_eta": 0.18,
+      "avoid_five_minutes": true
+    },
+    "api_base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-pro",
+    "request_timeout_seconds": 300,
+    "max_tokens": 32776
+  },
+  "paths": {
+    "data_dir": "role_task",
+    "logs_dir": "logs"
+  }
+}

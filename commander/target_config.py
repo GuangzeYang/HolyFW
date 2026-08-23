@@ -23,7 +23,8 @@ TIME_MODEL_INI_KEYS = (
 
 # Roles that remain dispatchable but are never included in the daily
 # office-traffic generation quota (tasks_per_role in time-model defaults / INI).
-ON_DEMAND_ROLES = frozenset({"victim"})
+# victim is driven by commander victim; attacker has its own package.
+ON_DEMAND_ROLES = frozenset({"victim", "attacker"})
 
 
 def default_config_path() -> Path:

@@ -12,10 +12,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-try:
-    from agent_request_abc import AgentRequestABC, AgentRequestError, AgentResponse, AgentTimeoutError
-except ImportError:
-    from commander.agent_request_abc import AgentRequestABC, AgentRequestError, AgentResponse, AgentTimeoutError
+from common.agent_request_abc import AgentRequestABC, AgentRequestError, AgentResponse, AgentTimeoutError
 
 DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
 

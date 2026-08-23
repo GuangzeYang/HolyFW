@@ -45,10 +45,7 @@ except ImportError:
     from target_config import load_all_roles, load_daily_generation_roles
 from common import parse_task_ref
 
-try:
-    from commander.deepseek_client import build_deepseek_client
-except ImportError:
-    from deepseek_client import build_deepseek_client
+from common.deepseek_client import build_deepseek_client
 
 try:
     from runtime_config import (
@@ -584,10 +581,7 @@ def main(argv: list[str] | None = None) -> None:
 
     statistic_output_dir = None
     if args.statistic:
-        try:
-            from time_model import _statistic_output_dir
-        except ImportError:
-            from commander.time_model import _statistic_output_dir
+        from common.time_model import _statistic_output_dir
         statistic_output_dir = _statistic_output_dir(args.output_dir)
         logging.info("Schedule statistics enabled; artifacts under %s", statistic_output_dir)
 

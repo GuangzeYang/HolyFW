@@ -11,15 +11,14 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from agent_request_abc import AgentRequestABC
-    from deepseek_client import build_deepseek_client
     from repository import DailyTaskRepository
     from role_task_generation import generate_role_tasks
 except ImportError:
-    from commander.agent_request_abc import AgentRequestABC
-    from commander.deepseek_client import build_deepseek_client
     from commander.repository import DailyTaskRepository
     from commander.role_task_generation import generate_role_tasks
+
+from common.agent_request_abc import AgentRequestABC
+from common.deepseek_client import build_deepseek_client
 
 from common import (
     candidate_task_path,
@@ -173,10 +172,7 @@ class RoleTaskFileService:
             chart_data, _changed = apply_base_time_shift(data, ORIGIN_HOUR)
         except ValueError:
             chart_data = data
-        try:
-            from time_model import format_statistic_report, write_role_schedule_statistics_from_tasks
-        except ImportError:
-            from commander.time_model import format_statistic_report, write_role_schedule_statistics_from_tasks
+        from common.time_model import format_statistic_report, write_role_schedule_statistics_from_tasks
         try:
             payload = write_role_schedule_statistics_from_tasks(
                 chart_data,

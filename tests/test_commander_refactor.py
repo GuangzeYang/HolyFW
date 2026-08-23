@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import Callable
 from unittest import mock
 
-import commander.deepseek_client as deepseek_client
+import common.deepseek_client as deepseek_client
 import commander.role_task_generation as role_task_generation
-from commander.agent_request_abc import AgentRequestABC, AgentRequestError, AgentResponse, AgentTimeoutError
-from commander.deepseek_client import DeepSeekAgentClient, DeepSeekConfig
+from common.agent_request_abc import AgentRequestABC, AgentRequestError, AgentResponse, AgentTimeoutError
+from common.deepseek_client import DeepSeekAgentClient, DeepSeekConfig
 from commander.domain import STATUS_PLANNED, STATUS_WAITING
 from commander.logging_setup import write_interactive_log
 from commander.policies import EarliestPendingSelectionPolicy, task_needs_dispatch
