@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,6 +15,7 @@ from attacker.task_file import completed_task_texts, empty_slot_indices
 DEFAULT_BATCH_SIZE = 5
 
 FillClient = AgentRequestABC
+logger = logging.getLogger(__name__)
 
 
 def _read_text(path: Path) -> str:
@@ -157,7 +159,10 @@ def request_task_batch(
     max_attempts: int = 5,
 ) -> list[str]:
     last_error = "empty model response"
-    for attempt in range(1, max(1, int(max_attempts)) + 1):
+    attempts = max(1, int(max_attempts))
+    logger.info("Requesting %s attacker task string(s) from DeepSeek (max_attempts=%s)", batch_size, attempts)
+    for attempt in range(1, attempts + 1):
+        logger.info("DeepSeek fill attempt %s/%s", attempt, attempts)
         system_text, user_text = build_generation_messages(
             batch_size=batch_size,
             tasks=tasks,
@@ -173,17 +178,26 @@ def request_task_batch(
             response = agent_client.request_completion(
                 user_text,
                 messages=messages,
-                response_format={"type": "json_object"} if attempt == max_attempts else None,
+                response_format={"type": "json_object"} if attempt == attempts else None,
             )
-        except (AgentTimeoutError, AgentRequestError) as exc:
+        except AgentTimeoutError as exc:
             last_error = str(exc)
+            logger.warning("DeepSeek fill attempt %s/%s timed out: %s", attempt, attempts, exc)
+            continue
+        except AgentRequestError as exc:
+            last_error = str(exc)
+            logger.warning("DeepSeek fill attempt %s/%s failed: %s", attempt, attempts, exc)
             continue
         parsed = parse_generated_tasks(response.response_text)
         if len(parsed) >= batch_size:
+            logger.info("DeepSeek returned %s task string(s)", batch_size)
             return parsed[:batch_size]
         if parsed:
+            logger.info("DeepSeek returned %s task string(s) (requested %s)", len(parsed), batch_size)
             return parsed
         last_error = f"attempt {attempt}: no task strings in model response"
+        logger.warning("%s", last_error)
+    logger.error("Failed to generate %s attacker tasks: %s", batch_size, last_error)
     raise RuntimeError(f"Failed to generate {batch_size} attacker tasks: {last_error}")
 
 
@@ -202,6 +216,7 @@ def fill_next_batch(
     if not indices:
         return tasks
     count = min(int(batch_size), len(indices))
+    logger.info("Filling %s empty attacker slot(s)", count)
     requester = request_batch or request_task_batch
     contents = requester(
         batch_size=count,
@@ -214,6 +229,7 @@ def fill_next_batch(
     )
     for index, text in zip(indices[:count], contents):
         tasks[index]["task"] = text
+    logger.info("Wrote %s task string(s) into empty slots", min(count, len(contents)))
     return tasks
 
 

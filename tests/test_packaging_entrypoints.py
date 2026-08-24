@@ -83,7 +83,10 @@ class AttackerCliRouteTests(unittest.TestCase):
     def test_no_subcommand_runs_attacker_loop(self) -> None:
         import attacker.cli as attacker_cli
 
-        with mock.patch("attacker.cli.run_loop", return_value=0) as run:
+        with (
+            mock.patch("attacker.cli.run_loop", return_value=0) as run,
+            mock.patch("attacker.cli.configure_attacker_logging", return_value=Path("attacker.log")),
+        ):
             code = attacker_cli.main([])
         self.assertEqual(code, 0)
         run.assert_called_once()
@@ -91,7 +94,10 @@ class AttackerCliRouteTests(unittest.TestCase):
     def test_run_subcommand_forwards_to_loop(self) -> None:
         import attacker.cli as attacker_cli
 
-        with mock.patch("attacker.cli.run_loop", return_value=0) as run:
+        with (
+            mock.patch("attacker.cli.run_loop", return_value=0) as run,
+            mock.patch("attacker.cli.configure_attacker_logging", return_value=Path("attacker.log")),
+        ):
             code = attacker_cli.main(["run", "--date", "2026-08-23"])
         self.assertEqual(code, 0)
         kwargs = run.call_args.kwargs
@@ -100,15 +106,44 @@ class AttackerCliRouteTests(unittest.TestCase):
     def test_base_time_flag_forwards_to_loop(self) -> None:
         import attacker.cli as attacker_cli
 
-        with mock.patch("attacker.cli.run_loop", return_value=0) as run:
+        with (
+            mock.patch("attacker.cli.run_loop", return_value=0) as run,
+            mock.patch("attacker.cli.configure_attacker_logging", return_value=Path("attacker.log")),
+        ):
             code = attacker_cli.main(["--base-time", "21"])
         self.assertEqual(code, 0)
         self.assertEqual(run.call_args.kwargs["base_time"], 21)
 
-        with mock.patch("attacker.cli.run_loop", return_value=0) as run:
+        with (
+            mock.patch("attacker.cli.run_loop", return_value=0) as run,
+            mock.patch("attacker.cli.configure_attacker_logging", return_value=Path("attacker.log")),
+        ):
             code = attacker_cli.main(["run", "--base-time", "21"])
         self.assertEqual(code, 0)
         self.assertEqual(run.call_args.kwargs["base_time"], 21)
+
+    def test_build_does_not_start_run_loop(self) -> None:
+        import attacker.cli as attacker_cli
+
+        with (
+            mock.patch("attacker.host_build.run_build", return_value=0) as build,
+            mock.patch("attacker.cli.run_loop") as run,
+            mock.patch("attacker.cli.configure_attacker_logging") as logs,
+        ):
+            code = attacker_cli.main(["build"])
+        self.assertEqual(code, 0)
+        build.assert_called_once_with()
+        run.assert_not_called()
+        logs.assert_not_called()
+
+    def test_attacker_build_calls_shared_installer(self) -> None:
+        from attacker.host_build import run_build
+
+        with mock.patch("attacker.host_build.install_role", return_value=0) as install:
+            self.assertEqual(run_build(), 0)
+        install.assert_called_once()
+        self.assertEqual(install.call_args.args[0], "attacker")
+        self.assertEqual(install.call_args.kwargs["command_name"], "attacker build")
 
 
 class BundledAssetTests(unittest.TestCase):

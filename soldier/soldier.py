@@ -1378,7 +1378,7 @@ Default reads {DEFAULT_CONFIG_NAME} in same directory:
         "build",
         help="install this role's OpenCode skills and MCP into ~/.config/opencode",
     )
-    build_p.add_argument("role", help="role name (hr, accountancy, manager, programmer, attacker, victim)")
+    build_p.add_argument("role", help="role name (hr, accountancy, manager, programmer, victim)")
 
     args = parser.parse_args(argv)
     if args.cmd == "build":

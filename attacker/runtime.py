@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -37,6 +38,7 @@ from attacker.task_file import (
 SleepFn = Callable[[float], None]
 NowFn = Callable[[], datetime]
 TIME_KEY = "planned_time"
+logger = logging.getLogger(__name__)
 
 
 def _naive(now: datetime) -> datetime:
@@ -86,6 +88,12 @@ def _path_from_config(workspace: Path, raw: str, default_name: str) -> Path:
     if path.is_absolute():
         return path
     return workspace / path
+
+
+def resolve_logs_dir(loaded: dict[str, Any], workspace: Path | None = None) -> Path:
+    root = workspace if workspace is not None else resolve_workspace()
+    paths = loaded.get("paths") or {}
+    return _path_from_config(root, str(paths.get("logs_dir") or ""), "logs")
 
 
 def config_base_time(loaded: dict[str, Any]) -> int:
@@ -139,6 +147,28 @@ def seconds_until_next(
     return min(waits)
 
 
+def next_pending_planned_time(
+    tasks: list[dict[str, str]],
+    now: datetime,
+    *,
+    file_day: date | None = None,
+) -> str | None:
+    anchor = file_day or now.date()
+    current = _naive(now)
+    soonest: tuple[datetime, str] | None = None
+    pending = {id(item) for item in pending_ready(tasks)}
+    for index, item in enumerate(tasks):
+        if id(item) not in pending:
+            continue
+        planned = _task_datetime(tasks, index, anchor)
+        if planned is None or planned <= current:
+            continue
+        label = str(item.get(TIME_KEY) or "")
+        if soonest is None or planned < soonest[0]:
+            soonest = (planned, label)
+    return None if soonest is None else soonest[1]
+
+
 def apply_attacker_base_time(
     tasks: list[dict[str, str]],
     *,
@@ -174,7 +204,9 @@ def ensure_task_file(
 ) -> tuple[list[dict[str, str]], dict[str, Any] | None]:
     if path.exists():
         tasks, stamp = load_attacker_payload(path)
+        logger.info("Loaded %s attacker task(s) from %s", len(tasks), path)
     else:
+        logger.info("No task file at %s; generating %s time nodes for %s", path, expected_count, day.isoformat())
         schedule = generate_schedule(
             expected_count,
             role="attacker",
@@ -184,14 +216,18 @@ def ensure_task_file(
         )
         tasks = tasks_from_schedule(schedule)
         stamp = None
+        logger.info("Generated %s planned_time node(s)", len(tasks))
     tasks, stamp, changed = apply_attacker_base_time(
         tasks,
         base_time=base_time,
         file_day=day,
         stamp=stamp,
     )
+    if changed:
+        logger.info("Applied base_time=%s shift to planned_time values", base_time)
     if changed or not path.exists():
         save_attacker_tasks(path, tasks, shift=stamp)
+        logger.info("Wrote attacker task file %s", path)
     return tasks, stamp
 
 
@@ -299,6 +335,25 @@ def run_loop(
     target_day = resolve_run_day(data_dir, now=clock(), explicit_day=day)
     task_path = tasks_file_path(data_dir, target_day)
     expected = int(time_model.get("tasks_per_role") or 39)
+    config_display = config_path if config_path is not None else "(inline config)"
+    if config is None:
+        try:
+            config_display = resolve_config_path(config_path)
+        except FileNotFoundError:
+            pass
+    logger.info("Attacker scheduler starting")
+    logger.info("Workspace: %s", workspace)
+    logger.info("Config: %s", config_display)
+    logger.info(
+        "Run day=%s base_time=%s batch_size=%s poll_interval=%ss exec_timeout=%ss",
+        target_day.isoformat(),
+        resolved_base_time,
+        batch_size,
+        poll_interval,
+        timeout_seconds,
+    )
+    logger.info("Task file: %s", task_path)
+    logger.info("Result logs: %s", logs_dir)
 
     tasks, shift_stamp = ensure_task_file(
         task_path,
@@ -315,11 +370,14 @@ def run_loop(
 
     def _fill(current: list[dict[str, str]], size: int) -> list[dict[str, str]]:
         nonlocal client, system_prompt, prompt_template, state
+        logger.info("Filling next batch of %s empty slot(s)", size)
         if fill_batch is not None:
             filled = fill_batch(current, size)
             save_attacker_tasks(task_path, filled, shift=shift_stamp)
+            logger.info("Filled batch via injected callback; saved %s", task_path)
             return filled
         if client is None:
+            logger.info("Building DeepSeek client")
             client = build_deepseek_client(generator)
         system_prompt, prompt_template, state = load_generation_resources()
         filled = fill_next_batch(
@@ -332,9 +390,15 @@ def run_loop(
             max_attempts=int(generator.get("max_attempts") or 5),
         )
         save_attacker_tasks(task_path, filled, shift=shift_stamp)
+        logger.info("Saved filled task file %s", task_path)
         return filled
 
     def _execute(item: dict[str, str]) -> None:
+        logger.info(
+            "Executing due task planned_time=%s task=%s",
+            item.get("planned_time"),
+            (item.get("task") or "")[:120],
+        )
         if execute_one is not None:
             execute_one(item)
         else:
@@ -346,7 +410,9 @@ def run_loop(
                 day=target_day,
             )
         save_attacker_tasks(task_path, tasks, shift=shift_stamp)
+        logger.info("Saved execution state for planned_time=%s", item.get("planned_time"))
 
+    last_wait_key: str | None = None
     while True:
         action = step(
             tasks,
@@ -358,8 +424,28 @@ def run_loop(
         )
         if action == "done":
             save_attacker_tasks(task_path, tasks, shift=shift_stamp)
+            logger.info("All attacker tasks completed for %s", target_day.isoformat())
             return 0
+        if action == "executed":
+            last_wait_key = None
+            continue
+        if action == "filled":
+            last_wait_key = None
+            continue
         if action == "wait":
             wait_s = seconds_until_next(tasks, clock(), file_day=target_day)
             delay = poll_interval if wait_s is None else min(poll_interval, max(1.0, wait_s))
+            next_time = next_pending_planned_time(tasks, clock(), file_day=target_day)
+            wait_key = next_time or "unknown"
+            if wait_key != last_wait_key:
+                if next_time:
+                    logger.info(
+                        "Waiting until planned_time=%s; sleeping %.0fs (poll_interval=%.0fs)",
+                        next_time,
+                        delay,
+                        poll_interval,
+                    )
+                else:
+                    logger.info("Waiting; sleeping %.0fs (poll_interval=%.0fs)", delay, poll_interval)
+                last_wait_key = wait_key
             sleeper(delay)

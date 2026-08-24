@@ -282,6 +282,80 @@ class RunLoopTests(unittest.TestCase):
             self.assertEqual([item["task"] for item in stored], ["generated-0", "generated-1", "generated-2"])
 
 
+class SchedulerLogTests(unittest.TestCase):
+    def test_run_loop_logs_fill_wait_execute_done(self) -> None:
+        tz = datetime.now().astimezone().tzinfo
+        clock = {"now": datetime(2026, 8, 23, 8, 0, tzinfo=tz)}
+        sleeps = {"n": 0}
+
+        def now_fn() -> datetime:
+            return clock["now"]
+
+        def sleep_fn(_seconds: float) -> None:
+            sleeps["n"] += 1
+            if sleeps["n"] >= 2:
+                clock["now"] = datetime(2026, 8, 23, 19, 0, tzinfo=tz)
+
+        def fill(current: list[dict[str, str]], size: int) -> list[dict[str, str]]:
+            filled = 0
+            for item in current:
+                if not item["task"] and filled < size:
+                    item["task"] = f"generated-{filled}"
+                    filled += 1
+            return current
+
+        def execute_one(item: dict[str, str]) -> None:
+            item["started_at"] = "start"
+            item["completed_at"] = "done"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "config.json").write_text(
+                json.dumps(
+                    {
+                        "batch_size": 5,
+                        "poll_interval_seconds": 15,
+                        "exec": {"timeout_seconds": 30},
+                        "generator": {
+                            "max_attempts": 1,
+                            "time_model": {
+                                "tasks_per_role": 1,
+                                "mu_am_minutes": 630,
+                                "mu_pm_minutes": 900,
+                                "sigma_am_minutes": 50,
+                                "sigma_pm_minutes": 65,
+                                "a_am": 1.0,
+                                "a_pm": 1.0,
+                                "phi": 0.85,
+                                "sigma_eta": 0.18,
+                                "avoid_five_minutes": True,
+                            },
+                        },
+                        "paths": {"data_dir": "role_task", "logs_dir": "logs"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch("attacker.runtime.resolve_workspace", return_value=workspace):
+                with mock.patch("attacker.runtime.generate_schedule", return_value=["18:11"]):
+                    with self.assertLogs("attacker", level="INFO") as captured:
+                        code = run_loop(
+                            config_path=workspace / "config.json",
+                            day=datetime(2026, 8, 23).date(),
+                            now_fn=now_fn,
+                            sleep_fn=sleep_fn,
+                            fill_batch=fill,
+                            execute_one=execute_one,
+                        )
+        self.assertEqual(code, 0)
+        text = "\n".join(captured.output)
+        self.assertIn("Filling next batch", text)
+        self.assertIn("Waiting until planned_time=18:11", text)
+        self.assertEqual(text.count("Waiting until planned_time=18:11"), 1)
+        self.assertIn("Executing due task planned_time=18:11", text)
+        self.assertIn("All attacker tasks completed", text)
+
+
 class BaseTimeTests(unittest.TestCase):
     def test_shift_rewrites_planned_time_and_stamps_file(self) -> None:
         from datetime import date

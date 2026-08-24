@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from datetime import date
 from pathlib import Path
 
-from attacker.runtime import load_config, resolve_workspace, run_loop
+from attacker.logging_setup import configure_attacker_logging
+from attacker.runtime import load_config, resolve_logs_dir, resolve_workspace, run_loop
 from attacker.task_file import load_attacker_tasks, tasks_file_path
 
 
@@ -53,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     show_p = sub.add_parser("show", help="print today's attacker task JSON")
     show_p.add_argument("--date", default="", help="YYYY-MM-DD (default: today)")
+    sub.add_parser("build", help="install attacker OpenCode skills and MCP into ~/.config/opencode")
     return parser
 
 
@@ -83,7 +86,23 @@ def cmd_show(*, config_path: Path | None, day: date) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.cmd == "build":
+        from attacker.host_build import run_build
+
+        return run_build()
+    if args.cmd == "show":
+        return cmd_show(config_path=args.config, day=_parse_day(args.date) or date.today())
     if args.cmd is None or args.cmd == "run":
+        try:
+            loaded = load_config(args.config)
+            workspace = resolve_workspace()
+            logs_dir = resolve_logs_dir(loaded, workspace)
+            log_file = configure_attacker_logging(logs_dir)
+        except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        logging.getLogger("attacker").info("Attacker starting, logs: %s", log_file)
+        logging.getLogger("attacker").info("Attacker workspace: %s", workspace)
         day = _parse_day(getattr(args, "date", "") or "")
         return run_loop(
             config_path=args.config,
@@ -91,8 +110,6 @@ def main(argv: list[str] | None = None) -> int:
             seed=getattr(args, "seed", None),
             base_time=getattr(args, "base_time", None),
         )
-    if args.cmd == "show":
-        return cmd_show(config_path=args.config, day=_parse_day(args.date) or date.today())
     parser.error(f"unknown command {args.cmd}")
     return 2
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -20,6 +21,15 @@ OPENCODE_PERMISSION_ALLOW: dict[str, object] = {
 
 TIMEOUT_EXIT_CODE = 124
 MISSING_EXIT_CODE = 127
+RESULT_PREVIEW_CHARS = 240
+logger = logging.getLogger(__name__)
+
+
+def preview_text(text: str, limit: int = RESULT_PREVIEW_CHARS) -> str:
+    compact = " ".join(str(text).split())
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit] + "..."
 
 
 def resolve_opencode_executable() -> str:
@@ -69,9 +79,11 @@ def append_execution_log(
 def run_opencode(task: str, timeout_seconds: int) -> tuple[int, str]:
     """Run one OpenCode prompt locally. Returns (exit_code, combined output)."""
     prompt = strip_opencode_run_prefix(task)
+    logger.info("Starting opencode run --auto; timeout=%ss; prompt=%s", timeout_seconds, preview_text(prompt))
     try:
         argv = build_opencode_argv(prompt)
     except FileNotFoundError as exc:
+        logger.error("%s", exc)
         return MISSING_EXIT_CODE, str(exc)
     try:
         completed = subprocess.run(
@@ -85,11 +97,18 @@ def run_opencode(task: str, timeout_seconds: int) -> tuple[int, str]:
             env=opencode_run_env(),
         )
     except subprocess.TimeoutExpired:
-        return TIMEOUT_EXIT_CODE, f"opencode timed out after {timeout_seconds} seconds"
+        message = f"opencode timed out after {timeout_seconds} seconds"
+        logger.error("%s", message)
+        return TIMEOUT_EXIT_CODE, message
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
     combined = stdout if not stderr else f"{stdout}\n{stderr}".strip()
-    return int(completed.returncode), combined
+    code = int(completed.returncode)
+    if code != 0:
+        logger.error("opencode exited %s; output=%s", code, preview_text(combined))
+    else:
+        logger.info("opencode exited %s; output=%s", code, preview_text(combined))
+    return code, combined
 
 
 def iso_now(now: datetime | None = None) -> str:
@@ -111,10 +130,18 @@ def execute_task(
     """Fill started_at/completed_at, run the agent, and append one result log line."""
     stamp = now if now is not None else datetime.now().astimezone()
     item["started_at"] = iso_now(stamp)
+    logger.info("Executing planned_time=%s task=%s", item.get("planned_time"), preview_text(item.get("task") or ""))
     run = runner if runner is not None else run_opencode
     exit_code, result = run(item["task"], timeout_seconds)
     finished = datetime.now().astimezone() if now is None else stamp
     item["completed_at"] = iso_now(finished)
+    logger.info(
+        "Finished planned_time=%s exit_code=%s started_at=%s completed_at=%s",
+        item.get("planned_time"),
+        exit_code,
+        item.get("started_at"),
+        item.get("completed_at"),
+    )
     append_execution_log(
         logs_dir,
         planned_time=item["planned_time"],

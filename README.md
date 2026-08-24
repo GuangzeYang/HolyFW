@@ -108,7 +108,7 @@ HolyFramework/
 
 ### Attacker
 
-`attacker` is a standalone scheduler on the attacker host. It uses the same NHPP time-node model as office roles, writes a day's task list, asks the model for at most five task strings at a time, and runs due tasks locally with `opencode run --auto`. It does not go through commander dispatch. Install skills first with `soldier build attacker`.
+`attacker` is a standalone scheduler on the attacker host. It uses the same NHPP time-node model as office roles, writes a day's task list, asks the model for at most five task strings at a time, and runs due tasks locally with `opencode run --auto`. It does not go through commander dispatch. Install skills first with `attacker build`. Scheduler progress is written to the console and to `attacker/logs/attacker_YYYY-MM-DD.log`.
 
 Each attacker task object has:
 
@@ -179,7 +179,7 @@ This provides the `commander`, `soldier`, and `attacker` commands. Python depend
 You also need:
 
 - Python 3.10+
-- Node.js / `npx` on each soldier host (`soldier build` installs Playwright through npx)
+- Node.js / `npx` on each soldier host (`soldier build` installs Playwright through npx) and on the attacker host (`attacker build` does the same)
 - An executable `opencode` command available on the system
 - Network connectivity between `commander` and every `soldier`
 
@@ -238,7 +238,17 @@ Run once per role host. Copies that role's skills into `~/.config/opencode/skill
 soldier build hr
 ```
 
-Roles: `hr`, `accountancy`, `manager`, `programmer`, `attacker`, `victim`.
+Roles: `hr`, `accountancy`, `manager`, `programmer`, `victim`.
+
+#### Install OpenCode skills/MCP on an attacker host
+
+Same OpenCode install as soldier (skills, MCP, `AGENTS.md`, cache clear, Playwright), but only for `attacker-skills`. Run once on the attacker host:
+
+```bash
+attacker build
+```
+
+`soldier build attacker` is rejected; soldier is for office roles and victim only.
 
 #### Start soldier
 
@@ -296,10 +306,10 @@ regardless of how late they are. With `--debug`, tasks more than
 
 #### Start attacker
 
-On the attacker host, install skills once, set `DEEPSEEK_API_KEY`, then start the scheduler. With no subcommand it runs immediately, same as `attacker run`:
+On the attacker host, install skills once with `attacker build`, set `DEEPSEEK_API_KEY`, then start the scheduler. With no subcommand it runs immediately, same as `attacker run`:
 
 ```bash
-soldier build attacker
+attacker build
 attacker
 ```
 
@@ -559,8 +569,9 @@ Operational state (not the per-task record) also lives under `soldier/runtime/`:
 
 ### attacker
 
-Attacker execution records live under `attacker/logs/`:
+Attacker records live under `attacker/logs/`:
 
+- `attacker_YYYY-MM-DD.log` — scheduler log (`time - LEVEL - logger - message`) for fill, wait, execute, and completion
 - `tasks_YYYY-MM-DD.jsonl` — one JSON object per executed task with `planned_time`, `task`, `result`, and `exit_code`
 
 ## Important Notes

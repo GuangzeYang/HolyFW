@@ -224,7 +224,7 @@ class AgentsAndCacheTests(unittest.TestCase):
 
 class PlaywrightTests(unittest.TestCase):
     def test_unavailable_without_npx(self) -> None:
-        with mock.patch("soldier.host_build.shutil.which", return_value=None):
+        with mock.patch("common.opencode_install.shutil.which", return_value=None):
             self.assertFalse(playwright_available())
 
     def test_installs_chromium_when_version_check_fails(self) -> None:
@@ -244,7 +244,7 @@ class PlaywrightTests(unittest.TestCase):
             code = 1 if version_hits["n"] == 1 else 0
             return subprocess.CompletedProcess(cmd, code)
 
-        with mock.patch("soldier.host_build.shutil.which", side_effect=which):
+        with mock.patch("common.opencode_install.shutil.which", side_effect=which):
             ensure_playwright(run=run)
 
         self.assertTrue(any("install" in cmd and "chromium" in cmd for cmd in calls))
@@ -289,9 +289,9 @@ class RunBuildTests(unittest.TestCase):
                 mock.patch("holyfw_assets.skills_root", return_value=skills),
                 mock.patch("holyfw_assets.mcp_config_path", return_value=mcp_file),
                 mock.patch("holyfw_assets.agents_md_path", return_value=agents_template),
-                mock.patch("soldier.host_build.opencode_config_dir", return_value=oc),
-                mock.patch("soldier.host_build.opencode_cache_dir", return_value=cache),
-                mock.patch("soldier.host_build.ensure_playwright"),
+                mock.patch("common.opencode_install.opencode_config_dir", return_value=oc),
+                mock.patch("common.opencode_install.opencode_cache_dir", return_value=cache),
+                mock.patch("common.opencode_install.ensure_playwright"),
             ):
                 code = run_build("hr")
 
@@ -314,6 +314,12 @@ class RunBuildTests(unittest.TestCase):
     def test_run_build_unknown_role_returns_one(self) -> None:
         self.assertEqual(run_build("not-a-role"), 1)
 
+    def test_run_build_rejects_attacker(self) -> None:
+        with mock.patch("soldier.host_build.install_role") as install:
+            code = run_build("attacker")
+        self.assertEqual(code, 1)
+        install.assert_not_called()
+
     def test_cli_build_skips_listen_logging(self) -> None:
         from soldier.soldier import main
 
@@ -326,6 +332,15 @@ class RunBuildTests(unittest.TestCase):
         self.assertEqual(code, 0)
         build.assert_called_once_with("hr")
         logs.assert_not_called()
+
+    def test_cli_build_attacker_does_not_install(self) -> None:
+        from soldier.soldier import main
+
+        with mock.patch("soldier.host_build.install_role") as install:
+            code = main(["build", "attacker"])
+
+        self.assertEqual(code, 1)
+        install.assert_not_called()
 
 
 if __name__ == "__main__":
