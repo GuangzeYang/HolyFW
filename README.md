@@ -45,14 +45,16 @@ HolyFramework/
 ├── domain_resource.md                     # Domain scenarios and task-template resource read at runtime
 ├── task_generation_constraints.md         # Hard-requirement prompt template read at runtime
 ├── requirements.txt                       # Python dependencies
-├── skills/                                # Per-role Skill bundles installed on role hosts
+├── role_profiles/                         # Bundled OpenCode config, AGENTS.md, and per-role skill packs
+│   ├── opencode.json                      # MCP servers, permissions, and DeepSeek provider env key
+│   ├── AGENTS.md                          # Role-stamped OpenCode agent rules
 │   ├── accountancy-skills/                # Accountancy host Skills
 │   ├── hr-skills/                         # HR host Skills
 │   ├── manager-skills/                    # Manager host Skills
 │   ├── programmer-skills/                 # Programmer host Skills
-│   ├── attacker-skills/                   # Attacker host Skills plus generator prompts
-│   └── victim-skills/                     # Compromised-host adversary-emulation Skills
+│   └── attacker-skills/                   # Attacker host Skills plus generator prompts
 ├── commander/
+│   ├── host_build.py                      # commander build: provider env-key merge and OpenCode cache clear
 │   ├── commander.py                       # Main entry point: TCP server, scanner thread, and dependency wiring
 │   ├── generate_role_task.py              # Standalone entry point for generating the daily task file
 │   ├── dispatch.py                        # CLI for manually dispatching a single task
@@ -85,7 +87,8 @@ HolyFramework/
 ├── soldier/
 │   ├── soldier.py                         # Main program: receives tasks, executes commands, and reports results
 │   ├── soldier.ini                        # Soldier configuration file
-│   └── logs/                              # Soldier log directory
+│   ├── logs/                              # soldier_YYYY-MM-DD.log lifecycle files
+│   └── runtime/                           # Task Markdown transcripts and report queues
 └── tests/
     ├── test_attacker_runtime.py           # Attacker batch fill, serial execution, and result logs
     ├── test_commander_logging_hook.py     # Commander log-switch hook tests
@@ -198,7 +201,7 @@ This is the main `commander` configuration file. It controls listening, scanning
   - `model`
   - `request_timeout_seconds`
 
-The DeepSeek API key is read from the `DEEPSEEK_API_KEY` environment variable, not from JSON. See the generator section below.
+The DeepSeek API key is read from the `DEEPSEEK_API_KEY` environment variable, not from `commander/config.json`. `commander build` writes `{env:DEEPSEEK_API_KEY}` into `~/.config/opencode/opencode.json` so OpenCode uses the same variable. See the generator section below.
 
 #### `commander/commander.ini`
 
@@ -232,11 +235,14 @@ Start `soldier` first, then start `commander`. After `pip install .` the command
 
 #### Install OpenCode skills/MCP on a soldier host
 
-Run once per role host. Copies that role's skills into `~/.config/opencode/skills/` (overwriting existing skill directories), merges MCP servers and an explicit `permission` object (`*`, `doom_loop`, and `external_directory["*"]` all `allow`) into `~/.config/opencode/opencode.json` and into `opencode.jsonc` when that file already exists, writes a role-stamped `~/.config/opencode/AGENTS.md`, deletes `%USERPROFILE%\.cache\opencode` (not `auth.json`), and installs Playwright Chromium if `npx playwright` is missing. Soldier then runs tasks as `opencode run --auto` with `OPENCODE_PERMISSION` set so workspace-outside paths (Desktop, UNC shares) do not wait for Enter. Do not leave an old `opencode serve` process attached to these hosts; each task starts a fresh `opencode run`.
+Run once per role host. Copies that role's skills from `role_profiles/<role>-skills/` into `~/.config/opencode/skills/` (overwriting existing skill directories), merges MCP servers, the DeepSeek `provider.options.apiKey` `{env:DEEPSEEK_API_KEY}` block, and an explicit `permission` object (`*`, `doom_loop`, and `external_directory["*"]` all `allow`) into `~/.config/opencode/opencode.json` and into `opencode.jsonc` when that file already exists, writes a role-stamped `~/.config/opencode/AGENTS.md`, deletes `%USERPROFILE%\.cache\opencode` (not `auth.json`), and installs Playwright Chromium if `npx playwright` is missing. Soldier then runs tasks as `opencode run --auto` with `OPENCODE_PERMISSION` set so workspace-outside paths (Desktop, UNC shares) do not wait for Enter. Do not leave an old `opencode serve` process attached to these hosts; each task starts a fresh `opencode run`.
 
 ```bash
 soldier build hr
+soldier build hr --test
 ```
+
+`--test` runs after a successful install. It checks that OpenCode loads (`opencode --version` and `~/.config/opencode/opencode.json`), that each installed skill and merged MCP is present, then runs `opencode run --auto` with one representative prompt per skill and per MCP (same argv and `OPENCODE_PERMISSION` as production). Prompts are taken from `role_profiles/<role>-skills/PROMPT_TEMPLATES.md`, preferring view/list/search/extract examples when they exist. Skills without an `opencode run` example (for example `pdf`) are skipped. Output is printed to the terminal only (`Target`, `Command`, `Result`); nothing is written under soldier `runtime/` or log files. Each live prompt can take up to 900 seconds. A failed check leaves the installed config in place and exits 1.
 
 Roles: `hr`, `accountancy`, `manager`, `programmer`, `victim`.
 
@@ -246,9 +252,21 @@ Same OpenCode install as soldier (skills, MCP, `AGENTS.md`, cache clear, Playwri
 
 ```bash
 attacker build
+attacker build --test
 ```
 
-`soldier build attacker` is rejected; soldier is for office roles and victim only.
+`--test` is the same live check as on soldier, using `attacker-skills` (the `ad-attack` prompt is `discovery.orientation`). `soldier build attacker` is rejected; soldier is for office roles and victim only.
+
+#### Write DeepSeek provider env-key config on the commander host
+
+Does not install skills, `AGENTS.md`, Playwright, or MCP servers. Merges only `provider.deepseek.options.apiKey` (`{env:DEEPSEEK_API_KEY}`) into `~/.config/opencode/opencode.json` (and `opencode.jsonc` if that file exists) and deletes `%USERPROFILE%\.cache\opencode` (not `auth.json`). The process still needs `DEEPSEEK_API_KEY` set at runtime.
+
+```bash
+commander build
+commander build --test
+```
+
+`commander build --test` only checks that OpenCode starts and that the DeepSeek provider can complete a short smoke prompt. It does not install or exercise skills or MCP servers.
 
 #### Start soldier
 
@@ -435,13 +453,25 @@ Controls task generation:
 - `model`: Model name
 - `request_timeout_seconds`: Timeout for a single model request
 
-The DeepSeek API key is not stored in `config.json`. Set it in the process environment before `commander serve` or `commander generate`:
+The DeepSeek API key is not stored in `config.json`. Set it in the process environment before `commander serve`, `commander generate`, or OpenCode:
 
 ```powershell
 $env:DEEPSEEK_API_KEY = "..."
 ```
 
-If `DEEPSEEK_API_KEY` is missing or blank, client construction fails with an error naming that variable.
+Then run `commander build` so `~/.config/opencode/opencode.json` points at that variable:
+
+```json
+"provider": {
+  "deepseek": {
+    "options": {
+      "apiKey": "{env:DEEPSEEK_API_KEY}"
+    }
+  }
+}
+```
+
+If `DEEPSEEK_API_KEY` is missing or blank, Python client construction fails with an error naming that variable.
 
 ### paths
 
@@ -556,13 +586,13 @@ Format: `time - LEVEL - role[index] - message`. Production (`INFO`) records task
 
 ### soldier
 
-All soldier observability logs live under `soldier/logs/`:
+File logs live under `soldier/logs/`; per-task transcripts live under `soldier/runtime/`:
 
-- `soldier_YYYY-MM-DD.log` — human-readable execution log (`time - LEVEL - task_id - message`), including receive time/content and finish status
+- `soldier_YYYY-MM-DD.log` — lifecycle log (`time - LEVEL - task_id - message`): receive time, start time, full `opencode run --auto ...` command, finish time, outcome (`Success` / `Fail` / `Error`), report time, and report result (`ok`, `queued: ...`, or `send failed: ...`)
+- Console — only `Received` plus the outcome: `Success` (INFO), `Fail` with reason (WARNING, OpenCode started but non-zero or timeout), `Error` with the exception (ERROR, soldier could not start OpenCode)
+- `runtime/tasks/YYYY-MM-DD/<task_id>.md` — Markdown transcript with YAML-like frontmatter and literal stdout/stderr (not JSON-escaped `\n`). The date folder is the `task_ref` date. Soldier still claims by `task_id` across dates.
 
-Each dispatched task is stored under `soldier/runtime/tasks/<task_id>.json`. Soldier creates that file as soon as the task is received, keeps the file handle open for the whole run, writes the result into the same file, then releases the handle. Query by `task_id` even when the soldier calendar day does not match commander.
-
-Operational state (not the per-task record) also lives under `soldier/runtime/`:
+Operational state (not the per-task transcript) also lives under `soldier/runtime/`:
 
 - `pending_reports.jsonl` — reports waiting to retry to commander
 - `failed_reports.jsonl` — reports that still failed after three retries
@@ -582,9 +612,9 @@ Attacker records live under `attacker/logs/`:
 - Task times are based on each host's system clock. Keep clocks synchronized across hosts in distributed deployments.
 - Both `commander` and `soldier` use bounded thread pools for TCP processing, with a default maximum of 6 concurrent workers.
 - Dispatch binds a task as `waiting` before sending it to `soldier`. If sending fails, the task is rolled back to a retryable state.
-- `soldier` command output is truncated to the configured limit before being written to a report, preventing large stdout/stderr streams from exhausting memory.
+- Commander reports still truncate `soldier` stdout/stderr to the configured limit. The per-task Markdown under `soldier/runtime/tasks/` keeps the full OpenCode transcript with real newlines.
 - If `soldier` cannot report to `commander`, the report is added to a local queue and retried up to three times in the background.
-- The generator uses the DeepSeek API by default. Set `DEEPSEEK_API_KEY` in the environment, and review the `generator` section in `commander/config.json` for non-secret model settings.
+- The generator uses the DeepSeek API by default. Set `DEEPSEEK_API_KEY` in the environment, run `commander build` so OpenCode reads `{env:DEEPSEEK_API_KEY}`, and review the `generator` section in `commander/config.json` for non-secret model settings.
 
 ## Development and Regression Testing
 

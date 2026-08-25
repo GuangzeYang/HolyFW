@@ -1,4 +1,4 @@
-"""Bundled HolyFW data files (skills, MCP config, domain markdown)."""
+"""Bundled HolyFW data files (role profiles, domain markdown)."""
 
 from __future__ import annotations
 
@@ -16,29 +16,29 @@ def _first_existing(*candidates: Path) -> Path | None:
 
 
 def skills_root() -> Path:
-    found = _first_existing(_PACKAGE_DIR / "skills", _REPO_ROOT / "skills")
+    found = _first_existing(_PACKAGE_DIR / "role_profiles", _REPO_ROOT / "role_profiles")
     if found is None:
-        raise FileNotFoundError("Bundled skills directory not found")
+        raise FileNotFoundError("Bundled role_profiles directory not found")
     return found
 
 
-def mcp_config_path() -> Path:
+def opencode_config_path() -> Path:
     found = _first_existing(
-        _PACKAGE_DIR / "mcp" / "opencode.json",
-        _REPO_ROOT / "mcp" / "opencode.json",
+        _PACKAGE_DIR / "role_profiles" / "opencode.json",
+        _REPO_ROOT / "role_profiles" / "opencode.json",
     )
     if found is None:
-        raise FileNotFoundError("Bundled mcp/opencode.json not found")
+        raise FileNotFoundError("Bundled role_profiles/opencode.json not found")
     return found
 
 
 def agents_md_path() -> Path:
     found = _first_existing(
-        _PACKAGE_DIR / "mcp" / "AGENTS.md",
-        _REPO_ROOT / "mcp" / "AGENTS.md",
+        _PACKAGE_DIR / "role_profiles" / "AGENTS.md",
+        _REPO_ROOT / "role_profiles" / "AGENTS.md",
     )
     if found is None:
-        raise FileNotFoundError("Bundled mcp/AGENTS.md not found")
+        raise FileNotFoundError("Bundled role_profiles/AGENTS.md not found")
     return found
 
 

@@ -7,7 +7,7 @@ import sys
 from typing import Callable
 
 
-_SUBCOMMANDS = frozenset({"generate", "dispatch", "victim", "schedule", "breaker"})
+_SUBCOMMANDS = frozenset({"generate", "dispatch", "victim", "schedule", "breaker", "build"})
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -28,6 +28,7 @@ def _run_subcommand(name: str, argv: list[str]) -> int:
         "victim": _run_victim,
         "schedule": _run_schedule,
         "breaker": _run_breaker,
+        "build": _run_build,
     }
     return runners[name](argv)
 
@@ -44,6 +45,8 @@ def _print_root_help() -> int:
         "  victim     On-demand victim campaign (step/show/dispatch)\n"
         "  schedule   Sample or plot the arrival-time model\n"
         "  breaker    Inspect or reset role circuit breakers\n"
+        "  build      Write DeepSeek provider env-key config into ~/.config/opencode\n"
+        "             (add --test to verify OpenCode load and the DeepSeek provider)\n"
     )
     parser.print_help()
     return 0
@@ -86,6 +89,24 @@ def _run_breaker(argv: list[str]) -> int:
     from commander import breaker_control
 
     return _run_with_sys_argv(breaker_control.main, argv)
+
+
+def _run_build(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="commander build",
+        description="Write DeepSeek provider env-key config into ~/.config/opencode",
+    )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="after install, verify OpenCode can load and run a short provider smoke prompt",
+    )
+    args = parser.parse_args(argv)
+    from commander.host_build import run_build
+
+    if args.test:
+        return int(run_build(run_test=True))
+    return int(run_build())
 
 
 if __name__ == "__main__":

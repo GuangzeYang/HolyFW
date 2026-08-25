@@ -55,7 +55,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     show_p = sub.add_parser("show", help="print today's attacker task JSON")
     show_p.add_argument("--date", default="", help="YYYY-MM-DD (default: today)")
-    sub.add_parser("build", help="install attacker OpenCode skills and MCP into ~/.config/opencode")
+    build_p = sub.add_parser("build", help="install attacker OpenCode skills and MCP into ~/.config/opencode")
+    build_p.add_argument(
+        "--test",
+        action="store_true",
+        help="after install, verify OpenCode load and run a representative prompt per skill and MCP",
+    )
     return parser
 
 
@@ -89,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "build":
         from attacker.host_build import run_build
 
+        if getattr(args, "test", False):
+            return run_build(run_test=True)
         return run_build()
     if args.cmd == "show":
         return cmd_show(config_path=args.config, day=_parse_day(args.date) or date.today())

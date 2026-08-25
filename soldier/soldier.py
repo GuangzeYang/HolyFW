@@ -13,9 +13,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import argparse
 import configparser
 from concurrent.futures import ThreadPoolExecutor
+import codecs
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -25,6 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import IO, Mapping, Sequence
 import logging
@@ -68,12 +71,43 @@ REPORT_SOCKET_TIMEOUT_SECONDS = 60
 RUNNING_STALE_GRACE_SECONDS = 120
 PROCESS_TREE_KILL_TIMEOUT_SECONDS = 30
 SOLDIER_DATED_FILE_HANDLER_NAME = "soldier_dated_file"
+SOLDIER_CONSOLE_HANDLER_NAME = "soldier_console"
 SOLDIER_LOG_FORMAT = "%(asctime)s - %(levelname)s - %(task)s - %(message)s"
 LOG_DATE_CHECK_INTERVAL_SECONDS = 1.0
 _PENDING_REPORTS_LOCK = threading.Lock()
 _ACTIVE_PROCESSES_LOCK = threading.Lock()
 _ACTIVE_PROCESSES: dict[int, subprocess.Popen] = {}
 _SHUTTING_DOWN = threading.Event()
+_FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)", re.DOTALL)
+_BODY_ONLY_KEYS = {
+    "stdout",
+    "stderr",
+    "stdout_full",
+    "stderr_full",
+    "stdout_path",
+    "stderr_path",
+    "task",
+}
+_STREAM_CHUNK_BYTES = 65536
+_TASK_RECORD_META_KEYS = (
+    "task_id",
+    "task_ref",
+    "date",
+    "status",
+    "outcome",
+    "result_status",
+    "received_at",
+    "started_at",
+    "finished_at",
+    "reported_at",
+    "updated_at",
+    "execution_deadline",
+    "exit_code",
+    "message",
+    "command",
+    "argv",
+    "report",
+)
 
 
 class _TaskDefaultFilter(logging.Filter):
@@ -85,8 +119,34 @@ class _TaskDefaultFilter(logging.Filter):
         return True
 
 
-def task_extra(task_id: str | None = None) -> dict[str, str]:
-    return {"task": (task_id or "system").strip() or "system"}
+class _ConsoleVisibilityFilter(logging.Filter):
+    """Console: system lines plus per-task receive/result (``to_console``)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        task = getattr(record, "task", "system") or "system"
+        if task == "system":
+            return True
+        return bool(getattr(record, "to_console", False))
+
+
+def task_extra(task_id: str | None = None, *, to_console: bool = False) -> dict[str, object]:
+    extra: dict[str, object] = {"task": (task_id or "system").strip() or "system"}
+    extra["to_console"] = to_console
+    return extra
+
+
+def log_task(
+    level: int,
+    msg: str,
+    *args: object,
+    task_id: str | None = None,
+    to_console: bool = False,
+) -> None:
+    logging.log(level, msg, *args, extra=task_extra(task_id, to_console=to_console))
+
+
+def _now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def _plain_log_formatter() -> logging.Formatter:
@@ -97,6 +157,8 @@ def _build_console_handler(level: int) -> logging.StreamHandler:
     console_handler = logging.StreamHandler()
     console_handler.setLevel(level)
     console_handler.addFilter(_TaskDefaultFilter())
+    console_handler.addFilter(_ConsoleVisibilityFilter())
+    console_handler.name = SOLDIER_CONSOLE_HANDLER_NAME
     plain_formatter = _plain_log_formatter()
     if colorlog is not None:
         color_formatter = colorlog.ColoredFormatter(
@@ -187,22 +249,265 @@ def get_task_records_dir(base_dir: Path | None = None) -> Path:
     return path
 
 
-def task_record_path(task_id: str, base_dir: Path | None = None) -> Path:
+def task_record_path(task_id: str, date_str: str, *, base_dir: Path | None = None) -> Path:
+    return get_task_records_dir(base_dir) / date_str / f"{task_id}.md"
+
+
+def legacy_task_json_path(task_id: str, *, base_dir: Path | None = None) -> Path:
     return get_task_records_dir(base_dir) / f"{task_id}.json"
 
 
-def _read_json_object(path: Path) -> dict:
+def find_existing_task_record(task_id: str, *, base_dir: Path | None = None) -> Path | None:
+    root = get_task_records_dir(base_dir)
+    matches = sorted(path for path in root.glob(f"**/{task_id}.md") if path.is_file())
+    if matches:
+        return matches[0]
+    legacy = legacy_task_json_path(task_id, base_dir=base_dir)
+    if legacy.is_file():
+        return legacy
+    return None
+
+
+def resolve_task_record_path(
+    task_id: str,
+    date_str: str,
+    *,
+    base_dir: Path | None = None,
+) -> Path:
+    existing = find_existing_task_record(task_id, base_dir=base_dir)
+    return existing if existing is not None else task_record_path(task_id, date_str, base_dir=base_dir)
+
+
+def task_output_sidecar_path(record_path: Path, kind: str) -> Path:
+    return record_path.with_name(f"{record_path.stem}.{kind}")
+
+
+def _other_task_record_path(
+    path: Path,
+    task_id: str,
+    date_str: str,
+    *,
+    base_dir: Path | None = None,
+) -> Path:
+    if path.suffix.lower() == ".json":
+        return task_record_path(task_id, date_str, base_dir=base_dir)
+    return legacy_task_json_path(task_id, base_dir=base_dir)
+
+
+def _close_record_lock(handle: IO[bytes] | None, lock: FileLock | None) -> None:
+    if handle is not None and not handle.closed:
+        try:
+            handle.close()
+        except OSError:
+            pass
+    if lock is not None and lock.is_locked:
+        try:
+            lock.release()
+        except OSError:
+            pass
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _clean_old_task_records(base_dir: Path | None = None, days: int = 20) -> None:
+    root = get_task_records_dir(base_dir)
+    clean_old_files(root, "**/*.md", days=days)
+    clean_old_files(root, "*.json", days=days)
+    cutoff_time = time.time() - days * 86400
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return
+    for child in children:
+        if not child.is_dir():
+            continue
+        try:
+            if child.stat().st_mtime >= cutoff_time:
+                continue
+            next(child.iterdir())
+        except StopIteration:
+            try:
+                child.rmdir()
+            except OSError:
+                pass
+        except OSError:
+            pass
+
+
+def _as_record_path(value: object) -> Path | None:
+    if isinstance(value, Path):
+        return value
+    if isinstance(value, str) and value.strip():
+        return Path(value)
+    return None
+
+
+def _max_backtick_run(text: str) -> int:
+    longest = 0
+    current = 0
+    for char in text:
+        if char == "`":
+            current += 1
+            if current > longest:
+                longest = current
+        else:
+            current = 0
+    return longest
+
+
+def _max_backtick_run_file(path: Path | None) -> int:
+    if path is None or not path.is_file():
+        return 0
+    longest = 0
+    current = 0
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(_STREAM_CHUNK_BYTES)
+            if not chunk:
+                break
+            for byte in chunk:
+                if byte == 96:
+                    current += 1
+                    if current > longest:
+                        longest = current
+                else:
+                    current = 0
+    return longest
+
+
+def _fence_for_record(record: dict) -> str:
+    command = str(record.get("command") or "")
+    stdout = record.get("stdout_full")
+    if not isinstance(stdout, str):
+        stdout = str(record.get("stdout") or "")
+    stderr = record.get("stderr_full")
+    if not isinstance(stderr, str):
+        stderr = str(record.get("stderr") or "")
+    longest = max(
+        2,
+        _max_backtick_run(command),
+        _max_backtick_run(stdout),
+        _max_backtick_run(stderr),
+        _max_backtick_run_file(_as_record_path(record.get("stdout_path"))),
+        _max_backtick_run_file(_as_record_path(record.get("stderr_path"))),
+    )
+    return "`" * (longest + 1)
+
+
+def _stream_utf8_file(dest: IO[bytes], path: Path) -> None:
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    with path.open("rb") as src:
+        while True:
+            chunk = src.read(_STREAM_CHUNK_BYTES)
+            if not chunk:
+                rest = decoder.decode(b"", final=True)
+                if rest:
+                    dest.write(rest.encode("utf-8"))
+                return
+            text = decoder.decode(chunk)
+            if text:
+                dest.write(text.encode("utf-8"))
+
+
+def write_task_markdown(handle: IO[bytes], record: dict) -> None:
+    def write(text: str) -> None:
+        handle.write(text.encode("utf-8"))
+
+    write("---\n")
+    seen: set[str] = set()
+    for key in _TASK_RECORD_META_KEYS:
+        if key in _BODY_ONLY_KEYS or key not in record or record[key] is None:
+            continue
+        write(f"{key}: {json.dumps(record[key], ensure_ascii=False)}\n")
+        seen.add(key)
+    for key, value in record.items():
+        if key in seen or key in _BODY_ONLY_KEYS or value is None or isinstance(value, Path):
+            continue
+        write(f"{key}: {json.dumps(value, ensure_ascii=False)}\n")
+    write("---\n")
+    command = str(record.get("command") or "")
+    fence = _fence_for_record(record)
+    write(f"\n## Command\n\n{fence}text\n")
+    write(command)
+    if command and not command.endswith("\n"):
+        write("\n")
+    write(f"{fence}\n")
+    stdout_path = _as_record_path(record.get("stdout_path"))
+    stderr_path = _as_record_path(record.get("stderr_path"))
+    stdout = record.get("stdout_full")
+    if not isinstance(stdout, str):
+        stdout = str(record.get("stdout") or "")
+    stderr = record.get("stderr_full")
+    if not isinstance(stderr, str):
+        stderr = str(record.get("stderr") or "")
+    if record.get("status") != "completed" and not stdout_path and not stderr_path and not stdout and not stderr:
+        return
+    write(f"\n## stdout\n\n{fence}text\n")
+    if stdout_path is not None and stdout_path.is_file():
+        _stream_utf8_file(handle, stdout_path)
+    else:
+        write(stdout)
+    write(f"\n{fence}\n\n## stderr\n\n{fence}text\n")
+    if stderr_path is not None and stderr_path.is_file():
+        _stream_utf8_file(handle, stderr_path)
+    else:
+        write(stderr)
+    write(f"\n{fence}\n")
+
+
+def parse_task_markdown(text: str) -> dict:
+    """Parse soldier task Markdown (JSON-valued frontmatter) or leftover JSON."""
+    raw = text.strip()
+    if not raw:
+        return {}
+    match = _FRONTMATTER_RE.match(text)
+    if match is None:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    record: dict = {}
+    for line in match.group(1).splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, sep, rest = stripped.partition(":")
+        if not sep:
+            continue
+        payload = rest.strip()
+        if not payload:
+            record[key] = ""
+            continue
+        try:
+            record[key] = json.loads(payload)
+        except json.JSONDecodeError:
+            record[key] = payload
+    return record
+
+
+def render_task_markdown(record: dict) -> str:
+    buffer = BytesIO()
+    write_task_markdown(buffer, record)
+    return buffer.getvalue().decode("utf-8")
+
+
+def _read_task_record_file(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return parse_task_markdown(path.read_text(encoding="utf-8"))
+    except OSError:
         return {}
-    return parsed if isinstance(parsed, dict) else {}
 
 
 class TaskRecordFile:
-    """Exclusive per-task JSON file. The handle stays open until complete/abort/close."""
+    """Exclusive per-task Markdown file. The handle stays open until complete/abort/close."""
 
     def __init__(self, path: Path, lock: FileLock, handle: IO[bytes], record: dict) -> None:
         self.path = path
@@ -214,33 +519,81 @@ class TaskRecordFile:
         if self._handle is None or self._handle.closed:
             raise OSError(f"Task record file is closed: {self.path}")
         self.record["updated_at"] = datetime.now(timezone.utc).isoformat()
-        payload = (json.dumps(self.record, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
         self._handle.seek(0)
-        self._handle.write(payload)
+        write_task_markdown(self._handle, self.record)
         self._handle.truncate()
         self._handle.flush()
         os.fsync(self._handle.fileno())
 
-    def complete(self, report: dict, *, status: str, exit_code: int, stdout_text: str, stderr_text: str, message: str | None) -> None:
+    def complete(
+        self,
+        report: dict,
+        *,
+        status: str,
+        exit_code: int,
+        stdout_text: str,
+        stderr_text: str,
+        message: str | None,
+        outcome: str | None = None,
+        stdout_full: str | None = None,
+        stderr_full: str | None = None,
+        stdout_path: Path | None = None,
+        stderr_path: Path | None = None,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+        command: str | None = None,
+    ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         self.record["status"] = "completed"
         self.record["completed_at"] = now
+        self.record["finished_at"] = finished_at or _now_iso()
+        if started_at:
+            self.record["started_at"] = started_at
+        if command:
+            self.record["command"] = command
         self.record["report"] = report
         self.record["exit_code"] = exit_code
         self.record["stdout"] = stdout_text
         self.record["stderr"] = stderr_text
         self.record["message"] = message or ""
         self.record["result_status"] = status
+        self.record["outcome"] = outcome or ("Success" if status == "successed" else "Fail")
+        if stdout_path is not None:
+            self.record["stdout_path"] = stdout_path
+            self.record.pop("stdout_full", None)
+        elif stdout_full is not None:
+            self.record["stdout_full"] = stdout_full
+        else:
+            self.record["stdout_full"] = stdout_text
+        if stderr_path is not None:
+            self.record["stderr_path"] = stderr_path
+            self.record.pop("stderr_full", None)
+        elif stderr_full is not None:
+            self.record["stderr_full"] = stderr_full
+        else:
+            self.record["stderr_full"] = stderr_text
         self.persist()
 
+    def _sidecar_paths(self) -> list[Path]:
+        paths: list[Path] = []
+        for key in ("stdout_path", "stderr_path"):
+            path = _as_record_path(self.record.get(key))
+            if path is not None:
+                paths.append(path)
+        return paths
+
+    def _unlink_sidecars(self) -> None:
+        for path in self._sidecar_paths():
+            _unlink_quietly(path)
+
     def abort(self) -> None:
+        self._unlink_sidecars()
         self.close()
-        try:
-            self.path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _unlink_quietly(self.path)
 
     def close(self) -> None:
+        if self.record.get("status") == "completed":
+            self._unlink_sidecars()
         handle = self._handle
         self._handle = None
         if handle is not None and not handle.closed:
@@ -264,6 +617,39 @@ class ClaimResult:
     handle: TaskRecordFile | None = None
 
 
+def _read_open_task_record(handle: IO[bytes]) -> dict:
+    handle.seek(0)
+    raw_bytes = handle.read()
+    raw = raw_bytes.decode("utf-8") if raw_bytes else ""
+    return parse_task_markdown(raw) if raw.strip() else {}
+
+
+def _migrate_legacy_json_claim(
+    *,
+    json_path: Path,
+    json_handle: IO[bytes],
+    json_lock: FileLock,
+    task_id: str,
+    date_str: str,
+    base_dir: Path | None,
+) -> tuple[Path, FileLock, IO[bytes], dict]:
+    md_path = task_record_path(task_id, date_str, base_dir=base_dir)
+    md_lock = FileLock(str(md_path) + ".lock", timeout=0)
+    md_lock.acquire()
+    md_handle: IO[bytes] | None = None
+    try:
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        if not md_path.exists():
+            md_path.touch()
+        md_handle = md_path.open("r+b")
+    except Exception:
+        _close_record_lock(md_handle, md_lock)
+        raise
+    _close_record_lock(json_handle, json_lock)
+    _unlink_quietly(json_path)
+    return md_path, md_lock, md_handle, _read_open_task_record(md_handle)
+
+
 def claim_task_execution(
     date_str: str,
     task_id: str,
@@ -274,13 +660,16 @@ def claim_task_execution(
     *,
     base_dir: Path | None = None,
 ) -> ClaimResult:
-    """Open ``runtime/tasks/{task_id}.json`` exclusively for the life of the task."""
-    path = task_record_path(task_id, base_dir)
+    """Open ``runtime/tasks/{date}/{task_id}.md`` exclusively for the life of the task."""
+    path = resolve_task_record_path(task_id, date_str, base_dir=base_dir)
     lock = FileLock(str(path) + ".lock", timeout=0)
     try:
         lock.acquire()
     except FileLockTimeout:
-        existing = _read_json_object(path)
+        existing = _read_task_record_file(path)
+        if not existing:
+            other = _other_task_record_path(path, task_id, date_str, base_dir=base_dir)
+            existing = _read_task_record_file(other)
         return ClaimResult("running", existing or {"status": "running", "task_id": task_id})
 
     handle: IO[bytes] | None = None
@@ -289,24 +678,50 @@ def claim_task_execution(
         if not path.exists():
             path.touch()
         handle = path.open("r+b")
-        handle.seek(0)
-        raw_bytes = handle.read()
-        raw = raw_bytes.decode("utf-8") if raw_bytes else ""
-        existing: dict = {}
-        if raw.strip():
-            try:
-                parsed = json.loads(raw)
-            except json.JSONDecodeError:
-                parsed = {}
-            if isinstance(parsed, dict):
-                existing = parsed
+        existing = _read_open_task_record(handle)
+        if not existing and path.suffix.lower() != ".json":
+            legacy = legacy_task_json_path(task_id, base_dir=base_dir)
+            if legacy.is_file():
+                try:
+                    existing = parse_task_markdown(legacy.read_text(encoding="utf-8"))
+                except OSError:
+                    existing = {}
+                if existing.get("status") == "completed":
+                    _close_record_lock(handle, lock)
+                    return ClaimResult("completed", existing)
+                _unlink_quietly(legacy)
+
         if existing.get("status") == "completed":
-            handle.close()
-            handle = None
-            lock.release()
+            _close_record_lock(handle, lock)
             return ClaimResult("completed", existing)
+
+        if path.suffix.lower() == ".json":
+            try:
+                path, lock, handle, md_existing = _migrate_legacy_json_claim(
+                    json_path=path,
+                    json_handle=handle,
+                    json_lock=lock,
+                    task_id=task_id,
+                    date_str=date_str,
+                    base_dir=base_dir,
+                )
+            except FileLockTimeout:
+                _close_record_lock(handle, lock)
+                md_path = task_record_path(task_id, date_str, base_dir=base_dir)
+                other = _read_task_record_file(md_path) or existing
+                return ClaimResult("running", other or {"status": "running", "task_id": task_id})
+            if md_existing.get("status") == "completed":
+                _close_record_lock(handle, lock)
+                return ClaimResult("completed", md_existing)
+            existing = md_existing or existing
+
         if existing.get("status") == "running":
-            logging.warning("Task %s has leftover running state; allowing re-execution", task_ref)
+            log_task(
+                logging.WARNING,
+                "Task %s has leftover running state; allowing re-execution",
+                task_ref,
+                task_id=task_id,
+            )
 
         record = {
             "task_id": task_id,
@@ -322,14 +737,35 @@ def claim_task_execution(
         }
         owned = TaskRecordFile(path, lock, handle, record)
         owned.persist()
-        clean_old_files(get_task_records_dir(base_dir), "*.json", days=20)
+        _clean_old_task_records(base_dir)
         return ClaimResult("claimed", record, owned)
     except Exception:
-        if handle is not None and not handle.closed:
-            handle.close()
-        if lock.is_locked:
-            lock.release()
+        _close_record_lock(handle, lock)
         raise
+
+
+def format_opencode_command(argv: Sequence[str] | None = None, prompt: str = "") -> str:
+    if argv:
+        return " ".join(shlex.quote(str(part)) for part in argv)
+    if prompt:
+        return " ".join(shlex.quote(part) for part in ("opencode", "run", "--auto", prompt))
+    return ""
+
+
+def outcome_to_report_status(outcome: str) -> str:
+    return "successed" if outcome == "Success" else "failed"
+
+
+def _log_console_outcome(result: CommandResult, task_id: str) -> None:
+    if result.outcome == "Success":
+        log_task(logging.INFO, "Success", task_id=task_id, to_console=True)
+        return
+    if result.outcome == "Fail":
+        reason = result.message or f"exit_code={result.exit_code}"
+        log_task(logging.WARNING, "Fail %s", reason, task_id=task_id, to_console=True)
+        return
+    reason = result.message or result.stderr or "unknown error"
+    log_task(logging.ERROR, "Error %s", reason, task_id=task_id, to_console=True)
 
 
 def append_task_execution_log(
@@ -347,35 +783,54 @@ def append_task_execution_log(
     base_dir: Path | None = None,
     argv: list[str] | None = None,
     task: str | None = None,
+    outcome: str | None = None,
+    stdout_full: str | None = None,
+    stderr_full: str | None = None,
+    started_at: str | None = None,
+    finished_at: str | None = None,
 ) -> Path:
-    """Write a completed task record keyed by task_id (used by tests and late writers)."""
+    """Write a completed task Markdown record keyed by task_id."""
     prompt = strip_opencode_run_prefix(task if task is not None else command)
-    path = task_record_path(task_id, base_dir)
+    if argv:
+        command_line = format_opencode_command(argv, prompt)
+    elif command.strip().startswith("opencode"):
+        command_line = command
+    else:
+        command_line = format_opencode_command(prompt=prompt or command)
+    resolved_outcome = outcome or (
+        "Success" if status == "successed" else "Fail" if status == "failed" else "Error"
+    )
+    path = resolve_task_record_path(task_id, date_str, base_dir=base_dir)
     record = {
         "received_at": received_at,
+        "started_at": started_at or received_at,
+        "finished_at": finished_at or _now_iso(),
         "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "task_id": task_id,
         "task_ref": task_ref,
         "date": date_str,
-        "task": prompt,
-        "command": prompt,
+        "command": command_line,
         "argv": list(argv) if argv is not None else [],
         "status": "completed",
-        "result_status": status,
+        "outcome": resolved_outcome,
+        "result_status": status if status in {"successed", "failed"} else outcome_to_report_status(resolved_outcome),
         "exit_code": exit_code,
         "message": message or "",
         "stdout": stdout_text,
         "stderr": stderr_text,
+        "stdout_full": stdout_full if stdout_full is not None else stdout_text,
+        "stderr_full": stderr_full if stderr_full is not None else stderr_text,
         "report": {
             "task_ref": task_ref,
-            "status": status,
+            "status": status if status in {"successed", "failed"} else outcome_to_report_status(resolved_outcome),
             "exit_code": exit_code,
             "stdout": stdout_text,
             "stderr": stderr_text,
         },
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    with path.open("wb") as handle:
+        write_task_markdown(handle, record)
     return path
 
 
@@ -602,11 +1057,23 @@ def _unregister_active_process(proc: subprocess.Popen) -> None:
         _ACTIVE_PROCESSES.pop(proc.pid, None)
 
 
-def terminate_process_tree(proc: subprocess.Popen, reason: str) -> None:
+def terminate_process_tree(
+    proc: subprocess.Popen,
+    reason: str,
+    *,
+    task_id: str | None = None,
+) -> None:
     """Terminate the shell and all descendants, with Windows-specific tree killing."""
     if proc.poll() is not None:
         return
-    logging.warning("Terminating process tree pid=%s reason=%s", proc.pid, reason)
+    log_task(
+        logging.WARNING,
+        "Terminating process tree pid=%s reason=%s",
+        proc.pid,
+        reason,
+        task_id=task_id,
+        to_console=False,
+    )
     if os.name == "nt":
         try:
             result = subprocess.run(
@@ -616,15 +1083,25 @@ def terminate_process_tree(proc: subprocess.Popen, reason: str) -> None:
                 timeout=PROCESS_TREE_KILL_TIMEOUT_SECONDS,
             )
             if result.returncode != 0 and proc.poll() is None:
-                logging.error(
+                log_task(
+                    logging.ERROR,
                     "taskkill failed for pid=%s code=%s stderr=%s",
                     proc.pid,
                     result.returncode,
                     (result.stderr or "").strip(),
+                    task_id=task_id,
+                    to_console=False,
                 )
                 proc.kill()
         except (OSError, subprocess.TimeoutExpired) as exc:
-            logging.error("taskkill exception for pid=%s: %s", proc.pid, exc)
+            log_task(
+                logging.ERROR,
+                "taskkill exception for pid=%s: %s",
+                proc.pid,
+                exc,
+                task_id=task_id,
+                to_console=False,
+            )
             if proc.poll() is None:
                 proc.kill()
     else:
@@ -696,17 +1173,97 @@ def dispatch_prompt_from_payload(payload: dict) -> str:
     return strip_opencode_run_prefix(raw)
 
 
+def _copy_temp_file_to_path(temp_file, dest: Path | None) -> None:
+    if dest is None:
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    temp_file.seek(0)
+    with dest.open("wb") as out:
+        shutil.copyfileobj(temp_file, out)
+
+
+def _read_command_outputs(
+    stdout_tmp,
+    stderr_tmp,
+    max_output_bytes: int,
+    stdout_path: Path | None,
+    stderr_path: Path | None,
+) -> tuple[str, str, bool]:
+    for temp_file, dest in ((stdout_tmp, stdout_path), (stderr_tmp, stderr_path)):
+        try:
+            _copy_temp_file_to_path(temp_file, dest)
+        except OSError as exc:
+            logging.warning("Failed to persist command output to %s: %s", dest, exc)
+    out, out_truncated = _read_temp_output_limited(stdout_tmp, max_output_bytes)
+    err_out, err_truncated = _read_temp_output_limited(stderr_tmp, max_output_bytes)
+    return out, err_out, out_truncated or err_truncated
+
+
+@dataclass
+class CommandResult:
+    stdout: str
+    stderr: str
+    exit_code: int
+    outcome: str
+    message: str | None = None
+    stdout_full: str = ""
+    stderr_full: str = ""
+    stdout_path: Path | None = None
+    stderr_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.stdout_path is None and not self.stdout_full:
+            self.stdout_full = self.stdout
+        if self.stderr_path is None and not self.stderr_full:
+            self.stderr_full = self.stderr
+
+    @property
+    def report_status(self) -> str:
+        return outcome_to_report_status(self.outcome)
+
+    def __iter__(self):
+        yield self.stdout
+        yield self.stderr
+        yield self.exit_code
+        yield self.report_status
+        yield self.message
+
+
+def as_command_result(value: CommandResult | Sequence[object]) -> CommandResult:
+    if isinstance(value, CommandResult):
+        return value
+    out, err_out, exit_code, status, msg = value
+    status_text = str(status)
+    if status_text in {"Success", "successed"}:
+        outcome = "Success"
+    elif status_text == "Error":
+        outcome = "Error"
+    else:
+        outcome = "Fail"
+    return CommandResult(
+        str(out),
+        str(err_out),
+        int(exit_code),
+        outcome,
+        None if msg is None else str(msg),
+    )
+
+
 def execute_command(
     command: str | Sequence[str],
     timeout_sec: int,
     max_output_bytes: int = MAX_COMMAND_OUTPUT_BYTES,
     *,
     task_ref: str = "",
+    task_id: str | None = None,
     env: Mapping[str, str] | None = None,
-) -> tuple[str, str, int, str, str | None]:
+    full_stdout_path: Path | None = None,
+    full_stderr_path: Path | None = None,
+) -> CommandResult:
     """Execute a command in its own process group and clean the whole tree on timeout."""
     if _SHUTTING_DOWN.is_set():
-        return "", "soldier is shutting down", -1, "failed", "Execution cancelled during shutdown"
+        msg = "Execution cancelled during shutdown"
+        return CommandResult("", "soldier is shutting down", -1, "Error", msg)
     popen_options: dict = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
@@ -724,40 +1281,67 @@ def execute_command(
     else:
         popen_options["start_new_session"] = True
 
+    def _result(
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+        outcome: str,
+        message: str | None,
+    ) -> CommandResult:
+        return CommandResult(
+            stdout,
+            stderr,
+            exit_code,
+            outcome,
+            message,
+            stdout_path=full_stdout_path,
+            stderr_path=full_stderr_path,
+        )
+
     with tempfile.TemporaryFile() as stdout_tmp, tempfile.TemporaryFile() as stderr_tmp:
         popen_options["stdout"] = stdout_tmp
         popen_options["stderr"] = stderr_tmp
         try:
             proc = subprocess.Popen(popen_target, **popen_options)
         except OSError as exc:
-            return "", str(exc), -1, "failed", f"Execution failed: {exc}"
+            return CommandResult("", str(exc), -1, "Error", f"Execution failed: {exc}")
 
         _register_active_process(proc)
         try:
             if _SHUTTING_DOWN.is_set():
-                terminate_process_tree(proc, "soldier shutdown race")
-                return "", "soldier is shutting down", -1, "failed", "Execution cancelled during shutdown"
+                terminate_process_tree(proc, "soldier shutdown race", task_id=task_id)
+                msg = "Execution cancelled during shutdown"
+                return CommandResult("", "soldier is shutting down", -1, "Error", msg)
             try:
                 exit_code = proc.wait(timeout=timeout_sec)
             except subprocess.TimeoutExpired:
-                terminate_process_tree(proc, f"task timeout: {task_ref or _command_label(command)[:80]}")
-                out, out_truncated = _read_temp_output_limited(stdout_tmp, max_output_bytes)
-                err_out, err_truncated = _read_temp_output_limited(stderr_tmp, max_output_bytes)
+                terminate_process_tree(
+                    proc,
+                    f"task timeout: {task_ref or _command_label(command)[:80]}",
+                    task_id=task_id,
+                )
+                out, err_out, truncated = _read_command_outputs(
+                    stdout_tmp, stderr_tmp, max_output_bytes, full_stdout_path, full_stderr_path
+                )
                 if not err_out:
                     err_out = "timeout"
                 msg = f"Command timeout (>{timeout_sec}s); process tree terminated"
-                if out_truncated or err_truncated:
+                if truncated:
                     msg += "; output truncated"
-                return out, err_out, -1, "failed", msg
+                return _result(out, err_out, -1, "Fail", msg)
 
-            out, out_truncated = _read_temp_output_limited(stdout_tmp, max_output_bytes)
-            err_out, err_truncated = _read_temp_output_limited(stderr_tmp, max_output_bytes)
-            ok_run = exit_code == 0
-            status = "successed" if ok_run else "failed"
-            msg = None if ok_run else f"Command exit code {exit_code}"
-            if out_truncated or err_truncated:
-                msg = f"{msg}; output truncated" if msg else "output truncated"
-            return out, err_out, exit_code, status, msg
+            out, err_out, truncated = _read_command_outputs(
+                stdout_tmp, stderr_tmp, max_output_bytes, full_stdout_path, full_stderr_path
+            )
+            if exit_code == 0:
+                outcome = "Success"
+                msg = "output truncated" if truncated else None
+            else:
+                outcome = "Fail"
+                msg = f"Command exit code {exit_code}"
+                if truncated:
+                    msg += "; output truncated"
+            return _result(out, err_out, exit_code, outcome, msg)
         finally:
             _unregister_active_process(proc)
 
@@ -1051,14 +1635,14 @@ def handle_dispatch_connection(
                 return
             date_str = task_date_override.strip()
         full_ref = task_ref_full(date_str, role, task_id)
-        received_at = datetime.now().astimezone().isoformat(timespec="seconds")
-        extras = task_extra(task_id)
-        logging.info("Received — %s", prompt, extra=extras)
+        received_at = _now_iso()
+        log_task(logging.INFO, "Received", task_id=task_id, to_console=True)
+        log_task(logging.INFO, "Received at %s", received_at, task_id=task_id)
         claim = claim_task_execution(
             date_str,
             task_id,
             full_ref,
-            prompt,
+            format_opencode_command(prompt=prompt),
             received_at,
             timeout_sec + RUNNING_STALE_GRACE_SECONDS,
         )
@@ -1066,9 +1650,11 @@ def handle_dispatch_connection(
         if claim.status == "completed":
             previous_report = previous_state.get("report") if isinstance(previous_state, dict) else None
             if not isinstance(previous_report, dict):
-                logging.warning(
-                    "Duplicate completed without saved report; ignoring",
-                    extra=extras,
+                log_task(
+                    logging.WARNING,
+                    "Fail completed state has no saved report",
+                    task_id=task_id,
+                    to_console=True,
                 )
                 send_dispatch_response(
                     conn,
@@ -1089,17 +1675,31 @@ def handle_dispatch_connection(
                     "execution_deadline": str(previous_state.get("execution_deadline") or ""),
                 },
             )
-            logging.info("Duplicate already completed; replaying saved report", extra=extras)
+            prev_status = str(previous_report.get("status") or "")
+            if prev_status == "successed":
+                log_task(logging.INFO, "Success", task_id=task_id, to_console=True)
+            else:
+                log_task(
+                    logging.WARNING,
+                    "Fail replay previous report",
+                    task_id=task_id,
+                    to_console=True,
+                )
+            reported_at = _now_iso()
+            log_task(logging.INFO, "Reported at %s", reported_at, task_id=task_id)
             _, serr = send_report(commander_host, commander_port, previous_report)
             if serr:
-                logging.error("Failed to replay completed report: %s", serr, extra=extras)
                 try:
                     enqueue_pending_report(commander_host, commander_port, previous_report, serr)
+                    log_task(logging.INFO, "Report: queued: %s", serr, task_id=task_id)
                 except OSError as e:
-                    logging.error("Failed to queue replay report: %s", e, extra=extras)
+                    log_task(logging.ERROR, "Error %s", e, task_id=task_id, to_console=True)
+                    log_task(logging.INFO, "Report: send failed: %s", e, task_id=task_id)
+            else:
+                log_task(logging.INFO, "Report: ok", task_id=task_id)
             return
         if claim.status == "running":
-            logging.info("Duplicate already running; ignoring", extra=extras)
+            log_task(logging.INFO, "Duplicate already running; ignoring", task_id=task_id)
             send_dispatch_response(
                 conn,
                 {
@@ -1124,45 +1724,88 @@ def handle_dispatch_connection(
                 "execution_timeout_seconds": timeout_sec,
             },
         ):
-            logging.error("Claimed but acknowledgment failed; not executing", extra=extras)
+            log_task(
+                logging.ERROR,
+                "Error Claimed but acknowledgment failed; not executing",
+                task_id=task_id,
+                to_console=True,
+            )
             if claim.handle is not None:
                 claim.handle.abort()
             return
 
         argv = ["opencode", "run", "--auto", prompt]
+        started_at = _now_iso()
+        command_line = format_opencode_command(argv, prompt)
+        stdout_sidecar: Path | None = None
+        stderr_sidecar: Path | None = None
+        if claim.handle is not None:
+            stdout_sidecar = task_output_sidecar_path(claim.handle.path, "stdout")
+            stderr_sidecar = task_output_sidecar_path(claim.handle.path, "stderr")
         try:
             argv = build_opencode_argv(prompt)
+            command_line = format_opencode_command(argv, prompt)
         except FileNotFoundError as exc:
-            out, err_out, exit_code, status, msg = "", str(exc), -1, "failed", str(exc)
+            log_task(logging.INFO, "Command: %s", command_line, task_id=task_id)
+            log_task(logging.INFO, "Started at %s", started_at, task_id=task_id)
+            result = CommandResult("", str(exc), -1, "Error", str(exc))
         else:
-            out, err_out, exit_code, status, msg = execute_command(
-                argv,
-                timeout_sec,
-                task_ref=full_ref,
-                env=opencode_run_env(),
+            log_task(logging.INFO, "Command: %s", command_line, task_id=task_id)
+            log_task(logging.INFO, "Started at %s", started_at, task_id=task_id)
+            if claim.handle is not None:
+                claim.handle.record["argv"] = list(argv)
+                claim.handle.record["task"] = prompt
+                claim.handle.record["command"] = command_line
+                try:
+                    claim.handle.persist()
+                except OSError:
+                    pass
+            result = as_command_result(
+                execute_command(
+                    argv,
+                    timeout_sec,
+                    task_ref=full_ref,
+                    task_id=task_id,
+                    env=opencode_run_env(),
+                    full_stdout_path=stdout_sidecar,
+                    full_stderr_path=stderr_sidecar,
+                )
             )
+        finished_at = _now_iso()
+        log_task(logging.INFO, "Finished at %s", finished_at, task_id=task_id)
+        log_task(logging.INFO, "Outcome: %s", result.outcome, task_id=task_id)
+        _log_console_outcome(result, task_id)
 
         report = {
             "task_ref": full_ref,
-            "status": status,
-            "exit_code": exit_code,
-            "stdout": out,
-            "stderr": err_out,
+            "status": result.report_status,
+            "exit_code": result.exit_code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
         }
-        if msg is not None:
-            report["message"] = msg
+        if result.message is not None:
+            report["message"] = result.message
 
         try:
             if claim.handle is not None:
                 claim.handle.record["argv"] = list(argv)
                 claim.handle.record["task"] = prompt
+                claim.handle.record["command"] = command_line
                 claim.handle.complete(
                     report,
-                    status=status,
-                    exit_code=exit_code,
-                    stdout_text=out,
-                    stderr_text=err_out,
-                    message=msg,
+                    status=result.report_status,
+                    exit_code=result.exit_code,
+                    stdout_text=result.stdout,
+                    stderr_text=result.stderr,
+                    message=result.message,
+                    outcome=result.outcome,
+                    stdout_full=None if result.stdout_path else result.stdout_full,
+                    stderr_full=None if result.stderr_path else result.stderr_full,
+                    stdout_path=result.stdout_path,
+                    stderr_path=result.stderr_path,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    command=command_line,
                 )
             else:
                 append_task_execution_log(
@@ -1170,38 +1813,41 @@ def handle_dispatch_connection(
                     task_ref=full_ref,
                     date_str=date_str,
                     received_at=received_at,
-                    command=prompt,
-                    status=status,
-                    exit_code=exit_code,
-                    stdout_text=out,
-                    stderr_text=err_out,
-                    message=msg,
+                    command=command_line,
+                    status=result.report_status,
+                    exit_code=result.exit_code,
+                    stdout_text=result.stdout,
+                    stderr_text=result.stderr,
+                    message=result.message,
                     argv=argv,
                     task=prompt,
+                    outcome=result.outcome,
+                    stdout_full=result.stdout_full,
+                    stderr_full=result.stderr_full,
+                    started_at=started_at,
+                    finished_at=finished_at,
                 )
         except OSError as e:
-            logging.error("Failed to write task log: %s", e, extra=extras)
+            log_task(logging.ERROR, "Error %s", e, task_id=task_id, to_console=True)
 
-        logging.info(
-            "Finished — %s — exit_code=%s",
-            status,
-            exit_code,
-            extra=extras,
-        )
-        if out:
-            logging.debug("stdout — %s", out[:500], extra=extras)
-        if err_out:
-            logging.debug("stderr — %s", err_out[:500], extra=extras)
+        reported_at = _now_iso()
+        log_task(logging.INFO, "Reported at %s", reported_at, task_id=task_id)
         _, serr = send_report(commander_host, commander_port, report)
+        if claim.handle is not None:
+            claim.handle.record["reported_at"] = reported_at
+            try:
+                claim.handle.persist()
+            except OSError:
+                pass
         if serr:
-            logging.error("Failed to report to commander: %s", serr, extra=extras)
             try:
                 enqueue_pending_report(commander_host, commander_port, report, serr)
-                logging.info("Queued for commander report retry", extra=extras)
+                log_task(logging.INFO, "Report: queued: %s", serr, task_id=task_id)
             except OSError as e:
-                logging.error("Failed to queue report retry: %s", e, extra=extras)
+                log_task(logging.ERROR, "Error %s", e, task_id=task_id, to_console=True)
+                log_task(logging.INFO, "Report: send failed: %s", e, task_id=task_id)
             return
-        logging.debug("Reported successfully to commander", extra=extras)
+        log_task(logging.INFO, "Report: ok", task_id=task_id)
     finally:
         if claim is not None and claim.handle is not None:
             claim.handle.close()
@@ -1379,6 +2025,11 @@ Default reads {DEFAULT_CONFIG_NAME} in same directory:
         help="install this role's OpenCode skills and MCP into ~/.config/opencode",
     )
     build_p.add_argument("role", help="role name (hr, accountancy, manager, programmer, victim)")
+    build_p.add_argument(
+        "--test",
+        action="store_true",
+        help="after install, verify OpenCode load and run a representative prompt per skill and MCP",
+    )
 
     args = parser.parse_args(argv)
     if args.cmd == "build":
@@ -1387,6 +2038,8 @@ Default reads {DEFAULT_CONFIG_NAME} in same directory:
         except ImportError:
             from host_build import run_build
 
+        if args.test:
+            return run_build(args.role, run_test=True)
         return run_build(args.role)
 
     try:

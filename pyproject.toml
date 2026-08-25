@@ -36,8 +36,7 @@ artifacts = [
 packages = ["commander", "soldier", "attacker", "common", "holyfw_assets", "sysmon_collector"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"skills" = "holyfw_assets/skills"
-"mcp" = "holyfw_assets/mcp"
+"role_profiles" = "holyfw_assets/role_profiles"
 "domain_resource.md" = "holyfw_assets/domain_resource.md"
 "task_generation_constraints.md" = "holyfw_assets/task_generation_constraints.md"
 "sysmonconfig.xml" = "sysmon_collector/sysmonconfig.xml"
@@ -51,8 +50,7 @@ include = [
   "/holyfw_assets",
   "/sysmon_collector",
   "/sysmonconfig.xml",
-  "/skills",
-  "/mcp",
+  "/role_profiles",
   "/domain_resource.md",
   "/task_generation_constraints.md",
   "/tests",

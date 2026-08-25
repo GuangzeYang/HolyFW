@@ -23,12 +23,21 @@ from soldier.host_build import (
     run_build,
     skill_directories,
 )
+from common.opencode_install import COMMANDER_OPENCODE_MERGE_KEYS, merge_opencode_config
 
 
 ALLOW_PERMISSION = {
     "*": "allow",
     "doom_loop": "allow",
     "external_directory": {"*": "allow"},
+}
+
+DEEPSEEK_PROVIDER = {
+    "deepseek": {
+        "options": {
+            "apiKey": "{env:DEEPSEEK_API_KEY}",
+        }
+    }
 }
 
 
@@ -105,7 +114,8 @@ class MergeMcpTests(unittest.TestCase):
                         "mcp": {
                             "playwright": {"type": "local", "command": ["npx", "new"]},
                             "excel": {"type": "local"},
-                        }
+                        },
+                        "provider": DEEPSEEK_PROVIDER,
                     }
                 ),
                 encoding="utf-8",
@@ -129,6 +139,7 @@ class MergeMcpTests(unittest.TestCase):
             self.assertEqual(merged["keep-me"]["command"], ["old"])
             self.assertEqual(merged["playwright"]["command"], ["npx", "new"])
             self.assertIn("excel", merged)
+            self.assertEqual(saved["provider"], DEEPSEEK_PROVIDER)
             self.assertEqual(saved["$schema"], "https://opencode.ai/config.json")
 
     def test_writes_bundled_permission_without_dropping_mcp(self) -> None:
@@ -140,6 +151,7 @@ class MergeMcpTests(unittest.TestCase):
                     {
                         "permission": ALLOW_PERMISSION,
                         "mcp": {"playwright": {"type": "local", "command": ["npx"]}},
+                        "provider": DEEPSEEK_PROVIDER,
                     }
                 ),
                 encoding="utf-8",
@@ -160,6 +172,7 @@ class MergeMcpTests(unittest.TestCase):
             self.assertEqual(saved["permission"], ALLOW_PERMISSION)
             self.assertIn("keep-me", saved["mcp"])
             self.assertIn("playwright", saved["mcp"])
+            self.assertEqual(saved["provider"], DEEPSEEK_PROVIDER)
 
     def test_host_merge_writes_permission_into_existing_jsonc(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -170,6 +183,7 @@ class MergeMcpTests(unittest.TestCase):
                     {
                         "permission": ALLOW_PERMISSION,
                         "mcp": {"playwright": {"type": "local", "command": ["npx"]}},
+                        "provider": DEEPSEEK_PROVIDER,
                     }
                 ),
                 encoding="utf-8",
@@ -192,6 +206,125 @@ class MergeMcpTests(unittest.TestCase):
             self.assertIn("keep-me", saved_json["mcp"])
             self.assertIn("old", saved_jsonc["mcp"])
             self.assertIn("playwright", saved_jsonc["mcp"])
+            self.assertEqual(saved_json["provider"], DEEPSEEK_PROVIDER)
+            self.assertEqual(saved_jsonc["provider"], DEEPSEEK_PROVIDER)
+
+
+class ProviderMergeTests(unittest.TestCase):
+    def test_nested_provider_options_are_merged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bundled = Path(tmp) / "bundled.json"
+            dest = Path(tmp) / "opencode.json"
+            bundled.write_text(
+                json.dumps({"provider": DEEPSEEK_PROVIDER}),
+                encoding="utf-8",
+            )
+            dest.write_text(
+                json.dumps(
+                    {
+                        "provider": {
+                            "deepseek": {"options": {"baseURL": "https://api.deepseek.com"}},
+                            "keep-me": {"options": {"apiKey": "other"}},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            saved = merge_opencode_config(bundled, dest, keys=("provider",))
+
+            self.assertEqual(
+                saved["provider"]["deepseek"]["options"]["apiKey"],
+                "{env:DEEPSEEK_API_KEY}",
+            )
+            self.assertEqual(
+                saved["provider"]["deepseek"]["options"]["baseURL"],
+                "https://api.deepseek.com",
+            )
+            self.assertEqual(saved["provider"]["keep-me"]["options"]["apiKey"], "other")
+
+    def test_commander_keys_do_not_write_mcp_or_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bundled = Path(tmp) / "bundled.json"
+            dest = Path(tmp) / "opencode.json"
+            bundled.write_text(
+                json.dumps(
+                    {
+                        "permission": ALLOW_PERMISSION,
+                        "mcp": {"playwright": {"type": "local", "command": ["npx"]}},
+                        "provider": DEEPSEEK_PROVIDER,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            dest.write_text(json.dumps({"mcp": {"keep-me": {"type": "local"}}}), encoding="utf-8")
+
+            saved = merge_opencode_config(bundled, dest, keys=COMMANDER_OPENCODE_MERGE_KEYS)
+
+            self.assertEqual(saved["provider"], DEEPSEEK_PROVIDER)
+            self.assertEqual(saved["mcp"], {"keep-me": {"type": "local"}})
+            self.assertNotIn("permission", saved)
+
+
+class CommanderBuildTests(unittest.TestCase):
+    def test_run_build_writes_provider_clears_cache_skips_skills(self) -> None:
+        from commander.host_build import run_build as commander_run_build
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundled = root / "opencode.json"
+            bundled.write_text(
+                json.dumps(
+                    {
+                        "permission": ALLOW_PERMISSION,
+                        "mcp": {"playwright": {"type": "local", "command": ["npx"]}},
+                        "provider": DEEPSEEK_PROVIDER,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            oc = root / "opencode"
+            oc.mkdir()
+            (oc / "opencode.json").write_text(
+                json.dumps({"mcp": {"keep-me": {"type": "local"}}}),
+                encoding="utf-8",
+            )
+            cache = root / "cache"
+            cache.mkdir()
+            (cache / "stale.bin").write_text("x", encoding="utf-8")
+
+            with (
+                mock.patch("holyfw_assets.opencode_config_path", return_value=bundled),
+                mock.patch("common.opencode_install.opencode_config_dir", return_value=oc),
+                mock.patch("common.opencode_install.opencode_cache_dir", return_value=cache),
+                mock.patch("common.opencode_install.ensure_playwright") as playwright,
+                mock.patch("common.opencode_install.copy_skills") as copy_skills_fn,
+            ):
+                code = commander_run_build()
+
+            self.assertEqual(code, 0)
+            playwright.assert_not_called()
+            copy_skills_fn.assert_not_called()
+            self.assertFalse(cache.exists())
+            self.assertFalse((oc / "skills").exists())
+            self.assertFalse((oc / "AGENTS.md").exists())
+            saved = json.loads((oc / "opencode.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["provider"], DEEPSEEK_PROVIDER)
+            self.assertEqual(saved["mcp"], {"keep-me": {"type": "local"}})
+            self.assertNotIn("permission", saved)
+
+    def test_cli_build_skips_server_main(self) -> None:
+        import commander.cli as commander_cli
+
+        with (
+            mock.patch("commander.host_build.run_build", return_value=0) as build,
+            mock.patch("commander.commander.main") as serve,
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                commander_cli.main(["build"])
+        self.assertEqual(ctx.exception.code, 0)
+        build.assert_called_once_with()
+        serve.assert_not_called()
 
 
 class AgentsAndCacheTests(unittest.TestCase):
@@ -264,6 +397,7 @@ class RunBuildTests(unittest.TestCase):
                     {
                         "permission": ALLOW_PERMISSION,
                         "mcp": {"playwright": {"type": "local", "command": ["npx"]}},
+                        "provider": DEEPSEEK_PROVIDER,
                     }
                 ),
                 encoding="utf-8",
@@ -287,7 +421,7 @@ class RunBuildTests(unittest.TestCase):
 
             with (
                 mock.patch("holyfw_assets.skills_root", return_value=skills),
-                mock.patch("holyfw_assets.mcp_config_path", return_value=mcp_file),
+                mock.patch("holyfw_assets.opencode_config_path", return_value=mcp_file),
                 mock.patch("holyfw_assets.agents_md_path", return_value=agents_template),
                 mock.patch("common.opencode_install.opencode_config_dir", return_value=oc),
                 mock.patch("common.opencode_install.opencode_cache_dir", return_value=cache),
@@ -305,8 +439,10 @@ class RunBuildTests(unittest.TestCase):
             saved = json.loads((oc / "opencode.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["mcp"]["playwright"]["command"], ["npx"])
             self.assertEqual(saved["permission"], ALLOW_PERMISSION)
+            self.assertEqual(saved["provider"], DEEPSEEK_PROVIDER)
             saved_jsonc = json.loads((oc / "opencode.jsonc").read_text(encoding="utf-8"))
             self.assertEqual(saved_jsonc["permission"], ALLOW_PERMISSION)
+            self.assertEqual(saved_jsonc["provider"], DEEPSEEK_PROVIDER)
             agents_text = (oc / "AGENTS.md").read_text(encoding="utf-8")
             self.assertIn("**hr**", agents_text)
             self.assertIn("Never ask the user a question", agents_text)

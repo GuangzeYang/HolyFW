@@ -35,9 +35,14 @@ def role_skill_source(role: str) -> Path:
     return _role_skill_source(role, packs=SOLDIER_SKILL_PACKS)
 
 
-def run_build(role: str) -> int:
+def run_build(role: str, *, run_test: bool = False) -> int:
     key = (role or "").strip().lower()
     if key == "attacker":
         print(ATTACKER_BUILD_HINT, file=sys.stderr, flush=True)
         return 1
-    return install_role(role, command_name="soldier build", skill_packs=SOLDIER_SKILL_PACKS)
+    code = install_role(role, command_name="soldier build", skill_packs=SOLDIER_SKILL_PACKS)
+    if code != 0 or not run_test:
+        return code
+    from common.opencode_verify import verify_role_build
+
+    return verify_role_build(key, skill_packs=SOLDIER_SKILL_PACKS)

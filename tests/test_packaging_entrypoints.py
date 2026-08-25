@@ -24,8 +24,9 @@ class PyprojectEntrypointTests(unittest.TestCase):
         self.assertIn('"sysmonconfig.xml" = "sysmon_collector/sysmonconfig.xml"', text)
         self.assertNotIn("sysmon_collector/config.json", text)
         self.assertIn("holyfw_assets", text)
-        self.assertIn('"skills" = "holyfw_assets/skills"', text)
-        self.assertIn('"mcp" = "holyfw_assets/mcp"', text)
+        self.assertIn('"role_profiles" = "holyfw_assets/role_profiles"', text)
+        self.assertNotIn('"skills" = "holyfw_assets/skills"', text)
+        self.assertNotIn('"mcp" = "holyfw_assets/mcp"', text)
         self.assertNotIn('"common.py" = "common.py"', text)
         self.assertIn("common", text)
         self.assertIn("attacker", text)
@@ -70,6 +71,18 @@ class CommanderCliRouteTests(unittest.TestCase):
         text = buf.getvalue()
         self.assertIn("generate", text)
         self.assertIn("breaker", text)
+        self.assertIn("build", text)
+
+    def test_build_subcommand_does_not_start_server(self) -> None:
+        with (
+            mock.patch("commander.host_build.run_build", return_value=0) as build,
+            mock.patch("commander.commander.main") as serve,
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                commander_cli.main(["build"])
+        self.assertEqual(ctx.exception.code, 0)
+        build.assert_called_once_with()
+        serve.assert_not_called()
 
     def test_plain_flags_go_to_server_main(self) -> None:
         import commander.commander as commander_serve
@@ -147,19 +160,25 @@ class AttackerCliRouteTests(unittest.TestCase):
 
 
 class BundledAssetTests(unittest.TestCase):
-    def test_repo_skills_and_mcp_are_visible(self) -> None:
-        from holyfw_assets import agents_md_path, mcp_config_path, skills_root
+    def test_repo_skills_and_opencode_config_are_visible(self) -> None:
+        from holyfw_assets import agents_md_path, opencode_config_path, skills_root
 
         self.assertTrue((skills_root() / "hr-skills").is_dir())
         self.assertTrue((skills_root() / "attacker-skills" / "generator_system.md").is_file())
-        self.assertTrue(mcp_config_path().is_file())
+        self.assertTrue(opencode_config_path().is_file())
         self.assertTrue(agents_md_path().is_file())
-        payload = json.loads(mcp_config_path().read_text(encoding="utf-8"))
+        payload = json.loads(opencode_config_path().read_text(encoding="utf-8"))
         permission = payload.get("permission")
         self.assertIsInstance(permission, dict)
         self.assertEqual(permission.get("*"), "allow")
         self.assertEqual(permission.get("doom_loop"), "allow")
         self.assertEqual(permission.get("external_directory"), {"*": "allow"})
+        provider = payload.get("provider")
+        self.assertIsInstance(provider, dict)
+        self.assertEqual(
+            provider["deepseek"]["options"]["apiKey"],
+            "{env:DEEPSEEK_API_KEY}",
+        )
 
     def test_config_relative_path_falls_back_to_bundled_basename(self) -> None:
         from commander.runtime_config import resolve_config_relative_path
