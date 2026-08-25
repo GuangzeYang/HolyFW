@@ -142,71 +142,64 @@ def copy_skills(pack_root: Path, dest_root: Path) -> list[str]:
     return installed
 
 
-def _load_opencode_dest(dest_path: Path) -> dict[str, Any]:
-    if dest_path.is_file():
-        existing = load_jsonc(dest_path.read_text(encoding="utf-8"))
-        if isinstance(existing, dict):
-            return existing
-    return {"$schema": _OPENCODE_SCHEMA}
+def _unlink_if_exists(path: Path) -> None:
+    if path.is_file() or path.is_symlink():
+        path.unlink()
 
 
-def _merge_named_mapping(current: Any, incoming: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(current) if isinstance(current, dict) else {}
-    merged.update(incoming)
-    return merged
-
-
-def _merge_provider_block(current: Any, incoming: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(current) if isinstance(current, dict) else {}
-    for name, cfg in incoming.items():
-        if not isinstance(cfg, dict):
-            merged[name] = cfg
-            continue
-        existing_cfg = merged.get(name)
-        base = dict(existing_cfg) if isinstance(existing_cfg, dict) else {}
-        new_cfg = dict(cfg)
-        if "options" in new_cfg:
-            cur_opts = base.get("options") if isinstance(base.get("options"), dict) else {}
-            inc_opts = new_cfg["options"] if isinstance(new_cfg["options"], dict) else {}
-            new_cfg["options"] = {**cur_opts, **inc_opts}
-        base.update(new_cfg)
-        merged[name] = base
-    return merged
-
-
-def merge_opencode_config(
+def write_opencode_config(
     bundled_path: Path,
     dest_path: Path,
     *,
     keys: Sequence[str],
 ) -> dict[str, Any]:
+    """Replace dest with a fresh config built only from bundled keys. Never read dest."""
     bundled = load_jsonc(bundled_path.read_text(encoding="utf-8"))
     if not isinstance(bundled, dict):
         bundled = {}
-    existing = _load_opencode_dest(dest_path)
-
+    schema = bundled.get("$schema") or _OPENCODE_SCHEMA
+    payload: dict[str, Any] = {"$schema": schema}
     for key in keys:
         if key == "permission":
-            if "permission" in bundled:
-                existing["permission"] = bundled["permission"]
+            if "permission" not in bundled:
+                raise ValueError(f"No permission config in {bundled_path}")
+            payload["permission"] = bundled["permission"]
             continue
         if key == "mcp":
             incoming = bundled.get("mcp")
             if not isinstance(incoming, dict) or not incoming:
                 raise ValueError(f"No mcp servers in {bundled_path}")
-            existing["mcp"] = _merge_named_mapping(existing.get("mcp"), incoming)
+            payload["mcp"] = dict(incoming)
             continue
         if key == "provider":
             incoming = bundled.get("provider")
             if not isinstance(incoming, dict) or not incoming:
                 raise ValueError(f"No provider config in {bundled_path}")
-            existing["provider"] = _merge_provider_block(existing.get("provider"), incoming)
+            payload["provider"] = dict(incoming)
             continue
-        raise ValueError(f"Unknown opencode merge key {key!r}")
+        raise ValueError(f"Unknown opencode config key {key!r}")
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    dest_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return existing
+    _unlink_if_exists(dest_path)
+    dest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
+def write_host_opencode_configs(
+    bundled_path: Path,
+    config_dir: Path | None = None,
+    *,
+    keys: Sequence[str] = ROLE_OPENCODE_MERGE_KEYS,
+) -> dict[str, Any]:
+    """Delete existing OpenCode json/jsonc, then write a new opencode.json from the template."""
+    root = config_dir if config_dir is not None else opencode_config_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    _unlink_if_exists(root / "opencode.jsonc")
+    return write_opencode_config(bundled_path, root / "opencode.json", keys=keys)
+
+
+merge_opencode_config = write_opencode_config
+merge_host_opencode_configs = write_host_opencode_configs
 
 
 def merge_mcp_config(bundled_path: Path, dest_path: Path) -> dict[str, Any]:
@@ -217,23 +210,9 @@ def merge_mcp_config(bundled_path: Path, dest_path: Path) -> dict[str, Any]:
     keys.append("mcp")
     if isinstance(bundled, dict) and isinstance(bundled.get("provider"), dict) and bundled["provider"]:
         keys.append("provider")
-    saved = merge_opencode_config(bundled_path, dest_path, keys=keys)
+    saved = write_opencode_config(bundled_path, dest_path, keys=keys)
     mcp = saved.get("mcp")
     return mcp if isinstance(mcp, dict) else {}
-
-
-def merge_host_opencode_configs(
-    bundled_path: Path,
-    config_dir: Path | None = None,
-    *,
-    keys: Sequence[str] = ROLE_OPENCODE_MERGE_KEYS,
-) -> dict[str, Any]:
-    root = config_dir if config_dir is not None else opencode_config_dir()
-    merged = merge_opencode_config(bundled_path, root / "opencode.json", keys=keys)
-    jsonc_path = root / "opencode.jsonc"
-    if jsonc_path.is_file():
-        merge_opencode_config(bundled_path, jsonc_path, keys=keys)
-    return merged
 
 
 def install_agents_md(role: str, template_path: Path, dest_path: Path | None = None) -> Path:
@@ -307,7 +286,7 @@ def install_role(
         legacy = opencode_legacy_skill_dir()
         if legacy.is_dir():
             shutil.rmtree(legacy)
-        merge_host_opencode_configs(opencode_config_path(), keys=ROLE_OPENCODE_MERGE_KEYS)
+        write_host_opencode_configs(opencode_config_path(), keys=ROLE_OPENCODE_MERGE_KEYS)
         install_agents_md(role_key, agents_md_path())
         if clear_opencode_cache():
             print(f"Cleared OpenCode cache: {opencode_cache_dir()}", flush=True)
@@ -326,7 +305,7 @@ def install_commander_opencode(*, command_name: str = "commander build") -> int:
     try:
         from holyfw_assets import opencode_config_path
 
-        merge_host_opencode_configs(
+        write_host_opencode_configs(
             opencode_config_path(),
             keys=COMMANDER_OPENCODE_MERGE_KEYS,
         )

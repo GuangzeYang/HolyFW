@@ -13,6 +13,7 @@ from common.opencode_install import (
     install_agents_md,
     install_role,
     load_jsonc,
+    write_host_opencode_configs,
     merge_host_opencode_configs,
     merge_mcp_config,
     opencode_agents_md_path,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for soldier build: skill overwrite, MCP merge, Playwright."""
+"""Tests for soldier build: skill overwrite, OpenCode config replace, Playwright."""
 
 from __future__ import annotations
 
@@ -16,14 +16,14 @@ from soldier.host_build import (
     ensure_playwright,
     install_agents_md,
     load_jsonc,
-    merge_host_opencode_configs,
     merge_mcp_config,
     playwright_available,
     role_skill_source,
     run_build,
     skill_directories,
+    write_host_opencode_configs,
 )
-from common.opencode_install import COMMANDER_OPENCODE_MERGE_KEYS, merge_opencode_config
+from common.opencode_install import COMMANDER_OPENCODE_MERGE_KEYS, write_opencode_config
 
 
 ALLOW_PERMISSION = {
@@ -103,8 +103,8 @@ class CopySkillTests(unittest.TestCase):
                 copy_skills(pack, Path(tmp) / "skills")
 
 
-class MergeMcpTests(unittest.TestCase):
-    def test_overwrites_same_name_and_keeps_other_servers(self) -> None:
+class WriteOpencodeConfigTests(unittest.TestCase):
+    def test_replaces_dest_and_drops_old_mcp_servers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bundled = Path(tmp) / "bundled.json"
             dest = Path(tmp) / "opencode.json"
@@ -133,16 +133,17 @@ class MergeMcpTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            merged = merge_mcp_config(bundled, dest)
+            written = merge_mcp_config(bundled, dest)
             saved = json.loads(dest.read_text(encoding="utf-8"))
 
-            self.assertEqual(merged["keep-me"]["command"], ["old"])
-            self.assertEqual(merged["playwright"]["command"], ["npx", "new"])
-            self.assertIn("excel", merged)
+            self.assertNotIn("keep-me", written)
+            self.assertEqual(written["playwright"]["command"], ["npx", "new"])
+            self.assertIn("excel", written)
             self.assertEqual(saved["provider"], DEEPSEEK_PROVIDER)
             self.assertEqual(saved["$schema"], "https://opencode.ai/config.json")
+            self.assertNotIn("keep-me", saved["mcp"])
 
-    def test_writes_bundled_permission_without_dropping_mcp(self) -> None:
+    def test_writes_bundled_permission_and_drops_old_mcp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bundled = Path(tmp) / "bundled.json"
             dest = Path(tmp) / "opencode.json"
@@ -170,11 +171,11 @@ class MergeMcpTests(unittest.TestCase):
             saved = json.loads(dest.read_text(encoding="utf-8"))
 
             self.assertEqual(saved["permission"], ALLOW_PERMISSION)
-            self.assertIn("keep-me", saved["mcp"])
+            self.assertNotIn("keep-me", saved["mcp"])
             self.assertIn("playwright", saved["mcp"])
             self.assertEqual(saved["provider"], DEEPSEEK_PROVIDER)
 
-    def test_host_merge_writes_permission_into_existing_jsonc(self) -> None:
+    def test_host_write_deletes_jsonc_and_ignores_empty_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bundled = root / "bundled.json"
@@ -188,30 +189,21 @@ class MergeMcpTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            (root / "opencode.json").write_text(
-                json.dumps({"mcp": {"keep-me": {"type": "local"}}}),
-                encoding="utf-8",
-            )
-            (root / "opencode.jsonc").write_text(
-                '{\n  // stale ask\n  "permission": "ask",\n  "mcp": { "old": { "type": "local" } }\n}\n',
-                encoding="utf-8",
-            )
+            (root / "opencode.json").write_text("", encoding="utf-8")
+            (root / "opencode.jsonc").write_text("", encoding="utf-8")
 
-            merge_host_opencode_configs(bundled, root)
+            write_host_opencode_configs(bundled, root)
             saved_json = json.loads((root / "opencode.json").read_text(encoding="utf-8"))
-            saved_jsonc = load_jsonc((root / "opencode.jsonc").read_text(encoding="utf-8"))
 
+            self.assertFalse((root / "opencode.jsonc").exists())
             self.assertEqual(saved_json["permission"], ALLOW_PERMISSION)
-            self.assertEqual(saved_jsonc["permission"], ALLOW_PERMISSION)
-            self.assertIn("keep-me", saved_json["mcp"])
-            self.assertIn("old", saved_jsonc["mcp"])
-            self.assertIn("playwright", saved_jsonc["mcp"])
+            self.assertEqual(saved_json["mcp"]["playwright"]["command"], ["npx"])
             self.assertEqual(saved_json["provider"], DEEPSEEK_PROVIDER)
-            self.assertEqual(saved_jsonc["provider"], DEEPSEEK_PROVIDER)
+            self.assertNotIn("keep-me", saved_json.get("mcp", {}))
 
 
-class ProviderMergeTests(unittest.TestCase):
-    def test_nested_provider_options_are_merged(self) -> None:
+class ProviderWriteTests(unittest.TestCase):
+    def test_provider_write_keeps_only_bundled_providers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bundled = Path(tmp) / "bundled.json"
             dest = Path(tmp) / "opencode.json"
@@ -231,19 +223,16 @@ class ProviderMergeTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            saved = merge_opencode_config(bundled, dest, keys=("provider",))
+            saved = write_opencode_config(bundled, dest, keys=("provider",))
 
             self.assertEqual(
                 saved["provider"]["deepseek"]["options"]["apiKey"],
                 "{env:DEEPSEEK_API_KEY}",
             )
-            self.assertEqual(
-                saved["provider"]["deepseek"]["options"]["baseURL"],
-                "https://api.deepseek.com",
-            )
-            self.assertEqual(saved["provider"]["keep-me"]["options"]["apiKey"], "other")
+            self.assertNotIn("baseURL", saved["provider"]["deepseek"]["options"])
+            self.assertNotIn("keep-me", saved["provider"])
 
-    def test_commander_keys_do_not_write_mcp_or_skills(self) -> None:
+    def test_commander_keys_do_not_write_mcp_or_permission(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bundled = Path(tmp) / "bundled.json"
             dest = Path(tmp) / "opencode.json"
@@ -259,10 +248,10 @@ class ProviderMergeTests(unittest.TestCase):
             )
             dest.write_text(json.dumps({"mcp": {"keep-me": {"type": "local"}}}), encoding="utf-8")
 
-            saved = merge_opencode_config(bundled, dest, keys=COMMANDER_OPENCODE_MERGE_KEYS)
+            saved = write_opencode_config(bundled, dest, keys=COMMANDER_OPENCODE_MERGE_KEYS)
 
             self.assertEqual(saved["provider"], DEEPSEEK_PROVIDER)
-            self.assertEqual(saved["mcp"], {"keep-me": {"type": "local"}})
+            self.assertNotIn("mcp", saved)
             self.assertNotIn("permission", saved)
 
 
@@ -285,10 +274,8 @@ class CommanderBuildTests(unittest.TestCase):
             )
             oc = root / "opencode"
             oc.mkdir()
-            (oc / "opencode.json").write_text(
-                json.dumps({"mcp": {"keep-me": {"type": "local"}}}),
-                encoding="utf-8",
-            )
+            (oc / "opencode.json").write_text("", encoding="utf-8")
+            (oc / "opencode.jsonc").write_text("", encoding="utf-8")
             cache = root / "cache"
             cache.mkdir()
             (cache / "stale.bin").write_text("x", encoding="utf-8")
@@ -310,8 +297,9 @@ class CommanderBuildTests(unittest.TestCase):
             self.assertFalse((oc / "AGENTS.md").exists())
             saved = json.loads((oc / "opencode.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["provider"], DEEPSEEK_PROVIDER)
-            self.assertEqual(saved["mcp"], {"keep-me": {"type": "local"}})
+            self.assertNotIn("mcp", saved)
             self.assertNotIn("permission", saved)
+            self.assertFalse((oc / "opencode.jsonc").exists())
 
     def test_cli_build_skips_server_main(self) -> None:
         import commander.cli as commander_cli
@@ -411,6 +399,7 @@ class RunBuildTests(unittest.TestCase):
             existing = oc / "skill" / "exchange-use"
             existing.mkdir(parents=True)
             (existing / "SKILL.md").write_text("old\n", encoding="utf-8")
+            (oc / "opencode.json").write_text("", encoding="utf-8")
             (oc / "opencode.jsonc").write_text(
                 '{"permission": "ask", "mcp": {"stale": {"type": "local"}}}\n',
                 encoding="utf-8",
@@ -440,9 +429,8 @@ class RunBuildTests(unittest.TestCase):
             self.assertEqual(saved["mcp"]["playwright"]["command"], ["npx"])
             self.assertEqual(saved["permission"], ALLOW_PERMISSION)
             self.assertEqual(saved["provider"], DEEPSEEK_PROVIDER)
-            saved_jsonc = json.loads((oc / "opencode.jsonc").read_text(encoding="utf-8"))
-            self.assertEqual(saved_jsonc["permission"], ALLOW_PERMISSION)
-            self.assertEqual(saved_jsonc["provider"], DEEPSEEK_PROVIDER)
+            self.assertFalse((oc / "opencode.jsonc").exists())
+            self.assertNotIn("stale", saved["mcp"])
             agents_text = (oc / "AGENTS.md").read_text(encoding="utf-8")
             self.assertIn("**hr**", agents_text)
             self.assertIn("Never ask the user a question", agents_text)

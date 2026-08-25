@@ -54,7 +54,7 @@ HolyFramework/
 │   ├── programmer-skills/                 # Programmer host Skills
 │   └── attacker-skills/                   # Attacker host Skills plus generator prompts
 ├── commander/
-│   ├── host_build.py                      # commander build: provider env-key merge and OpenCode cache clear
+│   ├── host_build.py                      # commander build: overwrite provider env-key config and clear OpenCode cache
 │   ├── commander.py                       # Main entry point: TCP server, scanner thread, and dependency wiring
 │   ├── generate_role_task.py              # Standalone entry point for generating the daily task file
 │   ├── dispatch.py                        # CLI for manually dispatching a single task
@@ -235,14 +235,14 @@ Start `soldier` first, then start `commander`. After `pip install .` the command
 
 #### Install OpenCode skills/MCP on a soldier host
 
-Run once per role host. Copies that role's skills from `role_profiles/<role>-skills/` into `~/.config/opencode/skills/` (overwriting existing skill directories), merges MCP servers, the DeepSeek `provider.options.apiKey` `{env:DEEPSEEK_API_KEY}` block, and an explicit `permission` object (`*`, `doom_loop`, and `external_directory["*"]` all `allow`) into `~/.config/opencode/opencode.json` and into `opencode.jsonc` when that file already exists, writes a role-stamped `~/.config/opencode/AGENTS.md`, deletes `%USERPROFILE%\.cache\opencode` (not `auth.json`), and installs Playwright Chromium if `npx playwright` is missing. Soldier then runs tasks as `opencode run --auto` with `OPENCODE_PERMISSION` set so workspace-outside paths (Desktop, UNC shares) do not wait for Enter. Do not leave an old `opencode serve` process attached to these hosts; each task starts a fresh `opencode run`.
+Run once per role host. Copies that role's skills from `role_profiles/<role>-skills/` into `~/.config/opencode/skills/` (overwriting existing skill directories). Deletes any existing `~/.config/opencode/opencode.json` and `opencode.jsonc`, then writes a fresh `opencode.json` from the bundled template (`permission`, MCP servers, and DeepSeek `provider.options.apiKey` `{env:DEEPSEEK_API_KEY}`). Also writes a role-stamped `~/.config/opencode/AGENTS.md`, deletes `%USERPROFILE%\.cache\opencode` (not `auth.json`), and installs Playwright Chromium if `npx playwright` is missing. Soldier then runs tasks as `opencode run --auto` with `OPENCODE_PERMISSION` set so workspace-outside paths (Desktop, UNC shares) do not wait for Enter. Do not leave an old `opencode serve` process attached to these hosts; each task starts a fresh `opencode run`.
 
 ```bash
 soldier build hr
 soldier build hr --test
 ```
 
-`--test` runs after a successful install. It checks that OpenCode loads (`opencode --version` and `~/.config/opencode/opencode.json`), that each installed skill and merged MCP is present, then runs `opencode run --auto` with one representative prompt per skill and per MCP (same argv and `OPENCODE_PERMISSION` as production). Prompts are taken from `role_profiles/<role>-skills/PROMPT_TEMPLATES.md`, preferring view/list/search/extract examples when they exist. Skills without an `opencode run` example (for example `pdf`) are skipped. Output is printed to the terminal only (`Target`, `Command`, `Result`); nothing is written under soldier `runtime/` or log files. Each live prompt can take up to 900 seconds. A failed check leaves the installed config in place and exits 1.
+`--test` runs after a successful install. It checks that OpenCode loads (`opencode --version` and `~/.config/opencode/opencode.json`), that each installed skill and bundled MCP is present, then runs `opencode run --auto` with one representative prompt per skill and per MCP (same argv and `OPENCODE_PERMISSION` as production). Prompts are taken from `role_profiles/<role>-skills/PROMPT_TEMPLATES.md`, preferring view/list/search/extract examples when they exist. Skills without an `opencode run` example (for example `pdf`) are skipped. Output is printed to the terminal only (`Target`, `Command`, `Result`); nothing is written under soldier `runtime/` or log files. Each live prompt can take up to 900 seconds. A failed check leaves the installed config in place and exits 1.
 
 Roles: `hr`, `accountancy`, `manager`, `programmer`, `victim`.
 
@@ -259,7 +259,7 @@ attacker build --test
 
 #### Write DeepSeek provider env-key config on the commander host
 
-Does not install skills, `AGENTS.md`, Playwright, or MCP servers. Merges only `provider.deepseek.options.apiKey` (`{env:DEEPSEEK_API_KEY}`) into `~/.config/opencode/opencode.json` (and `opencode.jsonc` if that file exists) and deletes `%USERPROFILE%\.cache\opencode` (not `auth.json`). The process still needs `DEEPSEEK_API_KEY` set at runtime.
+Does not install skills, `AGENTS.md`, Playwright, or MCP servers. Deletes any existing `~/.config/opencode/opencode.json` and `opencode.jsonc`, then writes a fresh `opencode.json` that contains only `provider.deepseek.options.apiKey` (`{env:DEEPSEEK_API_KEY}`). Also deletes `%USERPROFILE%\.cache\opencode` (not `auth.json`). The process still needs `DEEPSEEK_API_KEY` set at runtime.
 
 ```bash
 commander build
