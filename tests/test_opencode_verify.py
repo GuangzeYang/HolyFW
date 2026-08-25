@@ -7,6 +7,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -228,6 +229,44 @@ class VerifyRoleTests(unittest.TestCase):
         self.assertTrue(any("view email" in item for item in prompts))
         self.assertTrue(any("playwright MCP" in item for item in prompts))
         self.assertFalse(any("pdf" in item.lower() and "skill" in item.lower() for item in prompts))
+
+    def test_prints_target_before_skill_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pack = root / "hr-skills"
+            _write_skill(pack, "exchange-use")
+            (pack / "PROMPT_TEMPLATES.md").write_text(HR_PROMPT_FIXTURE, encoding="utf-8")
+            skills_dest = root / "skills"
+            _write_skill(skills_dest, "exchange-use")
+            oc_json = root / "opencode.json"
+            oc_json.write_text(json.dumps({"mcp": {}}), encoding="utf-8")
+            stdout = StringIO()
+            snapshots: list[str] = []
+
+            def run(argv, **kwargs):
+                if argv[-1] != "--version":
+                    snapshots.append(stdout.getvalue())
+                return _completed(0)
+
+            with (
+                mock.patch("sys.stdout", stdout),
+                mock.patch("common.opencode_verify.resolve_opencode_executable", return_value="opencode"),
+                mock.patch("common.opencode_verify.opencode_json_path", return_value=oc_json),
+                mock.patch("common.opencode_verify.opencode_skill_dir", return_value=skills_dest),
+                mock.patch("common.opencode_verify.role_skill_source", return_value=pack),
+                mock.patch("common.opencode_verify.bundled_mcp_names", return_value=[]),
+            ):
+                code = verify_role_build("hr", run=run, timeout=5)
+
+        self.assertEqual(code, 0)
+        self.assertTrue(snapshots)
+        at_skill_run = snapshots[0]
+        self.assertRegex(at_skill_run, r"\[\d+/\d+\] Target: skill:exchange-use")
+        idx = at_skill_run.rfind("Target: skill:exchange-use")
+        current = at_skill_run[idx:]
+        self.assertIn("Command:", current)
+        self.assertIn("Running (timeout 5s)...", current)
+        self.assertNotIn("Result:", current)
 
     def test_nonzero_opencode_exit_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

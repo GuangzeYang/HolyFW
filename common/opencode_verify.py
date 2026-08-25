@@ -152,9 +152,12 @@ def select_skill_prompt(skill_name: str, pack_root: Path) -> tuple[str | None, s
     return None, f"no prompt templates for {key}"
 
 
-def _print_case(case: CaseResult) -> None:
-    print(f"Target: {case.target}", flush=True)
-    print(f"Command: {case.command}", flush=True)
+def _begin_case(index: int, total: int, target: str, command: str) -> None:
+    print(f"[{index}/{total}] Target: {target}", flush=True)
+    print(f"Command: {command}", flush=True)
+
+
+def _finish_case(case: CaseResult) -> None:
     if case.status == "SKIP":
         result = f"SKIP  {case.detail}".rstrip()
     elif case.status == "PASS":
@@ -174,6 +177,46 @@ def _print_summary(cases: Sequence[CaseResult]) -> None:
         f"Build test summary: {passed} passed, {failed} failed, {skipped} skipped",
         flush=True,
     )
+
+
+class _Progress:
+    def __init__(self, total: int) -> None:
+        self.total = total
+        self.index = 0
+        self.cases: list[CaseResult] = []
+
+    def begin(self, target: str, command: str, *, live_timeout: int | None = None) -> None:
+        self.index += 1
+        _begin_case(self.index, self.total, target, command)
+        if live_timeout is not None:
+            print(f"Running (timeout {live_timeout}s)...", flush=True)
+
+    def finish(self, case: CaseResult) -> CaseResult:
+        _finish_case(case)
+        self.cases.append(case)
+        return case
+
+    def run(
+        self,
+        target: str,
+        command: str,
+        fn: Any,
+        *,
+        live_timeout: int | None = None,
+    ) -> CaseResult:
+        self.begin(target, command, live_timeout=live_timeout)
+        return self.finish(fn())
+
+    def skip(self, target: str, command: str, detail: str) -> CaseResult:
+        self.begin(target, command)
+        return self.finish(CaseResult(target, command, "SKIP", detail=detail))
+
+    def has_fail(self) -> bool:
+        return any(case.status == "FAIL" for case in self.cases)
+
+    def done(self) -> int:
+        _print_summary(self.cases)
+        return 0 if all(case.status != "FAIL" for case in self.cases) else 1
 
 
 def _run_captured(
@@ -256,41 +299,39 @@ def _mcp_is_enabled(entry: object) -> bool:
     return bool(entry["enabled"])
 
 
-def _load_installed_skills(skill_names: Sequence[str]) -> list[CaseResult]:
-    cases: list[CaseResult] = []
-    root = opencode_skill_dir()
-    for name in skill_names:
-        path = root / name / "SKILL.md"
-        command = str(path)
-        if path.is_file():
-            cases.append(CaseResult(f"load:skill:{name}", command, "PASS", 0))
-        else:
-            cases.append(
-                CaseResult(f"load:skill:{name}", command, "FAIL", 1, "SKILL.md is missing")
-            )
-    return cases
+def _skill_load_case(name: str) -> CaseResult:
+    path = opencode_skill_dir() / name / "SKILL.md"
+    command = str(path)
+    if path.is_file():
+        return CaseResult(f"load:skill:{name}", command, "PASS", 0)
+    return CaseResult(f"load:skill:{name}", command, "FAIL", 1, "SKILL.md is missing")
 
 
-def _load_merged_mcp(mcp_names: Sequence[str]) -> list[CaseResult]:
-    cases: list[CaseResult] = []
-    command = str(opencode_json_path())
+def _mcp_config_state() -> tuple[dict[str, Any] | None, str | None]:
     try:
         payload = load_jsonc(opencode_json_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        for name in mcp_names:
-            cases.append(CaseResult(f"load:mcp:{name}", command, "FAIL", 1, str(exc)))
-        return cases
+        return None, str(exc)
     mcp = payload.get("mcp") if isinstance(payload, dict) else None
-    mapping = mcp if isinstance(mcp, dict) else {}
-    for name in mcp_names:
-        entry = mapping.get(name)
-        if entry is None:
-            cases.append(CaseResult(f"load:mcp:{name}", command, "FAIL", 1, "missing from config"))
-        elif not _mcp_is_enabled(entry):
-            cases.append(CaseResult(f"load:mcp:{name}", command, "FAIL", 1, "enabled is false"))
-        else:
-            cases.append(CaseResult(f"load:mcp:{name}", command, "PASS", 0))
-    return cases
+    if not isinstance(mcp, dict):
+        return {}, None
+    return mcp, None
+
+
+def _mcp_load_case(
+    name: str,
+    mapping: dict[str, Any] | None,
+    error: str | None,
+) -> CaseResult:
+    command = str(opencode_json_path())
+    if error is not None:
+        return CaseResult(f"load:mcp:{name}", command, "FAIL", 1, error)
+    entry = (mapping or {}).get(name)
+    if entry is None:
+        return CaseResult(f"load:mcp:{name}", command, "FAIL", 1, "missing from config")
+    if not _mcp_is_enabled(entry):
+        return CaseResult(f"load:mcp:{name}", command, "FAIL", 1, "enabled is false")
+    return CaseResult(f"load:mcp:{name}", command, "PASS", 0)
 
 
 def _live_prompt_case(
@@ -307,26 +348,30 @@ def _live_prompt_case(
     return CaseResult(target, command, "FAIL", code, _fail_detail(output))
 
 
-def _emit(cases: Sequence[CaseResult]) -> int:
-    for case in cases:
-        _print_case(case)
-    _print_summary(cases)
-    return 0 if all(case.status != "FAIL" for case in cases) else 1
-
-
 def verify_commander_build(
     *,
     run: Any = subprocess.run,
     timeout: int = VERIFY_RUN_TIMEOUT_SECONDS,
 ) -> int:
     print("Running commander build --test (OpenCode load + provider smoke).", flush=True)
-    cases: list[CaseResult] = [_load_opencode_binary(run=run), _load_opencode_config()]
-    if any(case.status == "FAIL" for case in cases):
-        return _emit(cases)
-    cases.append(
-        _live_prompt_case("provider:deepseek", COMMANDER_SMOKE_PROMPT, run=run, timeout=timeout)
+    progress = _Progress(3)
+    progress.run("load:opencode", "opencode --version", lambda: _load_opencode_binary(run=run))
+    progress.run(
+        "load:opencode.json",
+        str(opencode_json_path()),
+        _load_opencode_config,
     )
-    return _emit(cases)
+    if progress.has_fail():
+        return progress.done()
+    progress.run(
+        "provider:deepseek",
+        format_run_command(COMMANDER_SMOKE_PROMPT),
+        lambda: _live_prompt_case(
+            "provider:deepseek", COMMANDER_SMOKE_PROMPT, run=run, timeout=timeout
+        ),
+        live_timeout=timeout,
+    )
+    return progress.done()
 
 
 def verify_role_build(
@@ -341,37 +386,59 @@ def verify_role_build(
     pack_root = role_skill_source(key, packs=skill_packs or ROLE_SKILL_PACKS)
     skill_names = [path.name for path in skill_directories(pack_root)]
     mcp_names = bundled_mcp_names()
-    cases: list[CaseResult] = [_load_opencode_binary(run=run), _load_opencode_config()]
-    cases.extend(_load_installed_skills(skill_names))
-    cases.extend(_load_merged_mcp(mcp_names))
-    if any(case.status == "FAIL" for case in cases):
-        return _emit(cases)
+    progress = _Progress(2 + (2 * len(skill_names)) + (2 * len(mcp_names)))
+    progress.run("load:opencode", "opencode --version", lambda: _load_opencode_binary(run=run))
+    progress.run(
+        "load:opencode.json",
+        str(opencode_json_path()),
+        _load_opencode_config,
+    )
+    for name in skill_names:
+        progress.run(
+            f"load:skill:{name}",
+            str(opencode_skill_dir() / name / "SKILL.md"),
+            lambda skill=name: _skill_load_case(skill),
+        )
+    mapping, mcp_error = _mcp_config_state()
+    mcp_command = str(opencode_json_path())
+    for name in mcp_names:
+        progress.run(
+            f"load:mcp:{name}",
+            mcp_command,
+            lambda mcp=name: _mcp_load_case(mcp, mapping, mcp_error),
+        )
+    if progress.has_fail():
+        return progress.done()
 
     for name in skill_names:
         prompt, skip_reason = select_skill_prompt(name, pack_root)
         if prompt is None:
-            cases.append(
-                CaseResult(
-                    f"skill:{name}",
-                    "(none)",
-                    "SKIP",
-                    detail=skip_reason or "no representative prompt",
-                )
+            progress.skip(
+                f"skill:{name}",
+                "(none)",
+                skip_reason or "no representative prompt",
             )
             continue
-        cases.append(_live_prompt_case(f"skill:{name}", prompt, run=run, timeout=timeout))
+        progress.run(
+            f"skill:{name}",
+            format_run_command(prompt),
+            lambda current=prompt, skill=name: _live_prompt_case(
+                f"skill:{skill}", current, run=run, timeout=timeout
+            ),
+            live_timeout=timeout,
+        )
 
     for name in mcp_names:
         prompt = mcp_prompt_for(name)
         if not prompt:
-            cases.append(
-                CaseResult(
-                    f"mcp:{name}",
-                    "(none)",
-                    "SKIP",
-                    detail="no built-in MCP smoke prompt",
-                )
-            )
+            progress.skip(f"mcp:{name}", "(none)", "no built-in MCP smoke prompt")
             continue
-        cases.append(_live_prompt_case(f"mcp:{name}", prompt, run=run, timeout=timeout))
-    return _emit(cases)
+        progress.run(
+            f"mcp:{name}",
+            format_run_command(prompt),
+            lambda current=prompt, mcp=name: _live_prompt_case(
+                f"mcp:{mcp}", current, run=run, timeout=timeout
+            ),
+            live_timeout=timeout,
+        )
+    return progress.done()
