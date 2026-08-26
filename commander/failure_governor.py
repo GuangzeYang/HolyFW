@@ -262,3 +262,18 @@ class RoleFailureGovernor:
             save_json_atomic(self.state_file, data)
             logging.warning("Role circuit manually reset: role=%s day=%s", role, target_day)
             return True
+
+    def reset_day(self, day: str | None = None) -> list[str]:
+        """Clear every role's breaker state for ``day``. Returns removed role names."""
+        target_day = day or date.today().isoformat()
+        with self._thread_lock, self._with_file_lock():
+            data = self._locked_load()
+            dates = data.setdefault("dates", {})
+            day_states = dates.get(target_day)
+            if not isinstance(day_states, dict) or not day_states:
+                return []
+            roles = sorted(str(name) for name in day_states)
+            del dates[target_day]
+            save_json_atomic(self.state_file, data)
+            logging.warning("Day circuit state manually reset: day=%s roles=%s", target_day, roles)
+            return roles

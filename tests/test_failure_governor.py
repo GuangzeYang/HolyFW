@@ -70,6 +70,19 @@ class RoleFailureGovernorTests(unittest.TestCase):
         self.assertTrue(self.governor.reset("hr", self.day))
         self.assertTrue(self.governor.can_dispatch("hr", self.day)[0])
 
+    def test_reset_day_clears_all_roles(self) -> None:
+        for role in ("hr", "manager"):
+            for index in range(3):
+                self.governor.record_failure(role, self.day, f"{role} {index}")
+        self.assertFalse(self.governor.can_dispatch("hr", self.day)[0])
+        self.assertFalse(self.governor.can_dispatch("manager", self.day)[0])
+
+        cleared = self.governor.reset_day(self.day)
+        self.assertEqual(cleared, ["hr", "manager"])
+        self.assertTrue(self.governor.can_dispatch("hr", self.day)[0])
+        self.assertTrue(self.governor.can_dispatch("manager", self.day)[0])
+        self.assertEqual(self.governor.status(self.day), {})
+
     def test_duplicate_result_key_is_counted_once(self) -> None:
         self.governor.record_failure(
             "hr",

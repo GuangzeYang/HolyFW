@@ -66,7 +66,7 @@ class TaskScanService:
             if self.failure_governor is not None:
                 allowed, reason = self.failure_governor.can_dispatch(role_key, date_str)
                 if not allowed:
-                    logging.debug(
+                    logging.warning(
                         "Skipping dispatch: %s",
                         reason,
                         extra=log_extra(role_key),

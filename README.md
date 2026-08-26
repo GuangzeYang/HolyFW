@@ -373,8 +373,10 @@ soldier report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status successed --
 
 ```powershell
 commander breaker status
-commander breaker reset --role hr
+commander breaker reset
 ```
+
+`breaker reset` clears every role's breaker for the day, deletes today's `tasks_MM-DD.json` (and generation leftovers), truncates `commander/logs/commander_YYYY-MM-DD.log`, and removes `agent_responses_YYYY-MM-DD`. It does not generate tasks. A running commander generation loop will recreate the daily file afterward. Use `commander breaker reset --circuit-only --role hr` to lift a single role's breaker without wiping tasks or logs.
 
 #### Manually retry records that ultimately failed to report.
 
