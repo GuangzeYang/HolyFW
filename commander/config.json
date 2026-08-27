@@ -39,11 +39,11 @@
     "retry_limit": 2
   },
   "generator": {
-    "max_attempts": 5,
+    "max_attempts": 6,
     "generation_retry_interval_seconds": 1800,
-    "min_internal": 10,
+    "min_internal": 5,
     "time_model": {
-      "tasks_per_role": 39,
+      "tasks_per_role": 78,
       "mu_am_minutes": 630,
       "mu_pm_minutes": 900,
       "sigma_am_minutes": 50,
@@ -57,7 +57,7 @@
     "api_base_url": "https://api.deepseek.com",
     "model": "deepseek-v4-pro",
     "request_timeout_seconds": 300,
-    "max_tokens": 32776
+    "max_tokens": 65536
   },
   "paths": {
     "logs_dir": "logs",

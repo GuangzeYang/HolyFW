@@ -884,12 +884,12 @@ class RuntimeConfigGeneratorFeasibilityTests(unittest.TestCase):
                 load_runtime_config(cfg_path)
         self.assertIn("each role can have at most", str(ctx.exception))
 
-    def test_load_raises_when_min_internal_below_10(self) -> None:
-        from commander.runtime_config import load_runtime_config
+    def test_load_raises_when_min_internal_below_floor(self) -> None:
+        from commander.runtime_config import MIN_INTERNAL_MINUTES, load_runtime_config
 
         base_path = Path(__file__).resolve().parent.parent / "commander" / "config.json"
         data = json.loads(base_path.read_text(encoding="utf-8"))
-        data["generator"]["min_internal"] = 9
+        data["generator"]["min_internal"] = MIN_INTERNAL_MINUTES - 1
         with tempfile.TemporaryDirectory() as tmp:
             cfg_path = Path(tmp) / "config.json"
             cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -11,6 +11,7 @@ from typing import Any
 from common import commander_workspace_dir
 
 WORKDAY_MINUTES = 8 * 60
+MIN_INTERNAL_MINUTES = 5
 
 CONFIG_FILE_NAME = "config.json"
 
@@ -136,8 +137,10 @@ def _validate_schema(data: dict[str, Any]) -> None:
     _validate_positive_int(data, "generator.max_attempts")
     _validate_positive_int(data, "generator.generation_retry_interval_seconds")
     min_internal = _read_required(data, "generator.min_internal", int)
-    if min_internal < 10:
-        raise ValueError("Config key generator.min_internal must be >= 10")
+    if min_internal < MIN_INTERNAL_MINUTES:
+        raise ValueError(
+            f"Config key generator.min_internal must be >= {MIN_INTERNAL_MINUTES}"
+        )
     max_feasible_tasks = WORKDAY_MINUTES // min_internal
     if tasks_per_role > max_feasible_tasks:
         raise ValueError(

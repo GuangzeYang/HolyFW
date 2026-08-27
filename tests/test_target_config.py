@@ -13,7 +13,7 @@ from commander.target_config import TIME_MODEL_INI_KEYS, load_role_time_model, l
 
 
 DEFAULTS = {
-    "tasks_per_role": 39,
+    "tasks_per_role": 78,
     "mu_am_minutes": 630.0,
     "mu_pm_minutes": 900.0,
     "sigma_am_minutes": 50.0,
