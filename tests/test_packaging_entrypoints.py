@@ -31,6 +31,8 @@ class PyprojectEntrypointTests(unittest.TestCase):
         self.assertIn("common", text)
         self.assertIn("attacker", text)
         self.assertIn("attacker/config.json", text)
+        self.assertIn("attacker/AGENTS.md", text)
+        self.assertIn("attacker/skills/**", text)
         self.assertNotIn(
             '"commander/prompt_resources" = "commander/prompt_resources"',
             text,
@@ -149,14 +151,26 @@ class AttackerCliRouteTests(unittest.TestCase):
         run.assert_not_called()
         logs.assert_not_called()
 
-    def test_attacker_build_calls_shared_installer(self) -> None:
+    def test_attacker_build_installs_from_package_dir(self) -> None:
         from attacker.host_build import run_build
 
-        with mock.patch("attacker.host_build.install_role", return_value=0) as install:
+        with (
+            mock.patch("attacker.host_build.copy_skills", return_value=["ad-attack"]) as copy,
+            mock.patch("attacker.host_build.write_host_opencode_configs") as write_cfg,
+            mock.patch("attacker.host_build.install_agents_md") as agents,
+            mock.patch("attacker.host_build.clear_opencode_cache", return_value=False),
+            mock.patch("attacker.host_build.opencode_legacy_skill_dir") as legacy,
+        ):
+            legacy.return_value.is_dir.return_value = False
             self.assertEqual(run_build(), 0)
-        install.assert_called_once()
-        self.assertEqual(install.call_args.args[0], "attacker")
-        self.assertEqual(install.call_args.kwargs["command_name"], "attacker build")
+        copy.assert_called_once()
+        self.assertEqual(copy.call_args.args[0].name, "skills")
+        write_cfg.assert_called_once()
+        self.assertEqual(write_cfg.call_args.args[0].name, "opencode.json")
+        self.assertEqual(write_cfg.call_args.kwargs["keys"], ("permission", "provider"))
+        agents.assert_called_once()
+        self.assertEqual(agents.call_args.args[0], "attacker")
+        self.assertEqual(agents.call_args.args[1].name, "AGENTS.md")
 
 
 class BundledAssetTests(unittest.TestCase):
@@ -164,7 +178,10 @@ class BundledAssetTests(unittest.TestCase):
         from holyfw_assets import agents_md_path, opencode_config_path, skills_root
 
         self.assertTrue((skills_root() / "hr-skills").is_dir())
-        self.assertTrue((skills_root() / "attacker-skills" / "generator_system.md").is_file())
+        self.assertFalse((skills_root() / "attacker-skills").exists())
+        self.assertTrue((REPO_ROOT / "attacker" / "generator_system.md").is_file())
+        self.assertTrue((REPO_ROOT / "attacker" / "skills" / "ad-attack" / "SKILL.md").is_file())
+        self.assertTrue((REPO_ROOT / "attacker" / "AGENTS.md").is_file())
         self.assertTrue(opencode_config_path().is_file())
         self.assertTrue(agents_md_path().is_file())
         payload = json.loads(opencode_config_path().read_text(encoding="utf-8"))

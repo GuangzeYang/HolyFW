@@ -22,6 +22,8 @@ from common.opencode_verify import (
     verify_role_build,
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 HR_PROMPT_FIXTURE = """# HR templates
 
@@ -134,9 +136,7 @@ class PromptPickerTests(unittest.TestCase):
         self.assertIn("no opencode run example", pdf_skip or "")
 
     def test_attacker_uses_discovery_orientation(self) -> None:
-        from holyfw_assets import skills_root
-
-        pack = skills_root() / "attacker-skills"
+        pack = REPO_ROOT / "attacker" / "skills"
         prompt, reason = select_skill_prompt("ad-attack", pack)
         self.assertIsNone(reason)
         self.assertEqual(prompt, ATTACKER_SKILL_PROMPT)
@@ -377,12 +377,19 @@ class BuildFlagRoutingTests(unittest.TestCase):
         from attacker.host_build import run_build
 
         with (
-            mock.patch("attacker.host_build.install_role", return_value=0),
+            mock.patch("attacker.host_build.copy_skills", return_value=["ad-attack"]),
+            mock.patch("attacker.host_build.write_host_opencode_configs"),
+            mock.patch("attacker.host_build.install_agents_md"),
+            mock.patch("attacker.host_build.clear_opencode_cache", return_value=False),
+            mock.patch("attacker.host_build.opencode_legacy_skill_dir") as legacy,
             mock.patch("common.opencode_verify.verify_role_build", return_value=0) as verify,
         ):
+            legacy.return_value.is_dir.return_value = False
             self.assertEqual(run_build(run_test=True), 0)
         verify.assert_called_once()
         self.assertEqual(verify.call_args.args[0], "attacker")
+        self.assertEqual(verify.call_args.kwargs["pack_root"].name, "skills")
+        self.assertEqual(verify.call_args.kwargs["bundled_opencode_path"].name, "opencode.json")
 
 
 if __name__ == "__main__":

@@ -30,6 +30,11 @@ artifacts = [
   "commander/prompt_resources/**",
   "soldier/soldier.ini",
   "attacker/config.json",
+  "attacker/AGENTS.md",
+  "attacker/opencode.json",
+  "attacker/generator_system.md",
+  "attacker/attacker_prompt_template.md",
+  "attacker/skills/**",
 ]
 
 [tool.hatch.build.targets.wheel]

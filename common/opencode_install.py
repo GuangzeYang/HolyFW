@@ -15,7 +15,6 @@ ROLE_SKILL_PACKS: dict[str, str] = {
     "accountancy": "accountancy-skills",
     "manager": "manager-skills",
     "programmer": "programmer-skills",
-    "attacker": "attacker-skills",
     "victim": "victim-skills",
 }
 

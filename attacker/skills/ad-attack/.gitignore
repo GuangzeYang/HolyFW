@@ -1,0 +1,5 @@
+# Runtime capture leftovers if a manual skill run writes next to the skill.
+*.pcap
+*.pcapng
+*.evtx
+*.tmp

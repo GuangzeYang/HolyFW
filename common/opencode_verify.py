@@ -123,9 +123,11 @@ def pick_representative_prompt(prompts: Sequence[str]) -> str | None:
 
 
 def bundled_mcp_names(bundled_path: Path | None = None) -> list[str]:
-    from holyfw_assets import opencode_config_path
+    path = bundled_path
+    if path is None:
+        from holyfw_assets import opencode_config_path
 
-    path = bundled_path if bundled_path is not None else opencode_config_path()
+        path = opencode_config_path()
     payload = load_jsonc(path.read_text(encoding="utf-8"))
     mcp = payload.get("mcp") if isinstance(payload, dict) else None
     if not isinstance(mcp, dict):
@@ -380,12 +382,18 @@ def verify_role_build(
     run: Any = subprocess.run,
     timeout: int = VERIFY_RUN_TIMEOUT_SECONDS,
     skill_packs: dict[str, str] | None = None,
+    pack_root: Path | None = None,
+    bundled_opencode_path: Path | None = None,
 ) -> int:
     key = role.strip().lower()
     print(f"Running build --test for role {key} (load + skill/MCP prompts).", flush=True)
-    pack_root = role_skill_source(key, packs=skill_packs or ROLE_SKILL_PACKS)
-    skill_names = [path.name for path in skill_directories(pack_root)]
-    mcp_names = bundled_mcp_names()
+    resolved_pack = (
+        Path(pack_root)
+        if pack_root is not None
+        else role_skill_source(key, packs=skill_packs or ROLE_SKILL_PACKS)
+    )
+    skill_names = [path.name for path in skill_directories(resolved_pack)]
+    mcp_names = bundled_mcp_names(bundled_opencode_path)
     progress = _Progress(2 + (2 * len(skill_names)) + (2 * len(mcp_names)))
     progress.run("load:opencode", "opencode --version", lambda: _load_opencode_binary(run=run))
     progress.run(
@@ -411,7 +419,7 @@ def verify_role_build(
         return progress.done()
 
     for name in skill_names:
-        prompt, skip_reason = select_skill_prompt(name, pack_root)
+        prompt, skip_reason = select_skill_prompt(name, resolved_pack)
         if prompt is None:
             progress.skip(
                 f"skill:{name}",

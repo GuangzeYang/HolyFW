@@ -2,7 +2,7 @@
 
 This is a **command reference for the human operator / task scheduler**. It tells you the exact `opencode run "..."` text to issue in order to instruct the attacker agent.
 
-The agent's role definition and its mandatory execution protocol (pre-flight check, read state, bracket each action with capture, write back, rollback) live in `skill/attacker-skills/ad-attack/SKILL.md` and are applied automatically by opencode. You do **not** repeat them in the task text — you only select the technique and the objects.
+The agent's role definition and its mandatory execution protocol (pre-flight check, read state, bracket each action with capture, write back, rollback) live in `attacker/skills/ad-attack/SKILL.md` and are applied automatically by opencode. You do **not** repeat them in the task text — you only select the technique and the objects.
 
 ## 1. How the command reaches the agent
 

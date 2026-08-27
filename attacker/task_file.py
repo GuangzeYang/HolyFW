@@ -1,4 +1,4 @@
-"""Attacker daily task list: one JSON array, four business fields per item."""
+"""Attacker daily task list: JSON array with task_id plus four business fields."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Any
 import json
 
-from common import parse_hhmm_to_minute, save_json_atomic, strip_opencode_run_prefix
+from common import assign_task_id, existing_task_id, parse_hhmm_to_minute, save_json_atomic, strip_opencode_run_prefix
 from commander.schedule_shift import SCHEDULE_SHIFT_KEY
 
-TASK_FIELDS = ("task", "planned_time", "started_at", "completed_at")
+TASK_FIELDS = ("task_id", "task", "planned_time", "started_at", "completed_at")
 
 
 def tasks_file_path(data_dir: Path, day: date | None = None) -> Path:
@@ -19,12 +19,14 @@ def tasks_file_path(data_dir: Path, day: date | None = None) -> Path:
 
 
 def empty_task_item(planned_time: str) -> dict[str, str]:
-    return {
+    item = {
         "task": "",
         "planned_time": planned_time,
         "started_at": "",
         "completed_at": "",
     }
+    assign_task_id(item)
+    return item
 
 
 def tasks_from_schedule(schedule: list[str]) -> list[dict[str, str]]:
@@ -42,12 +44,15 @@ def normalize_task_item(raw: Any) -> dict[str, str]:
     if parse_hhmm_to_minute(planned) is None:
         raise ValueError(f"Invalid planned_time: {planned!r}")
     task_text = strip_opencode_run_prefix(_as_text(raw.get("task")))
-    return {
+    item = {
         "task": task_text,
         "planned_time": planned,
         "started_at": _as_text(raw.get("started_at")),
         "completed_at": _as_text(raw.get("completed_at")),
+        "task_id": existing_task_id(raw.get("task_id")),
     }
+    assign_task_id(item)
+    return item
 
 
 def load_attacker_payload(path: Path) -> tuple[list[dict[str, str]], dict[str, Any] | None]:
@@ -110,3 +115,20 @@ def all_completed(tasks: list[dict[str, str]]) -> bool:
 
 def completed_task_texts(tasks: list[dict[str, str]]) -> list[str]:
     return [_as_text(item.get("task")) for item in tasks if task_is_complete(item) and task_has_content(item)]
+
+
+def raw_tasks_missing_ids(path: Path) -> bool:
+    """True when the on-disk file has rows without a valid task_id."""
+    if not path.is_file():
+        return False
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if isinstance(parsed, list):
+        rows = parsed
+    elif isinstance(parsed, dict) and isinstance(parsed.get("tasks"), list):
+        rows = parsed["tasks"]
+    else:
+        return False
+    return any(not isinstance(item, dict) or not existing_task_id(item.get("task_id")) for item in rows)

@@ -13,6 +13,7 @@ from common.agent_request_abc import AgentRequestABC, AgentRequestError, AgentTi
 from attacker.task_file import completed_task_texts, empty_slot_indices
 
 DEFAULT_BATCH_SIZE = 5
+ATTACKER_PACKAGE_DIR = Path(__file__).resolve().parent
 
 FillClient = AgentRequestABC
 logger = logging.getLogger(__name__)
@@ -34,37 +35,26 @@ def _load_json_object(path: Path) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def resolve_skill_file(*relative: str) -> Path | None:
-    """Prefer the installed OpenCode skill copy, then the bundled/repo attacker-skills pack."""
-    installed = Path.home() / ".config" / "opencode" / "skills"
-    candidate = installed.joinpath(*relative)
+def resolve_package_file(*relative: str) -> Path | None:
+    candidate = ATTACKER_PACKAGE_DIR.joinpath(*relative)
     if candidate.is_file():
         return candidate
-    try:
-        from holyfw_assets import skills_root
-
-        pack = skills_root() / "attacker-skills"
-        pack_file = pack.joinpath(*relative)
-        if pack_file.is_file():
-            return pack_file
-    except FileNotFoundError:
-        pass
     return None
 
 
 def resolve_generator_system_path() -> Path | None:
-    return resolve_skill_file("generator_system.md")
+    return resolve_package_file("generator_system.md")
 
 
 def resolve_prompt_template_path() -> Path | None:
-    return resolve_skill_file("attacker_prompt_template.md")
+    return resolve_package_file("attacker_prompt_template.md")
 
 
 def resolve_state_json_path() -> Path | None:
     installed = Path.home() / ".config" / "opencode" / "skills" / "ad-attack" / "state.json"
     if installed.is_file():
         return installed
-    return resolve_skill_file("ad-attack", "state.json")
+    return resolve_package_file("skills", "ad-attack", "state.json")
 
 
 def _task_text_from_item(item: Any) -> str:

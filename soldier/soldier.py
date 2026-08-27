@@ -13,10 +13,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import argparse
 import configparser
 from concurrent.futures import ThreadPoolExecutor
-import codecs
 import json
 import os
-import re
 import shlex
 import shutil
 import socket
@@ -27,7 +25,6 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from io import BytesIO
 from pathlib import Path
 from typing import IO, Mapping, Sequence
 import logging
@@ -51,6 +48,13 @@ from common import (
     DATE_FULL,
     DATE_MD,
     UUID_HEX_NO_HYPHEN,
+)
+from common.task_markdown import (
+    OPENCODE_RUN_FLAGS,
+    report_from_task_record,
+    parse_task_markdown as parse_shared_task_markdown,
+    render_task_markdown as render_shared_task_markdown,
+    write_task_markdown as write_shared_task_markdown,
 )
 
 DEFAULT_PORT = 38471
@@ -78,17 +82,6 @@ _PENDING_REPORTS_LOCK = threading.Lock()
 _ACTIVE_PROCESSES_LOCK = threading.Lock()
 _ACTIVE_PROCESSES: dict[int, subprocess.Popen] = {}
 _SHUTTING_DOWN = threading.Event()
-_FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)", re.DOTALL)
-_BODY_ONLY_KEYS = {
-    "stdout",
-    "stderr",
-    "stdout_full",
-    "stderr_full",
-    "stdout_path",
-    "stderr_path",
-    "task",
-}
-_STREAM_CHUNK_BYTES = 65536
 _TASK_RECORD_META_KEYS = (
     "task_id",
     "task_ref",
@@ -100,13 +93,7 @@ _TASK_RECORD_META_KEYS = (
     "started_at",
     "finished_at",
     "reported_at",
-    "updated_at",
-    "execution_deadline",
-    "exit_code",
-    "message",
-    "command",
     "argv",
-    "report",
 )
 
 
@@ -347,154 +334,17 @@ def _as_record_path(value: object) -> Path | None:
     return None
 
 
-def _max_backtick_run(text: str) -> int:
-    longest = 0
-    current = 0
-    for char in text:
-        if char == "`":
-            current += 1
-            if current > longest:
-                longest = current
-        else:
-            current = 0
-    return longest
-
-
-def _max_backtick_run_file(path: Path | None) -> int:
-    if path is None or not path.is_file():
-        return 0
-    longest = 0
-    current = 0
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(_STREAM_CHUNK_BYTES)
-            if not chunk:
-                break
-            for byte in chunk:
-                if byte == 96:
-                    current += 1
-                    if current > longest:
-                        longest = current
-                else:
-                    current = 0
-    return longest
-
-
-def _fence_for_record(record: dict) -> str:
-    command = str(record.get("command") or "")
-    stdout = record.get("stdout_full")
-    if not isinstance(stdout, str):
-        stdout = str(record.get("stdout") or "")
-    stderr = record.get("stderr_full")
-    if not isinstance(stderr, str):
-        stderr = str(record.get("stderr") or "")
-    longest = max(
-        2,
-        _max_backtick_run(command),
-        _max_backtick_run(stdout),
-        _max_backtick_run(stderr),
-        _max_backtick_run_file(_as_record_path(record.get("stdout_path"))),
-        _max_backtick_run_file(_as_record_path(record.get("stderr_path"))),
-    )
-    return "`" * (longest + 1)
-
-
-def _stream_utf8_file(dest: IO[bytes], path: Path) -> None:
-    decoder = codecs.getincrementaldecoder("utf-8")("replace")
-    with path.open("rb") as src:
-        while True:
-            chunk = src.read(_STREAM_CHUNK_BYTES)
-            if not chunk:
-                rest = decoder.decode(b"", final=True)
-                if rest:
-                    dest.write(rest.encode("utf-8"))
-                return
-            text = decoder.decode(chunk)
-            if text:
-                dest.write(text.encode("utf-8"))
-
-
 def write_task_markdown(handle: IO[bytes], record: dict) -> None:
-    def write(text: str) -> None:
-        handle.write(text.encode("utf-8"))
-
-    write("---\n")
-    seen: set[str] = set()
-    for key in _TASK_RECORD_META_KEYS:
-        if key in _BODY_ONLY_KEYS or key not in record or record[key] is None:
-            continue
-        write(f"{key}: {json.dumps(record[key], ensure_ascii=False)}\n")
-        seen.add(key)
-    for key, value in record.items():
-        if key in seen or key in _BODY_ONLY_KEYS or value is None or isinstance(value, Path):
-            continue
-        write(f"{key}: {json.dumps(value, ensure_ascii=False)}\n")
-    write("---\n")
-    command = str(record.get("command") or "")
-    fence = _fence_for_record(record)
-    write(f"\n## Command\n\n{fence}text\n")
-    write(command)
-    if command and not command.endswith("\n"):
-        write("\n")
-    write(f"{fence}\n")
-    stdout_path = _as_record_path(record.get("stdout_path"))
-    stderr_path = _as_record_path(record.get("stderr_path"))
-    stdout = record.get("stdout_full")
-    if not isinstance(stdout, str):
-        stdout = str(record.get("stdout") or "")
-    stderr = record.get("stderr_full")
-    if not isinstance(stderr, str):
-        stderr = str(record.get("stderr") or "")
-    if record.get("status") != "completed" and not stdout_path and not stderr_path and not stdout and not stderr:
-        return
-    write(f"\n## stdout\n\n{fence}text\n")
-    if stdout_path is not None and stdout_path.is_file():
-        _stream_utf8_file(handle, stdout_path)
-    else:
-        write(stdout)
-    write(f"\n{fence}\n\n## stderr\n\n{fence}text\n")
-    if stderr_path is not None and stderr_path.is_file():
-        _stream_utf8_file(handle, stderr_path)
-    else:
-        write(stderr)
-    write(f"\n{fence}\n")
+    write_shared_task_markdown(handle, record, meta_keys=_TASK_RECORD_META_KEYS)
 
 
 def parse_task_markdown(text: str) -> dict:
     """Parse soldier task Markdown (JSON-valued frontmatter) or leftover JSON."""
-    raw = text.strip()
-    if not raw:
-        return {}
-    match = _FRONTMATTER_RE.match(text)
-    if match is None:
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    record: dict = {}
-    for line in match.group(1).splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        key, sep, rest = stripped.partition(":")
-        if not sep:
-            continue
-        payload = rest.strip()
-        if not payload:
-            record[key] = ""
-            continue
-        try:
-            record[key] = json.loads(payload)
-        except json.JSONDecodeError:
-            record[key] = payload
-    return record
+    return parse_shared_task_markdown(text)
 
 
 def render_task_markdown(record: dict) -> str:
-    buffer = BytesIO()
-    write_task_markdown(buffer, record)
-    return buffer.getvalue().decode("utf-8")
+    return render_shared_task_markdown(record, meta_keys=_TASK_RECORD_META_KEYS)
 
 
 def _read_task_record_file(path: Path) -> dict:
@@ -748,7 +598,7 @@ def format_opencode_command(argv: Sequence[str] | None = None, prompt: str = "")
     if argv:
         return " ".join(shlex.quote(str(part)) for part in argv)
     if prompt:
-        return " ".join(shlex.quote(part) for part in ("opencode", "run", "--auto", prompt))
+        return " ".join(shlex.quote(part) for part in ("opencode", "run", *OPENCODE_RUN_FLAGS, prompt))
     return ""
 
 
@@ -1155,7 +1005,7 @@ OPENCODE_PERMISSION_ALLOW: dict[str, object] = {
 
 
 def build_opencode_argv(prompt: str) -> list[str]:
-    return [resolve_opencode_executable(), "run", "--auto", prompt]
+    return [resolve_opencode_executable(), "run", *OPENCODE_RUN_FLAGS, prompt]
 
 
 def opencode_run_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -1648,7 +1498,7 @@ def handle_dispatch_connection(
         )
         previous_state = claim.record
         if claim.status == "completed":
-            previous_report = previous_state.get("report") if isinstance(previous_state, dict) else None
+            previous_report = report_from_task_record(previous_state)
             if not isinstance(previous_report, dict):
                 log_task(
                     logging.WARNING,
@@ -1734,7 +1584,7 @@ def handle_dispatch_connection(
                 claim.handle.abort()
             return
 
-        argv = ["opencode", "run", "--auto", prompt]
+        argv = ["opencode", "run", *OPENCODE_RUN_FLAGS, prompt]
         started_at = _now_iso()
         command_line = format_opencode_command(argv, prompt)
         stdout_sidecar: Path | None = None

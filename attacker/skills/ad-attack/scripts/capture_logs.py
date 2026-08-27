@@ -8,18 +8,15 @@ Usage:
 
 `start` records the current UTC time as the window start. `stop` exports the
 events recorded between that start time and now into one .evtx file per
-configured channel (Sysmon + Security, see config.json `logs.channels` /
-`logs.security_log`) in the output directory using `wevtutil epl` with a
-time-based XPath query.
-
-The log channels, wevtutil path and output directory are read from config.json.
-A channel that fails to export does not block the others.
+configured channel named `{task_id}_{label}_{channel}.evtx` in
+HOLYFW_ATTACKER_OUTPUT_DIR when set, otherwise the configured output directory.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -29,6 +26,12 @@ from pathlib import Path
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = SKILL_ROOT / "config.json"
 STATE_FILE_NAME = ".capture_logs_state.json"
+
+try:
+    from attacker.capture_paths import capture_file_stem, dataset_output_dir
+except ImportError:  # pragma: no cover - skill copy without the attacker package
+    capture_file_stem = None  # type: ignore[assignment]
+    dataset_output_dir = None  # type: ignore[assignment]
 
 
 def load_config() -> dict:
@@ -42,11 +45,14 @@ def load_config() -> dict:
 
 def output_dir() -> Path:
     cfg = load_config()
-    raw = cfg.get("output_dir", "output")
-    p = Path(raw)
-    if not p.is_absolute():
-        p = SKILL_ROOT / p
-    return p
+    raw = str(cfg.get("output_dir") or "output")
+    if dataset_output_dir is not None:
+        return dataset_output_dir(config_output_dir=raw, skill_root=SKILL_ROOT)
+    env_raw = str(os.environ.get("HOLYFW_ATTACKER_OUTPUT_DIR") or "").strip()
+    if env_raw:
+        return Path(env_raw)
+    path = Path(raw)
+    return path if path.is_absolute() else SKILL_ROOT / path
 
 
 def sysmon_log() -> str:
@@ -89,7 +95,6 @@ def channel_short(log_name: str) -> str:
         return "SMBServer"
     if "winrm" in low:
         return "WinRM"
-    # fall back to a sanitised fragment of the channel name
     frag = log_name.replace("Microsoft-Windows-", "").split("/")[0]
     cleaned = "".join(ch if ch.isalnum() else "_" for ch in frag)
     return cleaned or "logs"
@@ -111,12 +116,19 @@ def _safe_label(label: str) -> str:
     return cleaned or "logs"
 
 
+def _evtx_name(label: str, short: str) -> str:
+    if capture_file_stem is not None:
+        return capture_file_stem(label, short) + ".evtx"
+    task_id = str(os.environ.get("HOLYFW_ATTACKER_TASK_ID") or "").strip()
+    cleaned = _safe_label(label)
+    if task_id:
+        safe_id = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in task_id)
+        return f"{safe_id}_{cleaned}_{short}.evtx"
+    return f"{cleaned}_{short}.evtx"
+
+
 def _now_utc_query() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-
-
-def _now_stamp() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
 def cmd_start(args: argparse.Namespace) -> int:
@@ -182,7 +194,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
     errors: list[str] = []
     for log_name in channels:
         short = channel_short(log_name)
-        out_file = out_dir / f"{label}_{short}_{_now_stamp()}.evtx"
+        out_file = out_dir / _evtx_name(label, short)
         wevtutil_args = [wevtutil, "epl", log_name, str(out_file), f"/q:{query}"]
         try:
             proc = subprocess.run(

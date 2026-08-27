@@ -12,25 +12,28 @@ This skill drives an attacker agent that operates from a Windows host already jo
 The skill is object-driven and stateful:
 
 - `state.json` is the single source of truth for every command parameter. It holds three knowledge partitions — `domain`, `hosts`, and `users` — plus runtime `tickets`, `files`, `techniques`, and `notes`.
+- `changes.json` is the operator rollback ledger: every technique that mutates the target AD (new user, machine account, password reset, RBCD, DC config) must append one record. HolyFW does not revert the domain; the operator uses this file by hand.
 - Each technique id maps to exactly one command.
 - Every atomic action is bracketed by traffic and log capture so the produced dataset is observable and labelable.
 
 ## Directory Layout
 
 ```
-skill/attacker-skills/ad-attack/
+attacker/skills/ad-attack/
 ├── SKILL.md                    # this file
-├── config.json                 # interface, output dir, log channels (environment-specific)
+├── config.json                 # interface, log channels (environment-specific)
 ├── state.json                  # long-term APT state (three knowledge partitions + runtime)
-├── .gitignore                  # ignores runtime output
+├── changes.json                # target-environment mutations for manual rollback
 ├── scripts/
 │   ├── check_environment.py    # pre-flight validation (+ audit subcategory check)
 │   ├── state.py                # read/update state.json
+│   ├── changes.py              # append/read changes.json
 │   ├── capture_traffic.py      # tshark start/stop
 │   ├── capture_logs.py         # Sysmon + Security event-log start/stop (one evtx per channel)
 │   └── elevate.py              # run a command elevated via a one-shot scheduled task
-└── output/                     # runtime pcap/evtx capture output (untracked)
 ```
+
+Captures are written to `attacker/logs/YYYY-MM-DD/` when the scheduler sets `HOLYFW_ATTACKER_OUTPUT_DIR`. File names are `{task_id}_{technique-id}.pcapng` and `{task_id}_{technique-id}_{channel}.evtx` (no timestamp suffix). `config.json` `output_dir` is only the fallback for a manual skill run.
 
 All script invocations below use `python`; run them from the skill root so relative paths resolve correctly.
 
@@ -157,7 +160,7 @@ For every single atomic attack action (one command = one action):
    python scripts/capture_traffic.py stop
    ```
 
-`<technique-id>` is the stable identifier of the technique (see each technique below). The capture start/stop calls must bracket the action even when the action fails, so the failed attempt is still recorded. `capture_logs.py stop` writes one evtx per configured channel named `{label}_{channel}_{timestamp}.evtx` (e.g. `pass-the-ticket_Security_20260821_224834.evtx`); a channel that fails to export does not block the others.
+`<technique-id>` is the stable identifier of the technique (see each technique below). The capture start/stop calls must bracket the action even when the action fails, so the failed attempt is still recorded. `capture_logs.py stop` writes one evtx per configured channel named `{task_id}_{label}_{channel}.evtx` (e.g. `a1b2c3d4e5f67890_pass-the-ticket_Security.evtx`); a channel that fails to export does not block the others.
 
 ### Step 3 — Update the state file
 
@@ -324,6 +327,16 @@ Attacker-owned/decided values that are not discovered facts:
 - `files[]`: interesting files discovered on hosts. Item shape: `{"path": "...", "description": "...", "stale": false, "updated_at": "..."}`.
 - `techniques`: per-technique status and last result (keyed by technique id).
 - `notes[]`: free-form observations. Item shape: `{"text": "..."}`.
+
+### 7. Environment-change ledger — `changes.json`
+
+Whenever a technique **creates or alters an object in the target domain** (not local tickets, pcaps, or `state.json` itself), append one record after the action succeeds. Do not revert the domain from this skill.
+
+```
+python scripts/changes.py add '{"kind": "<kind>", "technique_id": "<technique-id>", "target": "<account-or-object>", "summary": "<what changed>", "reversal": "<operator command to undo>"}'
+```
+
+`kind` is one of: `create_user`, `create_machine_account`, `reset_password`, `rbcd`, `dc_config`, `other`. `reversal` is a hint for the human operator (PowerShell / AD command); HolyFW never executes it.
 
 Every object carries `stale` and `updated_at` (managed by `state.py mark-stale` / `unset-stale` / `touch`) so freshness is always visible.
 
@@ -1270,6 +1283,7 @@ Outputs:
 
 ```
 python scripts/state.py add users '{"username": "<campaign.machine_account.name>", "password": "<campaign.machine_account.password>", "is_machine_account": true, "source": "persistence.add-computer"}'
+python scripts/changes.py add '{"kind": "create_machine_account", "technique_id": "persistence.add-computer", "target": "<campaign.machine_account.name>", "summary": "Created machine account <campaign.machine_account.name>", "reversal": "Remove-ADComputer -Identity <campaign.machine_account.name>"}'
 ```
 
 Rollback: if the machine account no longer works, `mark-stale` it and re-create.
@@ -1300,6 +1314,7 @@ Outputs:
 ```
 python scripts/state.py add domain.rbcd '{"delegate_from": "<campaign.machine_account.name>", "delegate_to": "<target-machine-account>"}'
 python scripts/state.py add tickets.service '{"spn": "cifs/<target-fqdn>", "principal": "<admin>", "impersonated_user": "<admin>", "ccache_file": "<admin>.ccache"}'
+python scripts/changes.py add '{"kind": "rbcd", "technique_id": "persistence.rbcd", "target": "<target-machine-account>", "summary": "Granted RBCD from <campaign.machine_account.name> to <target-machine-account>", "reversal": "Set-ADComputer <target-machine-account> -PrincipalsAllowedToDelegateToAccount $null"}'
 ```
 
 Rollback: if the RBCD edge is revoked, `mark-stale` `domain.rbcd[n]` and re-run this technique.
@@ -1323,6 +1338,7 @@ Outputs:
 
 ```
 python scripts/state.py merge users[<index>] '{"password": "<new>", "stale": false}'
+python scripts/changes.py add '{"kind": "reset_password", "technique_id": "persistence.reset-password", "target": "<user>", "summary": "Reset password for <user>", "reversal": "Set-ADAccountPassword -Identity <user> -Reset"}'
 ```
 
 Rollback: if the reset is later reverted, `mark-stale` the user object and re-run.

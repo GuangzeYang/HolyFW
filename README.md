@@ -45,14 +45,13 @@ HolyFramework/
 ├── domain_resource.md                     # Domain scenarios and task-template resource read at runtime
 ├── task_generation_constraints.md         # Hard-requirement prompt template read at runtime
 ├── requirements.txt                       # Python dependencies
-├── role_profiles/                         # Bundled OpenCode config, AGENTS.md, and per-role skill packs
+├── role_profiles/                         # Bundled OpenCode config, AGENTS.md, and office/victim skill packs
 │   ├── opencode.json                      # MCP servers, permissions, and DeepSeek provider env key
 │   ├── AGENTS.md                          # Role-stamped OpenCode agent rules
 │   ├── accountancy-skills/                # Accountancy host Skills
 │   ├── hr-skills/                         # HR host Skills
 │   ├── manager-skills/                    # Manager host Skills
-│   ├── programmer-skills/                 # Programmer host Skills
-│   └── attacker-skills/                   # Attacker host Skills plus generator prompts
+│   └── programmer-skills/                 # Programmer host Skills
 ├── commander/
 │   ├── host_build.py                      # commander build: overwrite provider env-key config and clear OpenCode cache
 │   ├── commander.py                       # Main entry point: TCP server, scanner thread, and dependency wiring
@@ -79,11 +78,18 @@ HolyFramework/
 │   ├── cli.py                             # Default command starts the attacker scheduler
 │   ├── runtime.py                         # NHPP schedule, batch-of-5 fill, serial local execution
 │   ├── generation.py                      # LLM batch requests using skill prompts and state.json
-│   ├── execute.py                         # Local opencode run plus per-task result log
+│   ├── execute.py                         # Local opencode run plus per-task Markdown transcript
 │   ├── task_file.py                       # Attacker task-list JSON schema
+│   ├── task_record.py                     # Markdown transcript writer
+│   ├── breaker.py                         # attacker breaker reset: task file and/or state.json
+│   ├── AGENTS.md                          # Attacker OpenCode rules
+│   ├── opencode.json                      # Attacker permission + DeepSeek provider (no MCP)
+│   ├── generator_system.md                # Task-generation system prompt
+│   ├── attacker_prompt_template.md        # Task-string grammar for the generator
+│   ├── skills/ad-attack/                  # Attacker OpenCode skill pack
 │   ├── config.json                        # Time model, batch size, and model settings
 │   ├── role_task/                         # Daily attacker task lists
-│   └── logs/                              # Per-task Agent result and exit-code JSONL
+│   └── logs/                              # Scheduler log plus dated dataset folders
 ├── soldier/
 │   ├── soldier.py                         # Main program: receives tasks, executes commands, and reports results
 │   ├── soldier.ini                        # Soldier configuration file
@@ -115,12 +121,13 @@ HolyFramework/
 
 Each attacker task object has:
 
+- `task_id`
 - `task`
 - `planned_time`
 - `started_at`
 - `completed_at`
 
-Per-task Agent output and exit code are appended to `attacker/logs/tasks_YYYY-MM-DD.jsonl`.
+Per-task OpenCode transcripts and capture files live under `attacker/logs/YYYY-MM-DD/`: `{task_id}.md`, `{task_id}_{technique}.pcapng`, and `{task_id}_{technique}_{channel}.evtx`.
 
 ### Shared Task File
 
@@ -182,7 +189,7 @@ This provides the `commander`, `soldier`, and `attacker` commands. Python depend
 You also need:
 
 - Python 3.10+
-- Node.js / `npx` on each soldier host (`soldier build` installs Playwright through npx) and on the attacker host (`attacker build` does the same)
+- Node.js / `npx` on each soldier host (`soldier build` installs Playwright through npx)
 - An executable `opencode` command available on the system
 - Network connectivity between `commander` and every `soldier`
 
@@ -246,16 +253,16 @@ soldier build hr --test
 
 Roles: `hr`, `accountancy`, `manager`, `programmer`, `victim`.
 
-#### Install OpenCode skills/MCP on an attacker host
+#### Install OpenCode skills on an attacker host
 
-Same OpenCode install as soldier (skills, MCP, `AGENTS.md`, cache clear, Playwright), but only for `attacker-skills`. Run once on the attacker host:
+Copies skills from `attacker/skills/` into `~/.config/opencode/skills/`, writes `~/.config/opencode/opencode.json` from `attacker/opencode.json` (permission + DeepSeek provider only; no MCP), and writes `~/.config/opencode/AGENTS.md` from `attacker/AGENTS.md`. Clears `%USERPROFILE%\.cache\opencode` (not `auth.json`). Does not install Playwright. Run once on the attacker host:
 
 ```bash
 attacker build
 attacker build --test
 ```
 
-`--test` is the same live check as on soldier, using `attacker-skills` (the `ad-attack` prompt is `discovery.orientation`). `soldier build attacker` is rejected; soldier is for office roles and victim only.
+`--test` checks that OpenCode loads and runs the `ad-attack` representative prompt (`discovery.orientation`). `soldier build attacker` is rejected; soldier is for office roles and victim only.
 
 #### Write DeepSeek provider env-key config on the commander host
 
@@ -334,6 +341,13 @@ attacker
 `attacker` samples the day's time nodes, writes `attacker/role_task/tasks_MM-DD.json`, requests up to five task strings from the model whenever no filled task is waiting, and executes due or overdue tasks serially with local `opencode run --auto`. Inspect the list with `attacker show`.
 
 `base_time` (0–23) shifts the generated 09:00 workday the same way commander does. Set it in `attacker/config.json` or pass `--base-time` (`attacker --base-time 21`). Times that wrap past midnight stay on the next calendar day and are not treated as already due.
+
+```powershell
+attacker breaker reset --all
+attacker breaker reset --task
+```
+
+`attacker breaker reset --all` (also the default if you omit `--all` / `--task`) deletes today's `attacker/role_task/tasks_MM-DD.json` and rewrites `state.json` plus `changes.json` to empty baselines in both the packaged skill and `~/.config/opencode/skills/ad-attack/` when those directories exist. It does **not** revert Active Directory; use `changes.json` as the operator checklist. `attacker breaker reset --task` only deletes the day's task file. Pass `--date YYYY-MM-DD` to target another calendar day.
 
 ### 4. Common Utility Commands
 
@@ -604,7 +618,9 @@ Operational state (not the per-task transcript) also lives under `soldier/runtim
 Attacker records live under `attacker/logs/`:
 
 - `attacker_YYYY-MM-DD.log` — scheduler log (`time - LEVEL - logger - message`) for fill, wait, execute, and completion
-- `tasks_YYYY-MM-DD.jsonl` — one JSON object per executed task with `planned_time`, `task`, `result`, and `exit_code`
+- `YYYY-MM-DD/<task_id>.md` — Markdown transcript with YAML-like frontmatter and literal stdout/stderr (not JSON-escaped)
+- `YYYY-MM-DD/<task_id>_<technique>.pcapng` and `<task_id>_<technique>_{Sysmon,Security}.evtx` — capture dataset for that task
+- `attacker/skills/ad-attack/changes.json` (and the installed OpenCode copy) — ledger of target-domain mutations for manual rollback; `attacker breaker reset --all` empties it together with `state.json`
 
 ## Important Notes
 

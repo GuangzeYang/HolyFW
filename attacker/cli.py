@@ -55,12 +55,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     show_p = sub.add_parser("show", help="print today's attacker task JSON")
     show_p.add_argument("--date", default="", help="YYYY-MM-DD (default: today)")
-    build_p = sub.add_parser("build", help="install attacker OpenCode skills and MCP into ~/.config/opencode")
+    build_p = sub.add_parser("build", help="install attacker OpenCode skills into ~/.config/opencode")
     build_p.add_argument(
         "--test",
         action="store_true",
         help="after install, verify OpenCode load and run a representative prompt per skill and MCP",
     )
+    breaker_p = sub.add_parser("breaker", help="reset today's attacker task file and/or APT state")
+    breaker_sub = breaker_p.add_subparsers(dest="breaker_cmd", required=True)
+    reset_p = breaker_sub.add_parser(
+        "reset",
+        help="delete today's task file; default --all also resets state.json and changes.json",
+    )
+    reset_p.add_argument(
+        "--all",
+        action="store_true",
+        help="clear today's task file and reset state.json plus changes.json (default)",
+    )
+    reset_p.add_argument(
+        "--task",
+        action="store_true",
+        help="only delete today's task file; leave state.json and changes.json",
+    )
+    reset_p.add_argument("--date", default="", help="YYYY-MM-DD (default: today)")
     return parser
 
 
@@ -88,6 +105,29 @@ def cmd_show(*, config_path: Path | None, day: date) -> int:
     return 0
 
 
+def cmd_breaker(args: argparse.Namespace) -> int:
+    if getattr(args, "breaker_cmd", None) != "reset":
+        print("unknown breaker command", file=sys.stderr)
+        return 2
+    if bool(getattr(args, "all", False)) and bool(getattr(args, "task", False)):
+        print("use only one of --all or --task", file=sys.stderr)
+        return 2
+    from attacker.breaker import MODE_ALL, MODE_TASK, reset_attacker
+
+    mode = MODE_TASK if getattr(args, "task", False) else MODE_ALL
+    try:
+        payload = reset_attacker(
+            mode=mode,
+            day=_parse_day(getattr(args, "date", "") or "") or date.today(),
+            config_path=args.config,
+        )
+    except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
+    return 0 if payload.get("ok") else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -99,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_build()
     if args.cmd == "show":
         return cmd_show(config_path=args.config, day=_parse_day(args.date) or date.today())
+    if args.cmd == "breaker":
+        return cmd_breaker(args)
     if args.cmd is None or args.cmd == "run":
         try:
             loaded = load_config(args.config)

@@ -30,6 +30,7 @@ from attacker.task_file import (
     load_attacker_payload,
     normalize_task_item,
     pending_ready,
+    raw_tasks_missing_ids,
     save_attacker_tasks,
     tasks_file_path,
     tasks_from_schedule,
@@ -202,6 +203,7 @@ def ensure_task_file(
     base_time: int,
     seed: int | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any] | None]:
+    missing_ids = path.exists() and raw_tasks_missing_ids(path)
     if path.exists():
         tasks, stamp = load_attacker_payload(path)
         logger.info("Loaded %s attacker task(s) from %s", len(tasks), path)
@@ -225,7 +227,7 @@ def ensure_task_file(
     )
     if changed:
         logger.info("Applied base_time=%s shift to planned_time values", base_time)
-    if changed or not path.exists():
+    if changed or not path.exists() or missing_ids:
         save_attacker_tasks(path, tasks, shift=stamp)
         logger.info("Wrote attacker task file %s", path)
     return tasks, stamp
@@ -353,7 +355,7 @@ def run_loop(
         timeout_seconds,
     )
     logger.info("Task file: %s", task_path)
-    logger.info("Result logs: %s", logs_dir)
+    logger.info("Dataset directory: %s", logs_dir / target_day.isoformat())
 
     tasks, shift_stamp = ensure_task_file(
         task_path,

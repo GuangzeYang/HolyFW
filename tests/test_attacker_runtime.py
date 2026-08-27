@@ -12,8 +12,9 @@ from unittest import mock
 
 from common.agent_request_abc import AgentResponse
 
-from attacker.execute import append_execution_log, execute_task
+from attacker.execute import execute_task
 from attacker.generation import fill_next_batch, load_generation_resources, parse_generated_tasks
+from attacker.capture_paths import capture_file_stem, dataset_output_dir
 from attacker.runtime import run_loop, step
 from attacker.task_file import (
     all_completed,
@@ -54,6 +55,7 @@ class TaskFileTests(unittest.TestCase):
         self.assertEqual(tasks[0]["task"], "")
         self.assertEqual(tasks[0]["started_at"], "")
         self.assertEqual(tasks[0]["completed_at"], "")
+        self.assertRegex(tasks[0]["task_id"], r"^[0-9a-f]{16}$")
 
     def test_round_trip_list_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -62,6 +64,7 @@ class TaskFileTests(unittest.TestCase):
             save_attacker_tasks(path, original)
             loaded = load_attacker_tasks(path)
             self.assertEqual(loaded[0]["planned_time"], "09:11")
+            self.assertEqual(loaded[0]["task_id"], original[0]["task_id"])
 
 
 class BatchFillTests(unittest.TestCase):
@@ -170,25 +173,7 @@ class SchedulerStepTests(unittest.TestCase):
 
 
 class ExecutionLogTests(unittest.TestCase):
-    def test_append_log_has_result_and_exit_code(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            logs_dir = Path(tmp)
-            path = append_execution_log(
-                logs_dir,
-                planned_time="09:15",
-                task="Use the ad-attack skill: execute discovery.orientation against domain.",
-                result="orientation complete",
-                exit_code=0,
-                day=datetime(2026, 8, 23).date(),
-            )
-            line = path.read_text(encoding="utf-8").strip()
-            record = json.loads(line)
-            self.assertEqual(record["planned_time"], "09:15")
-            self.assertEqual(record["result"], "orientation complete")
-            self.assertEqual(record["exit_code"], 0)
-            self.assertIn("ad-attack skill", record["task"])
-
-    def test_execute_task_writes_one_jsonl_line(self) -> None:
+    def test_execute_task_writes_markdown_transcript(self) -> None:
         item = {
             "task": "run discovery",
             "planned_time": "09:15",
@@ -207,14 +192,99 @@ class ExecutionLogTests(unittest.TestCase):
             )
             self.assertTrue(item["started_at"])
             self.assertTrue(item["completed_at"])
-            records = [
-                json.loads(line)
-                for line in (logs_dir / "tasks_2026-08-23.jsonl").read_text(encoding="utf-8").splitlines()
-                if line.strip()
+            self.assertRegex(item["task_id"], r"^[0-9a-f]{16}$")
+            path = logs_dir / "2026-08-23" / f"{item['task_id']}.md"
+            self.assertTrue(path.is_file())
+            text = path.read_text(encoding="utf-8")
+            self.assertIn(item["task_id"], text)
+            self.assertIn("agent output", text)
+            self.assertIn("## Output", text)
+            self.assertNotIn("## stdout", text)
+            self.assertNotIn("## stderr", text)
+            yaml_block = text.split("---", 2)[1]
+            for key in ("completed_at", "exit_code", "command"):
+                self.assertNotIn(f"{key}:", yaml_block)
+            self.assertNotIn("\\n", text.split("## Output", 1)[1])
+            self.assertFalse(list(logs_dir.glob("*.jsonl")))
+
+    def test_execute_task_merges_stderr_then_stdout(self) -> None:
+        item = {
+            "task": "run discovery",
+            "planned_time": "09:15",
+            "started_at": "",
+            "completed_at": "",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            execute_task(
+                item,
+                logs_dir=Path(tmp),
+                timeout_seconds=30,
+                now=_now(9, 16),
+                runner=lambda _task, _timeout: (0, "final answer\n", "\x1b[0m→ Skill\n"),
+                day=datetime(2026, 8, 23).date(),
+            )
+            path = Path(tmp) / "2026-08-23" / f"{item['task_id']}.md"
+            text = path.read_text(encoding="utf-8")
+            output = text.split("## Output", 1)[1]
+            self.assertNotIn("\x1b", output)
+            self.assertIn("→ Skill", output)
+            self.assertIn("final answer", output)
+            self.assertLess(output.find("Skill"), output.find("final answer"))
+
+    def test_execute_task_renders_jsonl_thinking(self) -> None:
+        item = {
+            "task": "run discovery",
+            "planned_time": "09:15",
+            "started_at": "",
+            "completed_at": "",
+        }
+        jsonl = "\n".join(
+            [
+                '{"type": "reasoning", "part": {"text": "Scan the DC first."}}',
+                '{"type": "tool_use", "part": {"tool": "skill", "state": {"status": "completed", "input": {"name": "ad-attack"}}}}',
+                '{"type": "text", "part": {"text": "Host identified."}}',
             ]
-            self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]["result"], "agent output")
-            self.assertEqual(records[0]["exit_code"], 0)
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            execute_task(
+                item,
+                logs_dir=Path(tmp),
+                timeout_seconds=30,
+                now=_now(9, 16),
+                runner=lambda _task, _timeout: (0, jsonl, ""),
+                day=datetime(2026, 8, 23).date(),
+            )
+            path = Path(tmp) / "2026-08-23" / f"{item['task_id']}.md"
+            output = path.read_text(encoding="utf-8").split("## Output", 1)[1]
+            self.assertIn("Thinking:\nScan the DC first.", output)
+            self.assertIn('→ Skill "ad-attack"', output)
+            self.assertIn("Host identified.", output)
+            self.assertLess(output.find("Thinking:"), output.find("Skill"))
+            self.assertNotIn('"type": "reasoning"', output)
+
+
+class CapturePathTests(unittest.TestCase):
+    def test_env_dir_and_task_id_prefix_without_timestamp(self) -> None:
+        env = {
+            "HOLYFW_ATTACKER_TASK_ID": "abc123def4567890",
+            "HOLYFW_ATTACKER_OUTPUT_DIR": r"C:\attacker\logs\2026-08-26",
+        }
+        self.assertEqual(
+            dataset_output_dir(env=env, config_output_dir="output", skill_root=Path("skill")),
+            Path(r"C:\attacker\logs\2026-08-26"),
+        )
+        self.assertEqual(
+            capture_file_stem("pass-the-ticket", env=env),
+            "abc123def4567890_pass-the-ticket",
+        )
+        self.assertEqual(
+            capture_file_stem("pass-the-ticket", "Security", env=env),
+            "abc123def4567890_pass-the-ticket_Security",
+        )
+        self.assertNotRegex(capture_file_stem("pass-the-ticket", env=env), r"\d{8}_\d{6}")
+
+    def test_fallback_stem_has_no_date_suffix(self) -> None:
+        self.assertEqual(capture_file_stem("discovery.host-identify", env={}), "discovery_host-identify")
 
 
 class RunLoopTests(unittest.TestCase):

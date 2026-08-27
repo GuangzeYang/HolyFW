@@ -6,13 +6,11 @@ Usage:
     python capture_traffic.py stop
     python capture_traffic.py status
 
-`start` launches tshark in the background writing a pcapng file named after the
-label and a timestamp into the configured output directory. `stop` terminates
-tshark and reports the path of the finished capture file. `status` reports
-whether a capture is currently active.
-
-The output directory and default interface are read from config.json; both can
-be overridden on the command line.
+`start` launches tshark in the background writing a pcapng file named
+`{task_id}_{label}.pcapng` into HOLYFW_ATTACKER_OUTPUT_DIR when set, otherwise
+the configured output directory. `stop` terminates tshark and reports the path
+of the finished capture file. `status` reports whether a capture is currently
+active.
 """
 
 from __future__ import annotations
@@ -32,6 +30,12 @@ SKILL_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = SKILL_ROOT / "config.json"
 STATE_FILE_NAME = ".capture_traffic_state.json"
 
+try:
+    from attacker.capture_paths import capture_file_stem, dataset_output_dir
+except ImportError:  # pragma: no cover - skill copy without the attacker package
+    capture_file_stem = None  # type: ignore[assignment]
+    dataset_output_dir = None  # type: ignore[assignment]
+
 
 def load_config() -> dict:
     if CONFIG_PATH.exists():
@@ -44,11 +48,14 @@ def load_config() -> dict:
 
 def output_dir() -> Path:
     cfg = load_config()
-    raw = cfg.get("output_dir", "output")
-    p = Path(raw)
-    if not p.is_absolute():
-        p = SKILL_ROOT / p
-    return p
+    raw = str(cfg.get("output_dir") or "output")
+    if dataset_output_dir is not None:
+        return dataset_output_dir(config_output_dir=raw, skill_root=SKILL_ROOT)
+    env_raw = str(os.environ.get("HOLYFW_ATTACKER_OUTPUT_DIR") or "").strip()
+    if env_raw:
+        return Path(env_raw)
+    path = Path(raw)
+    return path if path.is_absolute() else SKILL_ROOT / path
 
 
 def default_interface() -> str:
@@ -67,13 +74,15 @@ def state_file() -> Path:
     return output_dir() / STATE_FILE_NAME
 
 
-def _safe_label(label: str) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in label)
-    return cleaned or "capture"
-
-
-def _now_stamp() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S")
+def _pcap_name(label: str) -> str:
+    if capture_file_stem is not None:
+        return capture_file_stem(label) + ".pcapng"
+    task_id = str(os.environ.get("HOLYFW_ATTACKER_TASK_ID") or "").strip()
+    cleaned = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in label) or "capture"
+    if task_id:
+        safe_id = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in task_id)
+        return f"{safe_id}_{cleaned}.pcapng"
+    return f"{cleaned}.pcapng"
 
 
 def _launch_tshark(tshark: str, iface: str, file_path: Path) -> int:
@@ -134,13 +143,12 @@ def cmd_start(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": False, "error": f"tshark not found: {tshark}"}))
         return 1
 
-    label = _safe_label(args.label)
-    file_path = out_dir / f"{label}_{_now_stamp()}.pcapng"
+    file_path = out_dir / _pcap_name(args.label)
 
     pid = _launch_tshark(tshark, iface, file_path)
 
     state = {
-        "label": label,
+        "label": args.label,
         "pid": pid,
         "file": str(file_path),
         "iface": iface,
