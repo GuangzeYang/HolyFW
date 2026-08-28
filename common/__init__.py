@@ -751,8 +751,6 @@ def normalize_role_tasks(
                     "completed_at": "",
                     "report_message": "",
                     "exit_code": None,
-                    "stdout": "",
-                    "stderr": "",
                 }
             )
 
@@ -779,8 +777,6 @@ def validate_role_tasks(
         "completed_at",
         "report_message",
         "exit_code",
-        "stdout",
-        "stderr",
     }
 
     if not isinstance(data, dict):

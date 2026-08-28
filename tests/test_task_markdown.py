@@ -159,8 +159,8 @@ class RenderAndParseTests(unittest.TestCase):
         assert report is not None
         self.assertEqual(report["status"], "successed")
         self.assertEqual(report["exit_code"], 0)
-        self.assertEqual(report["stderr"], "")
-        self.assertIn("Upload complete.", report["stdout"])
+        self.assertNotIn("stdout", report)
+        self.assertNotIn("stderr", report)
 
     def test_parses_legacy_stdout_stderr_headings(self) -> None:
         text = (
@@ -183,12 +183,16 @@ class RenderAndParseTests(unittest.TestCase):
         self.assertEqual(report["exit_code"], -1)
 
     def test_keeps_legacy_json_report(self) -> None:
-        report = {"task_ref": "ref", "status": "successed", "exit_code": 0, "stdout": "ok", "stderr": ""}
+        stored = {"task_ref": "ref", "status": "successed", "exit_code": 0, "stdout": "ok", "stderr": ""}
         parsed = parse_task_markdown(
             '{"task_id": "abc", "status": "completed", "report": {"task_ref": "ref", '
             '"status": "successed", "exit_code": 0, "stdout": "ok", "stderr": ""}}'
         )
-        self.assertEqual(report_from_task_record(parsed), report)
+        self.assertEqual(
+            report_from_task_record(parsed),
+            {"task_ref": "ref", "status": "successed", "exit_code": 0},
+        )
+        self.assertEqual(parsed["report"], stored)
 
 
 if __name__ == "__main__":

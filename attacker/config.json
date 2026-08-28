@@ -1,7 +1,7 @@
 {
   "batch_size": 5,
   "poll_interval_seconds": 15,
-  "base_time": 21,
+  "base_time": 9,
   "exec": {
     "timeout_seconds": 900
   },

@@ -85,8 +85,6 @@ class RepositoryTests(unittest.TestCase):
                     "completed_at": "",
                     "report_message": "",
                     "exit_code": None,
-                    "stdout": "",
-                    "stderr": "",
                 }
             ]
         }
@@ -117,8 +115,6 @@ class RepositoryTests(unittest.TestCase):
             status="successed",
             message="",
             exit_code=0,
-            stdout="ok",
-            stderr="",
         )
         self.assertFalse(result["ok"])
 
@@ -170,16 +166,12 @@ class RepositoryTests(unittest.TestCase):
             status="successed",
             message="first ok",
             exit_code=0,
-            stdout="old stdout",
-            stderr="old stderr",
         )
         second = self.repo.update_task_report(
             task_ref=task_ref,
             status="failed",
             message="latest failed",
             exit_code=7,
-            stdout="new stdout",
-            stderr="new stderr",
         )
 
         self.assertTrue(first["ok"])
@@ -188,8 +180,6 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(item["status"], "failed")
         self.assertEqual(item["report_message"], "latest failed")
         self.assertEqual(item["exit_code"], 7)
-        self.assertEqual(item["stdout"], "new stdout")
-        self.assertEqual(item["stderr"], "new stderr")
         self.assertTrue(item["completed_at"])
 
     def test_report_overwrites_failed_with_latest_successed_result(self) -> None:
@@ -209,16 +199,12 @@ class RepositoryTests(unittest.TestCase):
             status="failed",
             message="first failed",
             exit_code=1,
-            stdout="old stdout",
-            stderr="old stderr",
         )
         second = self.repo.update_task_report(
             task_ref=task_ref,
             status="successed",
             message="latest ok",
             exit_code=0,
-            stdout="new stdout",
-            stderr="",
         )
 
         self.assertTrue(first["ok"])
@@ -227,8 +213,6 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(item["status"], "successed")
         self.assertEqual(item["report_message"], "latest ok")
         self.assertEqual(item["exit_code"], 0)
-        self.assertEqual(item["stdout"], "new stdout")
-        self.assertEqual(item["stderr"], "")
         self.assertTrue(item["completed_at"])
 
     def test_atomic_index_update_applies_to_unissued_task(self) -> None:
@@ -350,8 +334,6 @@ class RepositoryTests(unittest.TestCase):
                         "completed_at": "",
                         "report_message": "",
                         "exit_code": None,
-                        "stdout": "",
-                        "stderr": "",
                     }
                 ]
             },
@@ -361,14 +343,11 @@ class RepositoryTests(unittest.TestCase):
             status="successed",
             message="ok",
             exit_code=0,
-            stdout="done",
-            stderr="",
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result.get("date"), yesterday)
         item = self.repo.load_day(yesterday)["hr"][0]
         self.assertEqual(item["status"], "successed")
-        self.assertEqual(item["stdout"], "done")
 
 
 class LoggingSetupTests(unittest.TestCase):
@@ -1031,8 +1010,6 @@ class RoleTaskGenerationTests(unittest.TestCase):
             "completed_at": "",
             "report_message": "",
             "exit_code": None,
-            "stdout": "",
-            "stderr": "",
         }
 
     def test_generate_role_tasks_promotes_final_file(self) -> None:

@@ -12,7 +12,7 @@
     "data_dir": "role_task",
     "scan_interval_seconds": 60,
     "max_dispatch_lateness_minutes": 6,
-    "base_time": 21
+    "base_time": 9
   },
   "storage": {
     "lock_timeout_seconds": 60,

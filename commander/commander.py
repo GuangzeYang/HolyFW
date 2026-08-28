@@ -88,10 +88,8 @@ def handle_report(
     status: str,
     message: str | None,
     exit_code: int | None,
-    stdout: str | None,
-    stderr: str | None,
 ) -> dict[str, Any]:
-    return repository.update_task_report(task_ref, status, message, exit_code, stdout, stderr)
+    return repository.update_task_report(task_ref, status, message, exit_code)
 
 
 def recv_one_line(conn: socket.socket, max_line_bytes: int, recv_chunk_bytes: int) -> bytes:
@@ -143,8 +141,6 @@ def handle_commander(
         status = payload.get("status")
         msg = payload.get("message")
         exit_code = payload.get("exit_code")
-        out = payload.get("stdout")
-        err_out = payload.get("stderr")
         if not isinstance(task_ref, str):
             send_line(conn, {"ok": False, "error": "Missing or invalid task_ref"})
             return
@@ -157,15 +153,9 @@ def handle_commander(
         if exit_code is not None and not isinstance(exit_code, int):
             send_line(conn, {"ok": False, "error": "exit_code must be an integer"})
             return
-        if out is not None and not isinstance(out, str):
-            send_line(conn, {"ok": False, "error": "stdout must be a string"})
-            return
-        if err_out is not None and not isinstance(err_out, str):
-            send_line(conn, {"ok": False, "error": "stderr must be a string"})
-            return
 
         result = handle_report(
-            repository, task_ref, status, msg, exit_code, out, err_out
+            repository, task_ref, status, msg, exit_code
         )
         send_line(conn, result)
         parsed_ref, parse_error = parse_task_ref(task_ref)

@@ -25,8 +25,6 @@ def _pending_task(time_str: str, task_text: str = "do work") -> dict:
         "completed_at": "",
         "report_message": "",
         "exit_code": None,
-        "stdout": "",
-        "stderr": "",
     }
 
 
