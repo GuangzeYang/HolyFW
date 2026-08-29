@@ -35,7 +35,7 @@ attacker/skills/ad-attack/
 
 Captures are written to `attacker/logs/YYYY-MM-DD/` when the scheduler sets `HOLYFW_ATTACKER_OUTPUT_DIR`. File names are `{task_id}_{technique-id}.pcapng` and `{task_id}_{technique-id}_{channel}.evtx` (no timestamp suffix). `config.json` `output_dir` is only the fallback for a manual skill run.
 
-All script invocations below use `python`; run them from the skill root so relative paths resolve correctly.
+All script invocations below use `python`; the attacker scheduler starts OpenCode with cwd at the installed skill root so relative `wordlists/` paths resolve. If you run a script by hand, do it from the skill root.
 
 ## Tool Naming & Windows Invocation
 
@@ -95,12 +95,12 @@ Run:
 python scripts/check_environment.py
 ```
 
-- If the output reports `"ok": false`, do **not** proceed with any attack. Report the failure with the `errors` array from the output and stop this task. Never attempt to substitute a missing tool or hallucinate a command.
-- If the output reports `"ok": true` (warnings are acceptable), continue to Step 1.
+- `"ok": true` (warnings are acceptable) means continue to Step 1.
+- `"ok": false` is diagnostic, not a stop. Read the `errors` array, remediate what you can, then continue to Step 1 and execute the dispatched technique. Typical remediations: local permission failures (unreadable Sysmon/Security logs, `auditpol` access denied, `admin.is_admin` false) → read `state.json` for a local-administrator account and wrap the blocked command with `scripts/elevate.py`; a configured tshark interface missing from `tshark_interfaces` → run `tshark -D` yourself and use a matching name. Never substitute a missing executable with a guessed tool, never invent a command, and never kill `python.exe` / `opencode.exe` / `attacker.exe` or any PID this task did not start (see AGENTS.md process lifetime).
 
 The check also guarantees impacket is actually runnable: it reports `python_executable` (the interpreter running the check — the same `python` the attack commands below will use) and `impacket.impacket_file` (where impacket lives), and it executes `python -m impacket.examples.secretsdump --help` as a live proof. If those do not line up, `ok` is `false`.
 
-> **Elevation requirement.** Capturing `.evtx` requires read access to the Sysmon **and Security** logs: `capture_logs.py stop` runs `wevtutil epl` on each configured channel, which fails with "access denied" for unprivileged users. The pre-flight report probes this directly — `channels_readable` runs `wevtutil qe <log> /c:1` per channel (Sysmon + Security) as a live capability test (and is the authoritative gate: `ok` is `false` if any channel is unreadable). `admin.is_admin` is a reference field only, since elevation does not guarantee log access and, conversely, SYSTEM can read the logs without being in the Administrators group. Run the attacker agent elevated (e.g. a local administrator or SYSTEM) so every atomic action produces its `.evtx` captures.
+> **Elevation requirement.** Capturing `.evtx` requires read access to the Sysmon **and Security** logs. `capture_logs.py stop` runs `wevtutil epl` and, on access denied, retries through `scripts/elevate.py` using `campaign.local_admin` (or a `users[]` entry with `is_local_admin`). The pre-flight report still probes `channels_readable`; `ok: false` there means remediate and continue, not abort. Prefer running the attacker agent elevated; `admin.is_admin` is a reference field only.
 
 > **Local elevation (when permission is denied on the attack host).** If the agent's shell lacks the rights to install/update Sysmon (`sysmon64 -c/-i`), run `auditpol`, or export the Sysmon/Security logs, elevate the specific command with `scripts/elevate.py` — it launches the command through a one-shot **scheduled task** (`schtasks /ru <account> /rp <password>`), which runs with the account's *full* (unfiltered) token because the Task Scheduler service runs as SYSTEM, bypassing UAC token filtering. `runas` cannot be used from an unattended shell (it reads the password from the console). Example:
 >
@@ -129,7 +129,7 @@ Read the long-term state:
 python scripts/state.py read
 ```
 
-The task references objects by name (e.g. `user svc_backup`, `host 192.168.14.71`). Resolve each reference to its fields in `state.json`. Every command parameter (domain name, DC IP, username, hash, ccache file, SPN, etc.) MUST come from the resolved object. Never invent credentials, hashes, hostnames, or targets. If a referenced object or its required field is missing from the state, first run the Discovery/Credential Access technique that produces it, then proceed.
+The task references objects by name (e.g. `user svc_backup`, `host 192.168.14.71`). Resolve each reference to its fields in `state.json`. Every command parameter (domain name, DC IP, username, hash, ccache file, SPN, etc.) MUST come from the resolved object. Never invent credentials, hashes, hostnames, or targets. If a referenced object or its required field is missing from the state, mark the technique `failed` with that reason and end this task. Do not substitute another technique from the catalog to fill the gap (the scheduler will dispatch that technique later). Environment problems (unreadable logs, a tshark interface mismatch) are remediable in this task via `scripts/elevate.py` / `tshark -D`.
 
 ### Step 2 — Wrap each atomic action with capture
 
@@ -174,7 +174,7 @@ If a command fails because a state object's field is wrong (a hash that does not
 python scripts/state.py mark-stale <path-to-the-object>
 ```
 
-Then re-run the technique that originally produced that object (see "Rollback" in each technique and the dedicated Rollback section at the end).
+Mark it stale. Do **not** re-run a different technique in this task. The scheduler will dispatch the producing technique later.
 
 ---
 
@@ -318,6 +318,7 @@ Attacker-owned/decided values that are not discovered facts:
 | Field | Meaning |
 |-------|---------|
 | `machine_account.name` / `password` | The machine account name (ends with `$`) and password created by `persistence.add-computer` and reused by `persistence.rbcd` |
+| `local_admin.username` / `password` | Local Administrators account used by `scripts/elevate.py` and by `capture_logs.py stop` when `wevtutil epl` is denied. Also accepted: a `users[]` entry with `is_local_admin: true`. |
 | `tools_dir` | Local directory that holds attacker tools (relative to the skill root or absolute) |
 | `tools[]` | Local tool filenames used by `lateral.tool-transfer` (e.g. `mimikatz.exe`) |
 
@@ -1355,14 +1356,14 @@ Rollback is triggered whenever a command fails because a state object's field is
    python scripts/state.py mark-stale <path-to-the-object>
    ```
 
-2. Re-run the technique that originally produced the object (its "Rollback" note names the technique).
-3. Overwrite the stale object with the fresh value and clear the flag:
+2. Do **not** re-run a different technique in this task. Mark the current technique `failed`. The scheduler will dispatch the producing technique later.
+3. When that later task succeeds, overwrite the stale object and clear the flag:
 
    ```
    python scripts/state.py unset-stale <path>
    ```
 
-> **Scalar vs object fields.** `mark-stale`/`unset-stale`/`touch` operate on *object* fields (dicts, e.g. `users[n]`, `hosts[n]`, `domain.spns[n]`) because a `stale` flag can only live on a dict. Scalar fields (e.g. `domain.dc_ip`, `domain.name`, `domain.domain_sid`) cannot carry a flag — when they go stale, simply re-run the producing technique and overwrite them with `set` (Step 2 + `set`, skipping `mark-stale`/`unset-stale`).
+> **Scalar vs object fields.** `mark-stale`/`unset-stale`/`touch` operate on *object* fields (dicts, e.g. `users[n]`, `hosts[n]`, `domain.spns[n]`) because a `stale` flag can only live on a dict. Scalar fields (e.g. `domain.dc_ip`, `domain.name`, `domain.domain_sid`) cannot carry a flag — when they go stale, mark this technique `failed`; a later task overwrites them with `set`.
 
 Common stale cases:
 

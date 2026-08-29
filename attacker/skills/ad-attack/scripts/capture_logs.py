@@ -18,7 +18,6 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +25,10 @@ from pathlib import Path
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = SKILL_ROOT / "config.json"
 STATE_FILE_NAME = ".capture_logs_state.json"
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+import winproc  # noqa: E402
 
 try:
     from attacker.capture_paths import capture_file_stem, dataset_output_dir
@@ -107,6 +110,134 @@ def wevtutil_path() -> str:
     return resolved if resolved else configured
 
 
+def _load_apt_state() -> dict:
+    path = SKILL_ROOT / "state.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _parse_elevate_payload(stdout: str) -> dict:
+    text = (stdout or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    except ValueError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            return {}
+        try:
+            parsed = json.loads(text[start : end + 1])
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+
+def _export_one_channel(wevtutil: str, log_name: str, out_file: Path, query: str) -> str | None:
+    """Export one channel. Return an error string, or None on success."""
+    args = [wevtutil, "epl", log_name, str(out_file), f"/q:{query}"]
+    rc, out, err = winproc.run(args, timeout=120)
+    detail = (err or out or "").strip()
+    if rc == 0:
+        return None
+    if not winproc.looks_like_access_denied(rc, detail):
+        return f"{log_name}: {detail or 'export failed'}"
+    creds = winproc.local_admin_creds(_load_apt_state())
+    if not creds:
+        return (
+            f"{log_name}: {detail or 'access denied'}; "
+            "set campaign.local_admin in state.json to retry via elevate.py"
+        )
+    user, password = creds
+    elev = SKILL_ROOT / "scripts" / "elevate.py"
+    erc, eout, eerr = winproc.run(
+        [
+            sys.executable,
+            str(elev),
+            "--user",
+            user,
+            "--password",
+            password,
+            "--timeout",
+            "180",
+            "--",
+            *args,
+        ],
+        timeout=200,
+    )
+    payload = _parse_elevate_payload(eout)
+    if payload.get("ok") or erc == 0:
+        return None
+    nested = str(payload.get("output") or payload.get("error") or eerr or eout or detail)
+    return f"{log_name}: elevated export failed: {nested.strip()[:240]}"
+
+
+def _export_open_window() -> dict:
+    """Export leftover/current log window and always remove the state file."""
+    sf = state_file()
+    empty = {
+        "ok": False,
+        "files": [],
+        "errors": ["no active log capture"],
+        "label": "",
+        "channels": [],
+        "started_at": "",
+        "stopped_at": _now_utc_query(),
+    }
+    if not sf.exists():
+        return empty
+    try:
+        state = json.loads(sf.read_text(encoding="utf-8"))
+    except ValueError:
+        try:
+            sf.unlink()
+        except OSError:
+            pass
+        empty["errors"] = ["corrupt log capture state file"]
+        return empty
+
+    started_at = state.get("started_at")
+    label = state.get("label", "logs")
+    channels = state.get("channels") or [state.get("log") or sysmon_log()]
+    out_dir = output_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    query = (
+        f"*[System[TimeCreated[@SystemTime>='{started_at}' "
+        f"and @SystemTime<='{_now_utc_query()}']]]"
+    )
+    wevtutil = wevtutil_path()
+    files: list[dict] = []
+    errors: list[str] = []
+    for log_name in channels:
+        short = channel_short(log_name)
+        out_file = out_dir / _evtx_name(label, short)
+        err = _export_one_channel(wevtutil, log_name, out_file, query)
+        if err:
+            errors.append(err)
+            continue
+        files.append({"log": log_name, "file": str(out_file)})
+    try:
+        sf.unlink()
+    except OSError:
+        pass
+    return {
+        "ok": bool(files) and not errors,
+        "label": label,
+        "files": files,
+        "channels": channels,
+        "started_at": started_at,
+        "stopped_at": _now_utc_query(),
+        "errors": errors,
+    }
+
+
 def state_file() -> Path:
     return output_dir() / STATE_FILE_NAME
 
@@ -135,9 +266,9 @@ def cmd_start(args: argparse.Namespace) -> int:
     out_dir = output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    reclaimed = None
     if state_file().exists():
-        print(json.dumps({"ok": False, "error": "a log capture is already active"}))
-        return 1
+        reclaimed = _export_open_window()
 
     label = _safe_label(args.label)
     channels = capture_channels()
@@ -151,87 +282,23 @@ def cmd_start(args: argparse.Namespace) -> int:
         json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "label": label,
-                "started_at": state["started_at"],
-                "log": state["log"],
-                "channels": channels,
-            }
-        )
-    )
+    payload = {
+        "ok": True,
+        "label": label,
+        "started_at": state["started_at"],
+        "log": state["log"],
+        "channels": channels,
+    }
+    if reclaimed is not None:
+        payload["reclaimed"] = reclaimed
+    print(json.dumps(payload))
     return 0
 
 
 def cmd_stop(args: argparse.Namespace) -> int:
-    sf = state_file()
-    if not sf.exists():
-        print(json.dumps({"ok": False, "error": "no active log capture"}))
-        return 1
-
-    try:
-        state = json.loads(sf.read_text(encoding="utf-8"))
-    except ValueError:
-        print(json.dumps({"ok": False, "error": "corrupt log capture state file"}))
-        return 1
-
-    started_at = state.get("started_at")
-    label = state.get("label", "logs")
-    channels = state.get("channels") or [state.get("log") or sysmon_log()]
-
-    out_dir = output_dir()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    query = (
-        f"*[System[TimeCreated[@SystemTime>='{started_at}' "
-        f"and @SystemTime<='{_now_utc_query()}']]]"
-    )
-
-    wevtutil = wevtutil_path()
-    files: list[dict] = []
-    errors: list[str] = []
-    for log_name in channels:
-        short = channel_short(log_name)
-        out_file = out_dir / _evtx_name(label, short)
-        wevtutil_args = [wevtutil, "epl", log_name, str(out_file), f"/q:{query}"]
-        try:
-            proc = subprocess.run(
-                wevtutil_args, capture_output=True, text=True, timeout=120
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            errors.append(f"{log_name}: wevtutil failed: {exc}")
-            continue
-        if proc.returncode != 0:
-            errors.append(
-                f"{log_name}: {(proc.stderr or proc.stdout or 'export failed').strip()}"
-            )
-            continue
-        files.append({"log": log_name, "file": str(out_file)})
-
-    try:
-        sf.unlink()
-    except OSError:
-        pass
-
-    ok = bool(files) and not errors
-    print(
-        json.dumps(
-            {
-                "ok": ok,
-                "label": label,
-                "files": files,
-                "channels": channels,
-                "started_at": started_at,
-                "stopped_at": _now_utc_query(),
-                "errors": errors,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
-    return 0 if ok else 1
+    result = _export_open_window()
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("ok") else 1
 
 
 def cmd_status(args: argparse.Namespace) -> int:

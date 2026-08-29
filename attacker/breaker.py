@@ -49,6 +49,7 @@ BASELINE_STATE: dict[str, Any] = {
     },
     "campaign": {
         "machine_account": {"name": "", "password": ""},
+        "local_admin": {"username": "", "password": ""},
         "tools_dir": "tools",
         "tools": [],
     },

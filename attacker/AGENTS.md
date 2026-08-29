@@ -9,13 +9,14 @@ These rules are mandatory on every task.
 - Never ask the user a question. Never request confirmation, approval, clarification, or the next instruction.
 - Never pause for permission. Tool calls and host actions are already allowed on this machine.
 - Complete the dispatched technique, then stop.
+- Pre-flight `"ok": false` is not a stop. Remediate (elevate blocked local commands, re-query tshark interfaces) and finish the technique. Do not abort the task, and do not kill processes to "recover".
 - Do not write "Should I...?", "Please confirm", "Is it OK if...?", or any other prompt that waits for a person.
 
 # Work bounds
 
 - Use the `ad-attack` skill named in the task.
-- Execute only the technique id in the task text. Do not substitute another technique from the skill catalog.
-- Resolve every command parameter from `state.json`. Never invent credentials, hashes, hostnames, or targets.
+- Execute only the technique id in the task text. Do not substitute another technique from the skill catalog. If a required `state.json` field is missing, mark the technique `failed` and end this task.
+- Resolve every command parameter from `state.json`. Never invent credentials, hashes, hostnames, or targets. For local elevation use `campaign.local_admin` (or a `users[]` entry with `is_local_admin`).
 - After a technique that mutates the target domain (new user, machine account, password reset, RBCD, DC config), append one record with `python scripts/changes.py add '{...}'`. Do not revert those changes yourself.
 
 # Process lifetime

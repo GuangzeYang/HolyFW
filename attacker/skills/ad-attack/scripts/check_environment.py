@@ -5,9 +5,11 @@ Run this before starting a day's attack activity. It verifies that every tool
 required by the skill is installed and reachable, that the configured traffic
 capture interface exists, and that the Sysmon log source is available.
 
-Output is a single JSON object on stdout. Exit code 0 means the environment is
-ready; any other exit code means at least one requirement is missing and attack
-actions MUST NOT be started.
+Output is a single JSON object on stdout. Exit code 0 means every check passed;
+any other exit code means at least one requirement failed. The `errors` /
+`warnings` arrays are diagnostic so the agent can remediate (for example
+elevate a blocked log export) and continue the dispatched technique — they are
+not a hard stop.
 """
 
 from __future__ import annotations
@@ -17,12 +19,15 @@ import ctypes
 import importlib.util
 import json
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = SKILL_ROOT / "config.json"
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+import winproc  # noqa: E402
 
 
 def check_admin() -> dict:
@@ -50,12 +55,14 @@ def check_log_readable(log_name: str) -> dict:
     capability with `wevtutil qe`.
     """
     rc, out, err = _run(["wevtutil", "qe", log_name, "/c:1", "/rd:true"], timeout=30)
-    combined = (out + "\n" + err).lower()
+    combined = (out + "\n" + err)
+    combined_l = combined.lower()
     if rc == 0:
         return {"readable": True, "returncode": rc, "detail": ""}
     # An empty but accessible log can return non-zero with "no events"; that is
-    # still readable for export purposes.
-    if "no events" in combined or "0 events" in combined:
+    # still readable for export purposes. Match English and Chinese wevtutil.
+    empty_markers = ("no events", "0 events", "没有事件", "无事件", "找不到任何")
+    if any(marker in combined_l or marker in combined for marker in empty_markers):
         return {"readable": True, "returncode": rc, "detail": "empty log (accessible)"}
     return {
         "readable": False,
@@ -106,7 +113,6 @@ def check_security_auditing() -> dict:
     state string is matched by its numeric value: "成功和失败"/success+failure
     is the required state for most; "成功"/success for logoff/special-logon.
     """
-    state_ok = ("成功和失败", "成功")
     subcats: dict[str, dict] = {}
     for key, guid in AUDIT_GUIDS.items():
         entry = {"guid": guid, "expected": AUDIT_EXPECTED[key], "event_ids": AUDIT_EVENT_IDS[key]}
@@ -124,12 +130,20 @@ def check_security_auditing() -> dict:
             entry["detail"] = "no output"
             subcats[key] = entry
             continue
-        state = lines[-1].split()[-1] if lines[-1].split() else ""
-        if any(state == s for s in state_ok):
+        last = lines[-1]
+        last_l = last.lower()
+        both = ("成功和失败", "success and failure")
+        success_only = key in ("logoff", "special_logon")
+        if any(m in last or m in last_l for m in both):
+            entry["status"] = "enabled"
+        elif success_only and (
+            "成功" in last
+            or ("success" in last_l and "failure" not in last_l)
+        ):
             entry["status"] = "enabled"
         else:
             entry["status"] = "disabled"
-        entry["detail"] = state
+        entry["detail"] = last
         subcats[key] = entry
 
     enabled_count = sum(1 for v in subcats.values() if v.get("status") == "enabled")
@@ -184,19 +198,7 @@ def _which(name: str) -> str | None:
 
 
 def _run(args: list[str], timeout: int = 30) -> tuple[int, str, str]:
-    try:
-        proc = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            shell=False,
-        )
-        return proc.returncode, (proc.stdout or ""), (proc.stderr or "")
-    except FileNotFoundError:
-        return -1, "", "command not found"
-    except subprocess.TimeoutExpired:
-        return -1, "", "command timed out"
+    return winproc.run(args, timeout=timeout)
 
 
 def check_impacket() -> dict:
@@ -277,13 +279,16 @@ def check_executables() -> dict[str, str | None]:
     return result
 
 
-def check_tshark_interfaces(tshark_path: str | None) -> list[str]:
+def check_tshark_interfaces(tshark_path: str | None) -> dict:
     if not tshark_path:
-        return []
-    rc, out, _ = _run([tshark_path, "-D"])
-    if rc != 0:
-        return []
-    return [line.strip() for line in out.splitlines() if line.strip()]
+        return {"interfaces": [], "returncode": -1, "stderr": ""}
+    rc, out, err = _run([tshark_path, "-D"])
+    interfaces = [line.strip() for line in out.splitlines() if line.strip()]
+    return {
+        "interfaces": interfaces,
+        "returncode": rc,
+        "stderr": (err or "")[:500],
+    }
 
 
 def check_sysmon() -> dict:
@@ -317,7 +322,8 @@ def main() -> int:
 
     executables = check_executables()
     impacket = check_impacket()
-    tshark_interfaces = check_tshark_interfaces(executables.get("tshark"))
+    tshark_probe = check_tshark_interfaces(executables.get("tshark"))
+    tshark_interfaces = tshark_probe.get("interfaces") or []
     sysmon = check_sysmon()
 
     errors: list[str] = []
@@ -371,7 +377,10 @@ def main() -> int:
                     f"configured traffic interface '{configured_iface}' not found in tshark -D output"
                 )
         if not tshark_interfaces:
-            errors.append("tshark reported no capture interfaces")
+            stderr_bit = (tshark_probe.get("stderr") or "").strip()
+            extra = f" (tshark -D rc={tshark_probe.get('returncode')}"
+            extra += f"; stderr: {stderr_bit[:200]})" if stderr_bit else ")"
+            errors.append("tshark reported no capture interfaces" + extra)
 
     if not sysmon["logs_found"]:
         errors.append("no Sysmon event log found via wevtutil el")
@@ -434,6 +443,8 @@ def main() -> int:
         "channels_readable": channels_readable,
         "auditing": auditing,
         "tshark_interfaces": tshark_interfaces,
+        "tshark_interfaces_returncode": tshark_probe.get("returncode"),
+        "tshark_interfaces_stderr": tshark_probe.get("stderr") or "",
         "configured_traffic_interface": configured_iface,
         "configured_sysmon_log": configured_log,
         "configured_security_log": configured_security_log,
@@ -441,7 +452,11 @@ def main() -> int:
         "warnings": warnings,
     }
 
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    payload = json.dumps(report, ensure_ascii=False, indent=2)
+    try:
+        print(payload)
+    except UnicodeEncodeError:
+        print(payload.encode("utf-8", errors="replace").decode("ascii", errors="replace"))
     return 0 if not errors else 1
 
 

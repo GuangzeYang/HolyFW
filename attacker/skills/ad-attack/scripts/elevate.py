@@ -46,26 +46,21 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+import winproc  # noqa: E402
+
 DEFAULT_ST = "23:59"
 
 
 def _run(args: list[str], timeout: int = 60) -> tuple[int, str, str]:
-    try:
-        proc = subprocess.run(
-            args, capture_output=True, text=True, timeout=timeout, shell=False
-        )
-        return proc.returncode, (proc.stdout or ""), (proc.stderr or "")
-    except FileNotFoundError:
-        return -1, "", "command not found"
-    except subprocess.TimeoutExpired:
-        return -1, "", "command timed out"
+    return winproc.run(args, timeout=timeout)
 
 
 def _safe_task_name(tag: str) -> str:
@@ -182,14 +177,7 @@ def main() -> int:
     out_text = ""
     if out_file.exists():
         raw = out_file.read_bytes()
-        for enc in ("utf-8-sig", "utf-8", "gbk", "latin-1"):
-            try:
-                out_text = raw.decode(enc)
-                break
-            except UnicodeDecodeError:
-                continue
-        if not out_text:
-            out_text = raw.decode("utf-8", errors="replace")
+        out_text = winproc.decode_bytes(raw)
 
     result = {
         "ok": elev_rc == 0,

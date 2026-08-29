@@ -120,6 +120,7 @@
       "username": "attdemo",
       "upn": "attdemo@ndrtest.local",
       "password": "Njupt@241",
+      "is_local_admin": true,
       "source": "credential.brute-user",
       "stale": false,
       "updated_at": ""
@@ -142,14 +143,18 @@
     "passwords": "wordlists/passwords.txt",
     "combos": "wordlists/combos.txt"
   },
-  "campaign": {
-    "machine_account": {
-      "name": "",
-      "password": ""
+    "campaign": {
+      "machine_account": {
+        "name": "",
+        "password": ""
+      },
+      "local_admin": {
+        "username": "attdemo",
+        "password": "Njupt@241"
+      },
+      "tools_dir": "tools",
+      "tools": []
     },
-    "tools_dir": "tools",
-    "tools": []
-  },
   "tickets": {
     "tgt": [],
     "service": [
