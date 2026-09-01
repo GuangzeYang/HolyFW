@@ -183,3 +183,10 @@ Don't:
 - Do not ask the agent to run a technique whose object/field is not yet in state (it will fail and roll back).
 - Do not put raw hashes, passwords, or the domain SID in the task text.
 - Do not request more than one technique per task; the skill brackets each atomic action individually.
+
+Hard mutation constraints (never violated):
+
+- Never generate `persistence.reset-password` (resets an existing account's password) or `persistence.rbcd` (writes a delegation grant onto an existing account). Both modify existing AD account info in place and are forbidden.
+- Never generate any task that edits an existing account's password or attributes.
+- `persistence.add-computer` (adds a new machine account) is allowed; deleting accounts the attacker itself created is allowed.
+- The executing agent records every domain addition in `changes.json`.

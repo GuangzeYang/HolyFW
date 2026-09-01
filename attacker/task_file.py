@@ -8,7 +8,7 @@ from typing import Any
 import json
 
 from common import assign_task_id, existing_task_id, parse_hhmm_to_minute, save_json_atomic, strip_opencode_run_prefix
-from commander.schedule_shift import SCHEDULE_SHIFT_KEY
+from common.schedule_shift import SCHEDULE_SHIFT_KEY
 
 TASK_FIELDS = ("task_id", "task", "planned_time", "started_at", "completed_at")
 

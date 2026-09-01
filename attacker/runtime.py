@@ -11,7 +11,7 @@ from typing import Any, Callable
 from common import attacker_workspace_dir
 from common.deepseek_client import build_deepseek_client
 from common.time_model import TimeModelConfig, generate_schedule
-from commander.schedule_shift import (
+from common.schedule_shift import (
     ORIGIN_HOUR,
     SCHEDULE_SHIFT_KEY,
     apply_base_time_shift,
@@ -24,6 +24,7 @@ from commander.schedule_shift import (
 
 from attacker.execute import execute_task
 from attacker.generation import DEFAULT_BATCH_SIZE, fill_next_batch, load_generation_resources
+from attacker.logging_setup import reattach_attacker_dated_file_handler
 from attacker.task_file import (
     all_completed,
     empty_slot_indices,
@@ -319,6 +320,7 @@ def run_loop(
     fill_batch: Callable[[list[dict[str, str]], int], list[dict[str, str]]] | None = None,
     seed: int | None = None,
     base_time: int | None = None,
+    run_forever: bool = False,
 ) -> int:
     loaded = config if config is not None else load_config(config_path)
     workspace = resolve_workspace()
@@ -327,6 +329,7 @@ def run_loop(
     batch_size = int(loaded.get("batch_size") or DEFAULT_BATCH_SIZE)
     poll_interval = float(loaded.get("poll_interval_seconds") or 15)
     timeout_seconds = int((loaded.get("exec") or {}).get("timeout_seconds") or 900)
+    retry_interval = float(generator.get("generation_retry_interval_seconds") or 1800)
     paths = loaded.get("paths") or {}
     data_dir = _path_from_config(workspace, str(paths.get("data_dir") or ""), "role_task")
     logs_dir = _path_from_config(workspace, str(paths.get("logs_dir") or ""), "logs")
@@ -334,8 +337,8 @@ def run_loop(
 
     clock = now_fn or (lambda: datetime.now().astimezone())
     sleeper = sleep_fn or __import__("time").sleep
-    target_day = resolve_run_day(data_dir, now=clock(), explicit_day=day)
-    task_path = tasks_file_path(data_dir, target_day)
+    initial_day = resolve_run_day(data_dir, now=clock(), explicit_day=day)
+    task_path = tasks_file_path(data_dir, initial_day)
     expected = int(time_model.get("tasks_per_role") or 39)
     config_display = config_path if config_path is not None else "(inline config)"
     if config is None:
@@ -348,86 +351,118 @@ def run_loop(
     logger.info("Config: %s", config_display)
     logger.info(
         "Run day=%s base_time=%s batch_size=%s poll_interval=%ss exec_timeout=%ss",
-        target_day.isoformat(),
+        initial_day.isoformat(),
         resolved_base_time,
         batch_size,
         poll_interval,
         timeout_seconds,
     )
     logger.info("Task file: %s", task_path)
-    logger.info("Dataset directory: %s", logs_dir / target_day.isoformat())
-
-    tasks, shift_stamp = ensure_task_file(
-        task_path,
-        expected_count=expected,
-        day=target_day,
-        time_model=time_model,
-        base_time=resolved_base_time,
-        seed=seed,
-    )
+    logger.info("Dataset directory: %s", logs_dir / initial_day.isoformat())
 
     client = agent_client
     system_prompt = prompt_template = ""
     state: dict[str, Any] = {}
-
-    def _fill(current: list[dict[str, str]], size: int) -> list[dict[str, str]]:
-        nonlocal client, system_prompt, prompt_template, state
-        logger.info("Filling next batch of %s empty slot(s)", size)
-        if fill_batch is not None:
-            filled = fill_batch(current, size)
-            save_attacker_tasks(task_path, filled, shift=shift_stamp)
-            logger.info("Filled batch via injected callback; saved %s", task_path)
-            return filled
-        if client is None:
-            logger.info("Building DeepSeek client")
-            client = build_deepseek_client(generator)
-        system_prompt, prompt_template, state = load_generation_resources()
-        filled = fill_next_batch(
-            current,
-            batch_size=size,
-            agent_client=client,
-            system_prompt=system_prompt,
-            prompt_template=prompt_template,
-            state=state,
-            max_attempts=int(generator.get("max_attempts") or 5),
-        )
-        save_attacker_tasks(task_path, filled, shift=shift_stamp)
-        logger.info("Saved filled task file %s", task_path)
-        return filled
-
-    def _execute(item: dict[str, str]) -> None:
-        logger.info(
-            "Executing due task planned_time=%s task=%s",
-            item.get("planned_time"),
-            (item.get("task") or "")[:120],
-        )
-        if execute_one is not None:
-            execute_one(item)
-        else:
-            execute_task(
-                item,
-                logs_dir=logs_dir,
-                timeout_seconds=timeout_seconds,
-                now=clock(),
-                day=target_day,
-            )
-        save_attacker_tasks(task_path, tasks, shift=shift_stamp)
-        logger.info("Saved execution state for planned_time=%s", item.get("planned_time"))
-
+    active_day: date | None = None
+    tasks: list[dict[str, str]] = []
+    shift_stamp: dict[str, Any] | None = None
     last_wait_key: str | None = None
+
     while True:
-        action = step(
-            tasks,
+        target_day = resolve_run_day(
+            data_dir,
             now=clock(),
-            batch_size=batch_size,
-            fill_batch=_fill,
-            execute_one=_execute,
-            file_day=target_day,
+            explicit_day=None if run_forever else day,
         )
+        task_path = tasks_file_path(data_dir, target_day)
+        if target_day != active_day:
+            if active_day is not None:
+                reattach_attacker_dated_file_handler(logs_dir, target_day=target_day)
+            logger.info("Active attacker task day changed to %s", target_day.isoformat())
+            active_day = target_day
+            last_wait_key = None
+            tasks, shift_stamp = ensure_task_file(
+                task_path,
+                expected_count=expected,
+                day=target_day,
+                time_model=time_model,
+                base_time=resolved_base_time,
+                seed=seed,
+            )
+
+        def _fill(current: list[dict[str, str]], size: int) -> list[dict[str, str]]:
+            nonlocal client, system_prompt, prompt_template, state
+            logger.info("Filling next batch of %s empty slot(s)", size)
+            if fill_batch is not None:
+                filled = fill_batch(current, size)
+                save_attacker_tasks(task_path, filled, shift=shift_stamp)
+                logger.info("Filled batch via injected callback; saved %s", task_path)
+                return filled
+            if client is None:
+                logger.info("Building DeepSeek client")
+                client = build_deepseek_client(generator)
+            system_prompt, prompt_template, state = load_generation_resources()
+            filled = fill_next_batch(
+                current,
+                batch_size=size,
+                agent_client=client,
+                system_prompt=system_prompt,
+                prompt_template=prompt_template,
+                state=state,
+                max_attempts=int(generator.get("max_attempts") or 5),
+            )
+            save_attacker_tasks(task_path, filled, shift=shift_stamp)
+            logger.info("Saved filled task file %s", task_path)
+            return filled
+
+        def _execute(item: dict[str, str]) -> None:
+            logger.info(
+                "Executing due task planned_time=%s task=%s",
+                item.get("planned_time"),
+                (item.get("task") or "")[:120],
+            )
+            if execute_one is not None:
+                execute_one(item)
+            else:
+                execute_task(
+                    item,
+                    logs_dir=logs_dir,
+                    timeout_seconds=timeout_seconds,
+                    now=clock(),
+                    day=target_day,
+                )
+            save_attacker_tasks(task_path, tasks, shift=shift_stamp)
+            logger.info("Saved execution state for planned_time=%s", item.get("planned_time"))
+
+        try:
+            action = step(
+                tasks,
+                now=clock(),
+                batch_size=batch_size,
+                fill_batch=_fill,
+                execute_one=_execute,
+                file_day=target_day,
+            )
+        except Exception as exc:
+            if not run_forever:
+                raise
+            logger.error("Scheduler step failed (%s); retrying in %.0fs", exc, retry_interval)
+            sleeper(retry_interval)
+            continue
         if action == "done":
             save_attacker_tasks(task_path, tasks, shift=shift_stamp)
-            logger.info("All attacker tasks completed for %s", target_day.isoformat())
-            return 0
+            if not run_forever:
+                logger.info("All attacker tasks completed for %s", target_day.isoformat())
+                return 0
+            done_key = f"done:{target_day.isoformat()}"
+            if done_key != last_wait_key:
+                logger.info(
+                    "All attacker tasks completed for %s; waiting silently for the next active task day",
+                    target_day.isoformat(),
+                )
+                last_wait_key = done_key
+            sleeper(poll_interval)
+            continue
         if action == "executed":
             last_wait_key = None
             continue

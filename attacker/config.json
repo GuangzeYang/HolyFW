@@ -1,12 +1,13 @@
 {
   "batch_size": 5,
   "poll_interval_seconds": 15,
-  "base_time": 21,
+  "base_time": 9,
   "exec": {
     "timeout_seconds": 900
   },
   "generator": {
     "max_attempts": 5,
+    "generation_retry_interval_seconds": 1800,
     "time_model": {
       "tasks_per_role": 39,
       "mu_am_minutes": 630,

@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="cmd", help="subcommand")
 
-    run_p = sub.add_parser("run", help="start the attacker scheduler (default)")
+    run_p = sub.add_parser("run", help="start the attacker scheduler (default; runs continuously across days)")
     run_p.add_argument("--date", default="", help="YYYY-MM-DD used for the task file (default: today, or yesterday if that shifted window is still open)")
     run_p.add_argument("--seed", type=int, default=None, help="Override the NHPP seed")
     run_p.add_argument(
@@ -51,6 +51,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=_parse_base_time_arg,
         default=argparse.SUPPRESS,
         help="Hour (0-23) when the generated 09:00 workday should start. Default from config (9).",
+    )
+    run_p.add_argument(
+        "--forever",
+        action="store_true",
+        help="keep running across days and roll to the next active task day automatically (default)",
+    )
+    run_p.add_argument(
+        "--once",
+        action="store_true",
+        help="run a single day and exit when that day's tasks are complete",
     )
 
     show_p = sub.add_parser("show", help="print today's attacker task JSON")
@@ -142,6 +152,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "breaker":
         return cmd_breaker(args)
     if args.cmd is None or args.cmd == "run":
+        forever_flag = bool(getattr(args, "forever", False))
+        once_flag = bool(getattr(args, "once", False))
+        day = _parse_day(getattr(args, "date", "") or "")
+        if forever_flag and once_flag:
+            parser.error("use only one of --forever or --once")
+        if forever_flag and day is not None:
+            parser.error("--date cannot be combined with --forever")
+        run_forever = not (once_flag or day is not None)
         try:
             loaded = load_config(args.config)
             workspace = resolve_workspace()
@@ -152,12 +170,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         logging.getLogger("attacker").info("Attacker starting, logs: %s", log_file)
         logging.getLogger("attacker").info("Attacker workspace: %s", workspace)
-        day = _parse_day(getattr(args, "date", "") or "")
+        if run_forever:
+            logging.getLogger("attacker").info("Continuous mode: rolling to the next active task day")
         return run_loop(
             config_path=args.config,
             day=day,
             seed=getattr(args, "seed", None),
             base_time=getattr(args, "base_time", None),
+            run_forever=run_forever,
         )
     parser.error(f"unknown command {args.cmd}")
     return 2

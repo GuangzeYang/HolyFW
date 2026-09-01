@@ -189,6 +189,7 @@ def _run(args: list[str], timeout: int = 30) -> tuple[int, str, str]:
             args,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout,
             shell=False,
         )
@@ -301,6 +302,12 @@ def check_sysmon() -> dict:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser(description="Validate the ad-attack environment")
     parser.add_argument(
         "--json", action="store_true", help="always print JSON (default)"

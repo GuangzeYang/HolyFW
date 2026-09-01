@@ -63,3 +63,42 @@ def configure_attacker_logging(logs_dir: Path, level: int = logging.INFO) -> Pat
     file_handler.name = ATTACKER_DATED_FILE_HANDLER_NAME
     logger.addHandler(file_handler)
     return log_file
+
+
+def reattach_attacker_dated_file_handler(
+    logs_dir: Path,
+    *,
+    target_day: date,
+    level: int | None = None,
+    logger: logging.Logger | None = None,
+) -> Path:
+    """Replace the attacker dated FileHandler for *target_day*.
+
+    Removes only the handler named :data:`ATTACKER_DATED_FILE_HANDLER_NAME`
+    from the ``attacker`` logger (or an explicit *logger*), keeping other
+    handlers (e.g. console) unchanged. The new handler inherits the removed
+    handler's level (falling back to *level* or INFO) and the plain format.
+    """
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    target = logger or logging.getLogger(ATTACKER_LOGGER_NAME)
+    previous_level: int | None = None
+    previous_formatter: logging.Formatter | None = None
+    for handler in list(target.handlers):
+        if getattr(handler, "name", None) == ATTACKER_DATED_FILE_HANDLER_NAME:
+            previous_level = handler.level
+            previous_formatter = handler.formatter
+            target.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+    resolved_level = previous_level if previous_level not in (None, logging.NOTSET) else level
+    if resolved_level is None:
+        resolved_level = logging.INFO
+    log_file = logs_dir / f"attacker_{target_day.isoformat()}.log"
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setLevel(resolved_level)
+    file_handler.setFormatter(previous_formatter or _plain_formatter())
+    file_handler.name = ATTACKER_DATED_FILE_HANDLER_NAME
+    target.addHandler(file_handler)
+    return log_file

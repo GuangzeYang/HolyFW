@@ -107,6 +107,92 @@ def wevtutil_path() -> str:
     return resolved if resolved else configured
 
 
+def _elevation_account() -> tuple[str, str] | None:
+    """Resolve the local elevation account from state.json (Local Elevation Protocol).
+
+    Order: `campaign.local_admin_account` (operator-preseeded) → a `users` object
+    carrying `is_local_admin_on_attack_host: true` + `password` → any `users`
+    object with a `password`. Returns (schtasks-account, password) or None.
+    """
+    state_path = SKILL_ROOT / "state.json"
+    if not state_path.exists():
+        return None
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    netbios = str((data.get("domain") or {}).get("netbios") or "")
+
+    def acct_name(user: dict) -> str:
+        name = str(user.get("username") or user.get("upn") or "").strip()
+        if not name or "\\" in name or "@" in name:
+            return name
+        if netbios:
+            return f"{netbios}\\{name}"
+        return name
+
+    local_admin = (data.get("campaign") or {}).get("local_admin_account")
+    if isinstance(local_admin, dict) and local_admin.get("name") and local_admin.get("password"):
+        return str(local_admin["name"]), str(local_admin["password"])
+
+    users = data.get("users") or []
+    candidates = []
+    for user in users:
+        if isinstance(user, dict) and user.get("password"):
+            candidates.append((bool(user.get("is_local_admin_on_attack_host")), user))
+    candidates.sort(key=lambda row: not row[0])
+    for _, user in candidates:
+        name = acct_name(user)
+        if name:
+            return name, str(user["password"])
+    return None
+
+
+def _run_epl_elevated(
+    wevtutil: str,
+    log_name: str,
+    out_file: Path,
+    query: str,
+    account: str,
+    password: str,
+) -> bool:
+    """Retry `wevtutil epl` for one channel through scripts/elevate.py."""
+    elevate_script = Path(__file__).with_name("elevate.py")
+    argv = [
+        sys.executable,
+        str(elevate_script),
+        "--user",
+        account,
+        "--password",
+        password,
+        "--cwd",
+        str(SKILL_ROOT),
+        "--timeout",
+        "180",
+        "--",
+        wevtutil,
+        "epl",
+        log_name,
+        str(out_file),
+        f"/q:{query}",
+    ]
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, errors="replace", timeout=240
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        result = json.loads(proc.stdout or "")
+    except ValueError:
+        return False
+    return bool(result.get("ok")) and out_file.exists()
+
+
 def state_file() -> Path:
     return output_dir() / STATE_FILE_NAME
 
@@ -204,6 +290,19 @@ def cmd_stop(args: argparse.Namespace) -> int:
             errors.append(f"{log_name}: wevtutil failed: {exc}")
             continue
         if proc.returncode != 0:
+            if getattr(args, "elevate", False):
+                account = _elevation_account()
+                if account is None:
+                    errors.append(
+                        f"{log_name}: export denied and no elevation account in state; "
+                        f"preseed campaign.local_admin_account or run the agent elevated"
+                    )
+                    continue
+                if _run_epl_elevated(wevtutil, log_name, out_file, query, *account):
+                    files.append({"log": log_name, "file": str(out_file), "elevated": True})
+                    continue
+                errors.append(f"{log_name}: elevated export retry failed")
+                continue
             errors.append(
                 f"{log_name}: {(proc.stderr or proc.stdout or 'export failed').strip()}"
             )
@@ -259,7 +358,16 @@ def main() -> int:
         "--label", required=True, help="technique id used in the evtx file name"
     )
 
-    sub.add_parser("stop", help="stop log capture and export the evtx")
+    p_stop = sub.add_parser(
+        "stop",
+        help="stop log capture and export the evtx",
+    )
+    p_stop.add_argument(
+        "--elevate",
+        action="store_true",
+        help="on access denied, retry the export elevated via the account resolved "
+        "from state (Local Elevation Protocol)",
+    )
     sub.add_parser("status", help="report whether a capture is active")
 
     args = parser.parse_args()

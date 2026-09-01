@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
-  "last_updated": "2026-08-21T14:50:19Z",
+  "last_updated": "2026-08-30T06:26:22Z",
   "domain": {
     "name": "ndrtest.local",
-    "netbios": "ndrtest",
+    "netbios": "NDRTEST",
     "dc_fqdn": "i1-dc1-c01.ndrtest.local",
     "dc_ip": "172.16.24.11",
     "dcs": [
@@ -19,45 +19,17 @@
       }
     ],
     "domain_sid": "S-1-5-21-3362522014-3837673876-23709428",
-    "user_count": 13,
+    "user_count": 0,
     "computer_count": 0,
-    "usernames": [
-      "accountancy",
-      "administrator",
-      "attdemo",
-      "guest",
-      "hr",
-      "krbtgt",
-      "manager",
-      "operator-ftp",
-      "operator-mail",
-      "operator-sql",
-      "operator-web",
-      "programmer",
-      "test01"
-    ],
-    "spns": [
-      {
-        "spn": "ftp/i1-iis1-c08.ndrtest.local",
-        "account": "operator-ftp",
-        "ticket_file": "",
-        "stale": false,
-        "updated_at": ""
-      }
-    ],
-    "delegation": [
-      {
-        "account": "operator-ftp",
-        "type": "constrained",
-        "allowed_spns": [
-          "cifs/i1-dc1-c01.ndrtest.local"
-        ],
-        "stale": false,
-        "updated_at": ""
-      }
-    ],
+    "usernames": [],
+    "spns": [],
+    "delegation": [],
     "groups": [],
-    "password_policy": {},
+    "password_policy": {
+      "lockout_threshold": 0,
+      "min_password_length": 7,
+      "max_password_age_days": 42
+    },
     "trusts": [],
     "rbcd": [],
     "updated_at": ""
@@ -90,51 +62,62 @@
         "SMB",
         "kpasswd",
         "LDAPS",
-        "GC",
-        "WSMan",
+        "Global Catalog",
+        "WinRM",
         "ADWS"
       ],
-      "compromised": true,
-      "source": "discovery.host-scan",
-      "os": "Windows Server"
+      "compromised": false,
+      "source": "discovery.port-scan",
+      "fqdn": "i1-dc1-c01.ndrtest.local",
+      "machine_account": "I1-DC1-C01$",
+      "shares": [
+        "Company_Data",
+        "IPCTest",
+        "NETLOGON",
+        "SYSVOL"
+      ]
     },
     {
       "ip": "172.16.24.21",
-      "role": "dc",
+      "role": "unknown",
       "open_ports": [],
       "services": [],
+      "shares": [
+        "ADMIN$",
+        "C$",
+        "IPC$",
+        "NETLOGON",
+        "SYSVOL"
+      ],
       "compromised": false,
-      "source": "discovery.host-scan"
-    },
-    {
-      "ip": "172.16.24.202",
-      "role": "member",
-      "open_ports": [],
-      "services": [],
-      "compromised": false,
-      "source": "discovery.host-scan"
+      "source": "task",
+      "fqdn": "i1-dc2-vc11.ndrtest.local",
+      "machine_account": "I1-DC2-VC11$",
+      "updated_at": "2026-08-30T05:37:30Z"
     }
   ],
   "users": [
     {
       "username": "attdemo",
       "upn": "attdemo@ndrtest.local",
+      "sid": "S-1-5-21-3362522014-3837673876-23709428-1170",
       "password": "Njupt@241",
-      "source": "credential.brute-user",
-      "stale": false,
-      "updated_at": ""
+      "is_local_admin_on_attack_host": true,
+      "source": "credential.brute-user"
     },
     {
-      "username": "operator-ftp",
-      "upn": "operator-ftp@ndrtest.local",
+      "username": "accountancy",
+      "upn": "accountancy@ndrtest.local",
       "password": "Njupt@241",
-      "spns": [
-        "ftp/i1-iis1-c08.ndrtest.local"
-      ],
-      "is_service_account": true,
-      "source": "credential.kerberoast",
-      "stale": false,
-      "updated_at": ""
+      "source": "credential.brute-user"
+    },
+    {
+      "username": "administrator",
+      "upn": "administrator@ndrtest.local",
+      "password": "Njupt@240",
+      "is_domain_admin": true,
+      "source": "operator-provided",
+      "sid": "S-1-5-21-3362522014-3837673876-23709428-500"
     }
   ],
   "wordlists": {
@@ -148,22 +131,77 @@
       "password": ""
     },
     "tools_dir": "tools",
-    "tools": []
+    "tools": [],
+    "local_admin_account": {
+      "name": "NDRTEST\\attdemo",
+      "password": "Njupt@241"
+    }
   },
   "tickets": {
     "tgt": [],
-    "service": [
-      {
-        "spn": "cifs/i1-dc1-c01.ndrtest.local",
-        "principal": "administrator",
-        "impersonated_user": "administrator",
-        "ccache_file": "administrator@cifs_i1-dc1-c01.ndrtest.local@NDRTEST.LOCAL.ccache"
-      }
-    ],
+    "service": [],
     "golden": [],
     "silver": []
   },
   "files": [],
-  "techniques": {},
-  "notes": []
+  "techniques": {
+    "discovery": {
+      "port-scan": {
+        "status": "done",
+        "last_result": "open ports on 172.16.24.11: 53,88,135,139,389,445,464,593,636,3268,3269,5985,9389; role dc; full -p- scan timed out, focused AD scan used",
+        "captures": "17cebf0e1d07432a_discovery_port-scan.pcapng; evtx unavailable"
+      },
+      "host-identify": {
+        "status": "done",
+        "last_result": "resolved 172.16.24.21 -> i1-dc2-vc11.ndrtest.local (machine account I1-DC2-VC11$); ping -a name i1-dc2-vc11; DC DNS has no PTR record",
+        "captures": "457e41d9ccd948b1_discovery_host-identify.pcapng; evtx unavailable"
+      },
+      "orientation": {
+        "status": "done",
+        "last_result": "domain ndrtest.local netbios NDRTEST; PDC i1-dc1-c01.ndrtest.local (172.16.24.11); DC i1-dc2-vc11.ndrtest.local (172.16.24.21); domain SID S-1-5-21-3362522014-3837673876-23709428; host is member workstation on 172.16.24.202"
+      },
+      "password-policy": {
+        "status": "done",
+        "last_result": "lockout threshold 0 (never); min password length 7; max password age 42 days; min password age 1; history 24; lockout duration 30 min; window 30 min; computer role BACKUP",
+        "captures": "029d13b5467e4cd6_discovery_password-policy.pcapng; 029d13b5467e4cd6_discovery_password-policy_Sysmon.evtx; 029d13b5467e4cd6_discovery_password-policy_Security.evtx"
+      },
+      "share-enum": {
+        "status": "done",
+        "last_result": "shares on 172.16.24.21 (i1-dc2-vc11.ndrtest.local, as accountancy): ADMIN$, C$, IPC$, NETLOGON, SYSVOL",
+        "captures": "70046f07c3654598_discovery_share-enum.pcapng; 70046f07c3654598_discovery_share-enum_Sysmon.evtx; 70046f07c3654598_discovery_share-enum_Security.evtx"
+      }
+    },
+    "credential": {
+      "brute-user": {
+        "status": "done",
+        "last_result": "accountancy@ndrtest.local:Njupt@241; tested 979 logins, 1 success",
+        "captures": "088e19846d23435f_credential_brute-user.pcapng; 088e19846d23435f_credential_brute-user_Sysmon.evtx; 088e19846d23435f_credential_brute-user_Security.evtx"
+      },
+      "gpp-password": {
+        "status": "done",
+        "last_result": "Get-GPPPassword as accountancy@ndrtest.local (Njupt@241) listed shares and scanned SYSVOL *.xml on i1-dc1-c01.ndrtest.local; no GPP cPassword files found, no credentials recovered",
+        "captures": "63d6a26294494753_credential_gpp-password.pcapng; 63d6a26294494753_credential_gpp-password_Sysmon.evtx; 63d6a26294494753_credential_gpp-password_Security.evtx"
+      }
+    }
+  },
+  "notes": [
+    {
+      "text": "preflight log channels unreadable; no elevation account; evtx unavailable"
+    },
+    {
+      "text": "elevated via NDRTEST\\attdemo (brute-user recovered password) for log capture"
+    },
+    {
+      "text": "elevated via NDRTEST\\attdemo for discovery.password-policy log capture; preflight ok:true"
+    },
+    {
+      "text": "elevated via NDRTEST\\attdemo for discovery.share-enum log capture; preflight ok:true"
+    },
+    {
+      "text": "elevated via NDRTEST\\attdemo for discovery.share-enum (host 172.16.24.21) log capture; preflight ok:true"
+    },
+    {
+      "text": "elevated via NDRTEST\\attdemo for credential.gpp-password log capture; preflight ok:true"
+    }
+  ]
 }

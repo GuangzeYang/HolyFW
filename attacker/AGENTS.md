@@ -14,9 +14,18 @@ These rules are mandatory on every task.
 # Work bounds
 
 - Use the `ad-attack` skill named in the task.
-- Execute only the technique id in the task text. Do not substitute another technique from the skill catalog.
+- Execute only the technique id in the task text. Do not substitute another technique from the skill catalog. Exception: the skill's **Local Elevation Protocol** (Step 0) is part of the mandatory execution protocol — running `net localgroup administrators`, and running `credential.brute-user` / `credential.password-spray` against the DC to obtain a local-administrator password for elevation, is protocol execution, not a technique substitution.
 - Resolve every command parameter from `state.json`. Never invent credentials, hashes, hostnames, or targets.
 - After a technique that mutates the target domain (new user, machine account, password reset, RBCD, DC config), append one record with `python scripts/changes.py add '{...}'`. Do not revert those changes yourself.
+
+# Domain mutation constraints
+
+These rules are mandatory on every task.
+
+- NEVER modify any existing AD account in place: no password resets (`persistence.reset-password` is forbidden), no attribute edits, and no delegation/RBCD grants on existing accounts (`persistence.rbcd` is forbidden).
+- You MAY add new accounts (`persistence.add-computer`) and MAY delete accounts that you yourself created.
+- Record every addition in `changes.json`. Never revert domain changes yourself.
+- If a dispatched task names `persistence.reset-password` or `persistence.rbcd`, do NOT execute it: mark the technique `failed` in `state.json` with reason `forbidden by domain mutation constraints` and end the task.
 
 # Process lifetime
 

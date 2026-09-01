@@ -83,6 +83,19 @@ For ticket use, set `KRB5CCNAME` according to the active shell:
 
 In PowerShell, wrap any password containing `$`, backtick, or other special characters in single quotes.
 
+> **PowerShell 5.1 native-argument quoting.** When you call `python scripts/state.py <cmd> <path> '<json>'` from PowerShell, the shell strips the inner double quotes of a JSON argument before it reaches Python (`state.py` then fails with "Expecting property name enclosed in double quotes"). Escape the quotes first — build the JSON in a variable and pass `($json -replace '"','\"')`:
+>
+> ```
+> $merge = '{"fqdn": "i1-dc1-c01.ndrtest.local", "machine_account": "I1-DC1-C01$"}'
+> python scripts/state.py merge hosts[1] ($merge -replace '"','\"')
+> ```
+>
+> The same trick applies to `add`/`set`/`merge`/`changes.py add`. Alternatively use a Python one-liner that loads `state.py` directly to avoid shell quoting entirely:
+>
+> ```
+> python -c "import sys; sys.path.insert(0,'scripts'); import state; d=state._load(); ...; state._save(d)"
+> ```
+
 ## Mandatory Execution Protocol
 
 Every attack task MUST follow this exact sequence. Do not skip steps.
@@ -95,8 +108,14 @@ Run:
 python scripts/check_environment.py
 ```
 
-- If the output reports `"ok": false`, do **not** proceed with any attack. Report the failure with the `errors` array from the output and stop this task. Never attempt to substitute a missing tool or hallucinate a command.
-- If the output reports `"ok": true` (warnings are acceptable), continue to Step 1.
+Decide what to do with the output using this gate (do **not** simply report and stop):
+
+- `"ok": true` (warnings are acceptable) → continue to Step 1.
+- `"ok": false` **and the current user already has the needed permission** — i.e. `admin.is_admin` is `true` **and** every `channels_readable.*.readable` is `true` (e.g. the agent process is already elevated / running as SYSTEM) → continue to Step 1. No elevation is performed.
+- `"ok": false` **because of a permission shortfall** — `admin.is_admin` is `false`, or any `channels_readable.*.readable` is `false` (access denied, returncode 5), or `auditpol` reports 0x00000522 — and the **current user's live probes genuinely fail** → run the **Local Elevation Protocol** below, re-run `check_environment.py` elevated to confirm `ok: true`, then continue to Step 1.
+- `"ok": false` **for any other reason** (missing executable, impacket not runnable, etc.) → do **not** stop the task: record the reason in `notes`, skip the techniques that depend on the missing capability (e.g. `.evtx` export) and keep running the rest. Never attempt to substitute a missing tool or hallucinate a command.
+
+The gate is judged by **live capability probes** (`wevtutil qe`, `auditpol`), never by group membership alone: a user can be a member of the local `Administrators` group while its token is UAC-filtered (Medium integrity) and cannot read the logs.
 
 The check also guarantees impacket is actually runnable: it reports `python_executable` (the interpreter running the check — the same `python` the attack commands below will use) and `impacket.impacket_file` (where impacket lives), and it executes `python -m impacket.examples.secretsdump --help` as a live proof. If those do not line up, `ok` is `false`.
 
@@ -118,6 +137,31 @@ The check also guarantees impacket is actually runnable: it reports `python_exec
 > ```
 >
 > The target account must be a member of the local `Administrators` group (the `Domain Admins` group usually is, by default). Commands are wrapped in a temp batch, output is captured to a temp file, and everything is cleaned up automatically.
+
+> **Local Elevation Protocol (autonomous).** When the pre-flight gate (above) decides that a local elevation is required, follow this exact sequence:
+>
+> 1. **Check the current user first.** Read `whoami` and `net localgroup administrators`. If the current account is a member of the local `Administrators` group, prefer to elevate **as that same account** (it is usually only UAC-filtered): resolve its password from `users` via `state.py`, or acquire it with `credential.brute-user` / `credential.password-spray` against the DC and store it in `users` with `state.py add users '{...}'`. Record `is_local_admin_on_attack_host: true` on the object.
+> 2. **Operator-preseeded account.** If `campaign.local_admin_account` is set (`{"name": "...", "password": "..."}`), use it directly.
+> 3. **Resolved from state.** Enumerate `net localgroup administrators`, match an account to a `users` object that carries a non-empty `password`.
+> 4. **Recovered from the domain.** For a domain account that is a local administrator (e.g. `NDRTEST\attdemo`), recover its password with `credential.brute-user` / `credential.password-spray` and store it in `users`.
+> 5. **No account available** → do not stop the task: record a `notes` entry, keep running (tshark traffic capture works unprivileged; only the `.evtx` export needs elevation) and mark the `.evtx` export as unavailable, prompting the operator to preseed `campaign.local_admin_account` or run the agent elevated.
+>
+> Re-run the failed command elevated with:
+>
+> ```
+> python scripts/elevate.py --user <account> --password '<pw>' --cwd <skill-root> [--env 'PYTHONPATH=<venv>;<site-packages>'] -- <absolute-path-command>
+> ```
+>
+> The elevated process runs in the target account's environment with a **full token** (Task Scheduler runs as SYSTEM, bypassing UAC filtering). It does **not** inherit the current shell's environment — pass `PYTHONPATH` via `--env` for python-based commands, and always use absolute paths (the scheduled task starts in `System32`, so `--cwd <skill-root>` makes skill-relative paths resolve).
+>
+> To prove the gate passed, re-run `python scripts/check_environment.py` elevated and confirm `ok: true`. Then record the used account and confirm the result:
+>
+> ```
+> python scripts/state.py set campaign.local_admin_account '{"name": "<account>", "password": "<password>"}'
+> python scripts/state.py add notes '{"text": "elevated via <account> for <reason>"}'
+> ```
+>
+> For log export specifically, `capture_logs.py stop --elevate` performs the same retry automatically using the resolved account (see the Capture scripts section).
 
 > **Logon/Kerberos audit events.** `capture_logs.py` also exports the **Security** log (`config.json` `logs.security_log`), which records logon/authentication events: `4624/4625` (logon success/failure), `4634` (logoff), `4672` (special logon), `4648` (explicit credentials), `4776` (NTLM credential validation), and — on a **domain controller** — `4768` (TGT) / `4769` (service ticket). The pre-flight report's `auditing` field checks these audit subcategories (via `auditpol /get /subcategory:<GUID>`); if any are disabled, `ok` stays `true` but a warning explains which `auditpol` subcategory to enable. Note: `4768/4769` are emitted by the KDC, so they appear in a DC's Security log, not on the attack host; the attack host's Security log captures its own network logons (`4624` LogonType 3) from lateral-movement tooling.
 
@@ -151,8 +195,10 @@ For every single atomic attack action (one command = one action):
 4. Stop log capture and export the evtx (one `.evtx` per channel — Sysmon + Security):
 
    ```
-   python scripts/capture_logs.py stop
+   python scripts/capture_logs.py stop [--elevate]
    ```
+
+   If a channel's `wevtutil epl` fails with access denied and `--elevate` is set, `stop` automatically retries that channel elevated via the account resolved by the Local Elevation Protocol.
 
 5. Stop traffic capture and finalize the pcap:
 
@@ -320,6 +366,7 @@ Attacker-owned/decided values that are not discovered facts:
 | `machine_account.name` / `password` | The machine account name (ends with `$`) and password created by `persistence.add-computer` and reused by `persistence.rbcd` |
 | `tools_dir` | Local directory that holds attacker tools (relative to the skill root or absolute) |
 | `tools[]` | Local tool filenames used by `lateral.tool-transfer` (e.g. `mimikatz.exe`) |
+| `local_admin_account.name` / `password` | Account the agent uses for local elevation on the attack host (Local Elevation Protocol): shape `{"name": "<account>", "password": "<password>"}`. Operator-preseeded as a fallback; the agent also records the account it actually elevated with so later elevations reuse it. |
 
 ### 6. Runtime sections
 
@@ -1102,9 +1149,15 @@ Rollback: if a delegation relationship is stale, `mark-stale` the entry and re-r
 
 Purpose: abuse constrained delegation (S4U2self/S4U2proxy) to obtain a service ticket impersonating another user.
 
-Inputs: a delegation account object (with `password`) from `users`, a target `spn` from `domain.spns`, and the user to impersonate (a task-text intent, or pick a `users[]` entry with `is_domain_admin: true`).
+Inputs: a delegation account object from `users` carrying either a `password` or an `ntlm_hash`, a target `spn` from `domain.spns`, and the user to impersonate (a task-text intent, or pick a `users[]` entry with `is_domain_admin: true`). Prefer the `ntlm_hash` recovered read-only by `credential.dcsync`; never reset the delegation account's password to obtain plaintext.
 
-Procedure (one atomic action):
+Procedure (one atomic action) — hash form when only the NT hash is known:
+
+```
+python -m impacket.examples.getST -spn <spn> -impersonate <user-to-impersonate> -hashes :<ntlm-hash> -dc-ip <domain.dc_ip> <domain.name>/<delegation-account>
+```
+
+Password form (only when a plaintext password is already known without any password reset):
 
 ```
 python -m impacket.examples.getST -spn <spn> -impersonate <user-to-impersonate> -dc-ip <domain.dc_ip> <domain.name>/<delegation-account>:<password>
@@ -1151,7 +1204,7 @@ Rollback: if the ticket is expired or rejected, `mark-stale` the ticket object a
 
 Purpose: upload a tool to a share on a target host.
 
-Inputs: a user object with `password` from `users`, the target host and share name from `hosts`, and a local tool from `campaign` (`campaign.tools_dir` + a name in `campaign.tools`).
+Inputs: a user object with `password` from `users`, the target host and share name from `hosts`, and a local tool from `campaign` (`campaign.tools_dir` + a name in `campaign.tools`). If `campaign.tools` is empty, create a small benign tool file in `campaign.tools_dir` on the attack host first, record its name in `campaign.tools`, then proceed.
 
 Procedure (one atomic action — connect, upload one file, exit):
 
@@ -1271,7 +1324,7 @@ Rollback: if rejected, `mark-stale` the service account user object and re-run `
 
 Purpose: add a machine account (default MAQ permits it) for later RBCD/delegation.
 
-Inputs: `domain.name`, `domain.dc_ip`, an account with `password` from `users`, and `campaign.machine_account` (the chosen name + password).
+Inputs: `domain.name`, `domain.dc_ip`, an account with `password` from `users`, and `campaign.machine_account` (the chosen name + password). If `campaign.machine_account` is empty, decide an attacker-chosen computer name and password, store them in `campaign.machine_account`, then run the command. Adding a new machine account is allowed; it does not modify any existing account.
 
 Procedure (one atomic action):
 
@@ -1289,6 +1342,8 @@ python scripts/changes.py add '{"kind": "create_machine_account", "technique_id"
 Rollback: if the machine account no longer works, `mark-stale` it and re-create.
 
 ## 5.4 Resource-Based Constrained Delegation (RBCD)
+
+> **RESTRICTED — DO NOT EXECUTE.** Granting RBCD writes `msDS-AllowedToActOnBehalfOfOtherIdentity` on an existing computer account, which is an in-place modification of existing AD account info and is forbidden by the domain mutation constraints. If a task names `persistence.rbcd`, mark the technique `failed` in `state.json` with reason `forbidden by domain mutation constraints` and end the task.
 
 - Technique id: `persistence.rbcd`
 - ATT&CK: T1098 (Account Manipulation), T1558.005
@@ -1320,6 +1375,8 @@ python scripts/changes.py add '{"kind": "rbcd", "technique_id": "persistence.rbc
 Rollback: if the RBCD edge is revoked, `mark-stale` `domain.rbcd[n]` and re-run this technique.
 
 ## 5.5 Reset Account Password
+
+> **RESTRICTED — DO NOT EXECUTE.** Resetting a password modifies an existing AD account in place and is forbidden by the domain mutation constraints. If a task names `persistence.reset-password`, mark the technique `failed` in `state.json` with reason `forbidden by domain mutation constraints` and end the task.
 
 - Technique id: `persistence.reset-password`
 - ATT&CK: T1098 (Account Manipulation)

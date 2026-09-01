@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import tempfile
 import unittest
 from datetime import datetime
@@ -352,6 +353,261 @@ class RunLoopTests(unittest.TestCase):
             self.assertEqual([item["task"] for item in stored], ["generated-0", "generated-1", "generated-2"])
 
 
+class ContinuousRunLoopTests(unittest.TestCase):
+    def test_rolls_over_to_next_day_without_exiting(self) -> None:
+        tz = datetime.now().astimezone().tzinfo
+
+        class _StopLoop(Exception):
+            pass
+
+        clock = {"now": datetime(2026, 8, 23, 18, 0, tzinfo=tz)}
+        sleeps = {"n": 0}
+
+        def now_fn() -> datetime:
+            return clock["now"]
+
+        def sleep_fn(_seconds: float) -> None:
+            sleeps["n"] += 1
+            if sleeps["n"] >= 2:
+                raise _StopLoop()
+            clock["now"] = datetime(2026, 8, 24, 18, 0, tzinfo=tz)
+
+        fills: list[int] = []
+
+        def fill(current: list[dict[str, str]], size: int) -> list[dict[str, str]]:
+            fills.append(size)
+            filled = 0
+            for item in current:
+                if not item["task"] and filled < size:
+                    item["task"] = f"generated-{filled}"
+                    filled += 1
+            return current
+
+        def execute_one(item: dict[str, str]) -> None:
+            item["started_at"] = "start"
+            item["completed_at"] = "done"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "config.json").write_text(
+                json.dumps(
+                    {
+                        "batch_size": 5,
+                        "poll_interval_seconds": 1,
+                        "exec": {"timeout_seconds": 30},
+                        "generator": {
+                            "max_attempts": 1,
+                            "time_model": {
+                                "tasks_per_role": 3,
+                                "mu_am_minutes": 630,
+                                "mu_pm_minutes": 900,
+                                "sigma_am_minutes": 50,
+                                "sigma_pm_minutes": 65,
+                                "a_am": 1.0,
+                                "a_pm": 1.0,
+                                "phi": 0.85,
+                                "sigma_eta": 0.18,
+                                "avoid_five_minutes": True,
+                            },
+                        },
+                        "paths": {"data_dir": "role_task", "logs_dir": "logs"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch("attacker.runtime.resolve_workspace", return_value=workspace):
+                with mock.patch(
+                    "attacker.runtime.generate_schedule",
+                    return_value=["09:11", "09:22", "10:03"],
+                ):
+                    with self.assertRaises(_StopLoop):
+                        run_loop(
+                            config_path=workspace / "config.json",
+                            now_fn=now_fn,
+                            sleep_fn=sleep_fn,
+                            fill_batch=fill,
+                            execute_one=execute_one,
+                            run_forever=True,
+                        )
+            attacker_logger = logging.getLogger("attacker")
+            for handler in list(attacker_logger.handlers):
+                if getattr(handler, "name", None) == "attacker_dated_file":
+                    attacker_logger.removeHandler(handler)
+                    try:
+                        handler.close()
+                    except Exception:
+                        pass
+            self.assertEqual(fills, [3, 3])
+            first_day = load_attacker_tasks(workspace / "role_task" / "tasks_08-23.json")
+            second_day = load_attacker_tasks(workspace / "role_task" / "tasks_08-24.json")
+            self.assertTrue(all_completed(first_day))
+            self.assertTrue(all_completed(second_day))
+
+    def test_retries_failed_fill_in_continuous_mode(self) -> None:
+        tz = datetime.now().astimezone().tzinfo
+
+        class _StopLoop(Exception):
+            pass
+
+        clock = {"now": datetime(2026, 8, 23, 18, 0, tzinfo=tz)}
+        sleeps = {"n": 0}
+        fill_attempts = {"n": 0}
+
+        def now_fn() -> datetime:
+            return clock["now"]
+
+        def sleep_fn(_seconds: float) -> None:
+            sleeps["n"] += 1
+            if sleeps["n"] >= 2:
+                raise _StopLoop()
+
+        def fill(current: list[dict[str, str]], size: int) -> list[dict[str, str]]:
+            fill_attempts["n"] += 1
+            if fill_attempts["n"] == 1:
+                raise RuntimeError("simulated fill failure")
+            filled = 0
+            for item in current:
+                if not item["task"] and filled < size:
+                    item["task"] = f"generated-{filled}"
+                    filled += 1
+            return current
+
+        def execute_one(item: dict[str, str]) -> None:
+            item["started_at"] = "start"
+            item["completed_at"] = "done"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "config.json").write_text(
+                json.dumps(
+                    {
+                        "batch_size": 5,
+                        "poll_interval_seconds": 1,
+                        "exec": {"timeout_seconds": 30},
+                        "generator": {
+                            "max_attempts": 1,
+                            "generation_retry_interval_seconds": 5,
+                            "time_model": {
+                                "tasks_per_role": 3,
+                                "mu_am_minutes": 630,
+                                "mu_pm_minutes": 900,
+                                "sigma_am_minutes": 50,
+                                "sigma_pm_minutes": 65,
+                                "a_am": 1.0,
+                                "a_pm": 1.0,
+                                "phi": 0.85,
+                                "sigma_eta": 0.18,
+                                "avoid_five_minutes": True,
+                            },
+                        },
+                        "paths": {"data_dir": "role_task", "logs_dir": "logs"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch("attacker.runtime.resolve_workspace", return_value=workspace):
+                with mock.patch(
+                    "attacker.runtime.generate_schedule",
+                    return_value=["09:11", "09:22", "10:03"],
+                ):
+                    with self.assertLogs("attacker", level="INFO") as captured:
+                        with self.assertRaises(_StopLoop):
+                            run_loop(
+                                config_path=workspace / "config.json",
+                                now_fn=now_fn,
+                                sleep_fn=sleep_fn,
+                                fill_batch=fill,
+                                execute_one=execute_one,
+                                run_forever=True,
+                            )
+            text = "\n".join(captured.output)
+            self.assertIn("Scheduler step failed", text)
+            self.assertIn("retrying", text)
+            self.assertEqual(fill_attempts["n"], 2)
+            stored = load_attacker_tasks(workspace / "role_task" / "tasks_08-23.json")
+            self.assertTrue(all_completed(stored))
+
+    def test_continuous_done_wait_logs_once(self) -> None:
+        tz = datetime.now().astimezone().tzinfo
+
+        class _StopLoop(Exception):
+            pass
+
+        sleeps = {"n": 0}
+
+        def now_fn() -> datetime:
+            return datetime(2026, 8, 23, 18, 0, tzinfo=tz)
+
+        def sleep_fn(_seconds: float) -> None:
+            sleeps["n"] += 1
+            if sleeps["n"] >= 2:
+                raise _StopLoop()
+
+        def fill(current: list[dict[str, str]], size: int) -> list[dict[str, str]]:
+            filled = 0
+            for item in current:
+                if not item["task"] and filled < size:
+                    item["task"] = f"generated-{filled}"
+                    filled += 1
+            return current
+
+        def execute_one(item: dict[str, str]) -> None:
+            item["started_at"] = "start"
+            item["completed_at"] = "done"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "config.json").write_text(
+                json.dumps(
+                    {
+                        "batch_size": 5,
+                        "poll_interval_seconds": 1,
+                        "exec": {"timeout_seconds": 30},
+                        "generator": {
+                            "max_attempts": 1,
+                            "time_model": {
+                                "tasks_per_role": 3,
+                                "mu_am_minutes": 630,
+                                "mu_pm_minutes": 900,
+                                "sigma_am_minutes": 50,
+                                "sigma_pm_minutes": 65,
+                                "a_am": 1.0,
+                                "a_pm": 1.0,
+                                "phi": 0.85,
+                                "sigma_eta": 0.18,
+                                "avoid_five_minutes": True,
+                            },
+                        },
+                        "paths": {"data_dir": "role_task", "logs_dir": "logs"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch("attacker.runtime.resolve_workspace", return_value=workspace):
+                with mock.patch(
+                    "attacker.runtime.generate_schedule",
+                    return_value=["09:11", "09:22", "10:03"],
+                ):
+                    with self.assertLogs("attacker", level="INFO") as captured:
+                        with self.assertRaises(_StopLoop):
+                            run_loop(
+                                config_path=workspace / "config.json",
+                                now_fn=now_fn,
+                                sleep_fn=sleep_fn,
+                                fill_batch=fill,
+                                execute_one=execute_one,
+                                run_forever=True,
+                            )
+            silent_lines = [
+                line
+                for line in captured.output
+                if "waiting silently for the next active task day" in line
+            ]
+            self.assertEqual(len(silent_lines), 1)
+            stored = load_attacker_tasks(workspace / "role_task" / "tasks_08-23.json")
+            self.assertTrue(all_completed(stored))
+
+
 class SchedulerLogTests(unittest.TestCase):
     def test_run_loop_logs_fill_wait_execute_done(self) -> None:
         tz = datetime.now().astimezone().tzinfo
@@ -430,7 +686,7 @@ class BaseTimeTests(unittest.TestCase):
     def test_shift_rewrites_planned_time_and_stamps_file(self) -> None:
         from datetime import date
 
-        from commander.schedule_shift import SCHEDULE_SHIFT_KEY
+        from common.schedule_shift import SCHEDULE_SHIFT_KEY
 
         from attacker.runtime import apply_attacker_base_time
 
@@ -597,6 +853,56 @@ class BaseTimeTests(unittest.TestCase):
             assert stamp is not None
             self.assertEqual(stamp["base_time"], 21)
             self.assertTrue(all_completed(stored))
+
+
+class AttackerCliContinuousTests(unittest.TestCase):
+    def _run_cli(self, argv: list[str]) -> tuple[int, mock.Mock]:
+        import attacker.cli as attacker_cli
+
+        with (
+            mock.patch("attacker.cli.run_loop", return_value=0) as run,
+            mock.patch("attacker.cli.configure_attacker_logging", return_value=Path("attacker.log")),
+        ):
+            code = attacker_cli.main(argv)
+        return code, run
+
+    def test_bare_run_is_continuous(self) -> None:
+        code, run = self._run_cli([])
+        self.assertEqual(code, 0)
+        self.assertTrue(run.call_args.kwargs["run_forever"])
+
+    def test_run_default_is_continuous(self) -> None:
+        code, run = self._run_cli(["run"])
+        self.assertEqual(code, 0)
+        self.assertTrue(run.call_args.kwargs["run_forever"])
+
+    def test_forever_flag_is_continuous(self) -> None:
+        code, run = self._run_cli(["run", "--forever"])
+        self.assertEqual(code, 0)
+        self.assertTrue(run.call_args.kwargs["run_forever"])
+
+    def test_once_runs_single_day(self) -> None:
+        code, run = self._run_cli(["run", "--once"])
+        self.assertEqual(code, 0)
+        self.assertFalse(run.call_args.kwargs["run_forever"])
+
+    def test_date_implies_single_day(self) -> None:
+        code, run = self._run_cli(["run", "--date", "2026-08-23"])
+        self.assertEqual(code, 0)
+        self.assertFalse(run.call_args.kwargs["run_forever"])
+        self.assertEqual(str(run.call_args.kwargs["day"]), "2026-08-23")
+
+    def test_forever_and_once_conflict(self) -> None:
+        import attacker.cli as attacker_cli
+
+        with self.assertRaises(SystemExit):
+            attacker_cli.main(["run", "--forever", "--once"])
+
+    def test_forever_and_date_conflict(self) -> None:
+        import attacker.cli as attacker_cli
+
+        with self.assertRaises(SystemExit):
+            attacker_cli.main(["run", "--forever", "--date", "2026-08-23"])
 
 
 class GenerationMessageTests(unittest.TestCase):

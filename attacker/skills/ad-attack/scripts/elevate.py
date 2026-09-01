@@ -59,7 +59,7 @@ DEFAULT_ST = "23:59"
 def _run(args: list[str], timeout: int = 60) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(
-            args, capture_output=True, text=True, timeout=timeout, shell=False
+            args, capture_output=True, text=True, errors="replace", timeout=timeout, shell=False
         )
         return proc.returncode, (proc.stdout or ""), (proc.stderr or "")
     except FileNotFoundError:
@@ -107,6 +107,12 @@ def main() -> int:
         help="seconds to wait for the task output (default 120)",
     )
     parser.add_argument(
+        "--cwd",
+        default=None,
+        help="working directory for the elevated command (default: the scheduled task's "
+        "default, which is System32 — pass this for skill-relative paths)",
+    )
+    parser.add_argument(
         "command",
         nargs=argparse.REMAINDER,
         help="command to run elevated (everything after --)",
@@ -138,6 +144,8 @@ def main() -> int:
 
     command_line = " ".join(_cmd_quote(tok) for tok in args.command)
     lines = ["@echo off"]
+    if args.cwd:
+        lines.append(f"cd /d {_cmd_quote(args.cwd)}")
     for kv in args.env:
         lines.append(f"set {kv}")
     lines.append(f"{command_line} > \"{out_file}\" 2>&1")
