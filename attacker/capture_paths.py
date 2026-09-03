@@ -10,6 +10,17 @@ TASK_ID_ENV = "HOLYFW_ATTACKER_TASK_ID"
 OUTPUT_DIR_ENV = "HOLYFW_ATTACKER_OUTPUT_DIR"
 
 
+def resolve_attacker_skill_root() -> Path | None:
+    """Prefer the OpenCode-installed skill so relative wordlists resolve."""
+    installed = Path.home() / ".config" / "opencode" / "skills" / "ad-attack"
+    if (installed / "SKILL.md").is_file():
+        return installed
+    packaged = Path(__file__).resolve().parent / "skills" / "ad-attack"
+    if (packaged / "SKILL.md").is_file():
+        return packaged
+    return None
+
+
 def _safe_token(value: str, fallback: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in value)
     return cleaned or fallback

@@ -39,8 +39,6 @@ def _task(time_text: str, body: str = "do work") -> dict:
         "completed_at": "",
         "report_message": "",
         "exit_code": None,
-        "stdout": "",
-        "stderr": "",
     }
 
 

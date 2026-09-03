@@ -143,10 +143,8 @@ Daily task files are stored at `commander/role_task/tasks_MM-DD.json` and organi
 - `completed_at`
 - `report_message`
 - `exit_code`
-- `stdout`
-- `stderr`
 
-Status transitions follow `planned -> waiting -> successed/failed`. `task_id` is unique across days; commander looks up reports by that ID if the date in `task_ref` does not match the task file.
+Status transitions follow `planned -> waiting -> successed/failed`. `task_id` is unique across days; commander looks up reports by that ID if the date in `task_ref` does not match the task file. Task output stays on the soldier host (OpenCode session); reports to commander carry only status, exit code, and an optional message.
 
 ### Role Source
 
@@ -426,7 +424,7 @@ Controls scanning behavior:
 Controls task-file writes and output storage:
 
 - `lock_timeout_seconds`: File-lock timeout
-- `max_store_text`: Maximum number of characters stored for stdout/stderr
+- `max_store_text`: Legacy field; commander no longer stores soldier process output
 
 ### dispatch
 
@@ -606,7 +604,7 @@ File logs live under `soldier/logs/`; per-task transcripts live under `soldier/r
 
 - `soldier_YYYY-MM-DD.log` — lifecycle log (`time - LEVEL - task_id - message`): receive time, start time, full `opencode run --auto ...` command, finish time, outcome (`Success` / `Fail` / `Error`), report time, and report result (`ok`, `queued: ...`, or `send failed: ...`)
 - Console — only `Received` plus the outcome: `Success` (INFO), `Fail` with reason (WARNING, OpenCode started but non-zero or timeout), `Error` with the exception (ERROR, soldier could not start OpenCode)
-- `runtime/tasks/YYYY-MM-DD/<task_id>.md` — Markdown transcript with YAML-like frontmatter and literal stdout/stderr (not JSON-escaped `\n`). The date folder is the `task_ref` date. Soldier still claims by `task_id` across dates.
+- `runtime/tasks/YYYY-MM-DD/<task_id>.md` — Markdown record with YAML-like frontmatter and the Command section. OpenCode output is not captured here; inspect the local OpenCode session. The date folder is the `task_ref` date. Soldier still claims by `task_id` across dates.
 
 Operational state (not the per-task transcript) also lives under `soldier/runtime/`:
 
@@ -630,7 +628,6 @@ Attacker records live under `attacker/logs/`:
 - Task times are based on each host's system clock. Keep clocks synchronized across hosts in distributed deployments.
 - Both `commander` and `soldier` use bounded thread pools for TCP processing, with a default maximum of 6 concurrent workers.
 - Dispatch binds a task as `waiting` before sending it to `soldier`. If sending fails, the task is rolled back to a retryable state.
-- Commander reports still truncate `soldier` stdout/stderr to the configured limit. The per-task Markdown under `soldier/runtime/tasks/` keeps the full OpenCode transcript with real newlines.
 - If `soldier` cannot report to `commander`, the report is added to a local queue and retried up to three times in the background.
 - The generator uses the DeepSeek API by default. Set `DEEPSEEK_API_KEY` in the environment, run `commander build` so OpenCode reads `{env:DEEPSEEK_API_KEY}`, and review the `generator` section in `commander/config.json` for non-secret model settings.
 

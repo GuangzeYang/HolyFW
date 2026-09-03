@@ -20,7 +20,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -63,7 +62,6 @@ DEFAULT_CONFIG_NAME = "soldier.ini"
 SUBPROCESS_TIMEOUT_DEFAULT = 900
 DEFAULT_WORKER_THREADS = 3
 MAX_LINE_BYTES = 65536
-MAX_COMMAND_OUTPUT_BYTES = 65536
 LOGS_DIR_NAME = "logs"
 RUNTIME_DIR_NAME = "runtime"
 TASK_RECORDS_DIR_NAME = "tasks"
@@ -265,10 +263,6 @@ def resolve_task_record_path(
     return existing if existing is not None else task_record_path(task_id, date_str, base_dir=base_dir)
 
 
-def task_output_sidecar_path(record_path: Path, kind: str) -> Path:
-    return record_path.with_name(f"{record_path.stem}.{kind}")
-
-
 def _other_task_record_path(
     path: Path,
     task_id: str,
@@ -326,14 +320,6 @@ def _clean_old_task_records(base_dir: Path | None = None, days: int = 20) -> Non
             pass
 
 
-def _as_record_path(value: object) -> Path | None:
-    if isinstance(value, Path):
-        return value
-    if isinstance(value, str) and value.strip():
-        return Path(value)
-    return None
-
-
 def write_task_markdown(handle: IO[bytes], record: dict) -> None:
     write_shared_task_markdown(handle, record, meta_keys=_TASK_RECORD_META_KEYS)
 
@@ -381,14 +367,8 @@ class TaskRecordFile:
         *,
         status: str,
         exit_code: int,
-        stdout_text: str,
-        stderr_text: str,
         message: str | None,
         outcome: str | None = None,
-        stdout_full: str | None = None,
-        stderr_full: str | None = None,
-        stdout_path: Path | None = None,
-        stderr_path: Path | None = None,
         started_at: str | None = None,
         finished_at: str | None = None,
         command: str | None = None,
@@ -403,47 +383,16 @@ class TaskRecordFile:
             self.record["command"] = command
         self.record["report"] = report
         self.record["exit_code"] = exit_code
-        self.record["stdout"] = stdout_text
-        self.record["stderr"] = stderr_text
         self.record["message"] = message or ""
         self.record["result_status"] = status
         self.record["outcome"] = outcome or ("Success" if status == "successed" else "Fail")
-        if stdout_path is not None:
-            self.record["stdout_path"] = stdout_path
-            self.record.pop("stdout_full", None)
-        elif stdout_full is not None:
-            self.record["stdout_full"] = stdout_full
-        else:
-            self.record["stdout_full"] = stdout_text
-        if stderr_path is not None:
-            self.record["stderr_path"] = stderr_path
-            self.record.pop("stderr_full", None)
-        elif stderr_full is not None:
-            self.record["stderr_full"] = stderr_full
-        else:
-            self.record["stderr_full"] = stderr_text
         self.persist()
 
-    def _sidecar_paths(self) -> list[Path]:
-        paths: list[Path] = []
-        for key in ("stdout_path", "stderr_path"):
-            path = _as_record_path(self.record.get(key))
-            if path is not None:
-                paths.append(path)
-        return paths
-
-    def _unlink_sidecars(self) -> None:
-        for path in self._sidecar_paths():
-            _unlink_quietly(path)
-
     def abort(self) -> None:
-        self._unlink_sidecars()
         self.close()
         _unlink_quietly(self.path)
 
     def close(self) -> None:
-        if self.record.get("status") == "completed":
-            self._unlink_sidecars()
         handle = self._handle
         self._handle = None
         if handle is not None and not handle.closed:
@@ -606,6 +555,30 @@ def outcome_to_report_status(outcome: str) -> str:
     return "successed" if outcome == "Success" else "failed"
 
 
+def commander_report_payload(
+    task_ref: str,
+    status: str,
+    exit_code: int,
+    message: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "task_ref": task_ref,
+        "status": status,
+        "exit_code": exit_code,
+    }
+    if message is not None:
+        payload["message"] = message
+    return payload
+
+
+def strip_report_streams(payload: dict) -> dict:
+    """Drop stdout/stderr from stored or queued reports before they go on the wire."""
+    cleaned = dict(payload)
+    cleaned.pop("stdout", None)
+    cleaned.pop("stderr", None)
+    return cleaned
+
+
 def _log_console_outcome(result: CommandResult, task_id: str) -> None:
     if result.outcome == "Success":
         log_task(logging.INFO, "Success", task_id=task_id, to_console=True)
@@ -614,7 +587,7 @@ def _log_console_outcome(result: CommandResult, task_id: str) -> None:
         reason = result.message or f"exit_code={result.exit_code}"
         log_task(logging.WARNING, "Fail %s", reason, task_id=task_id, to_console=True)
         return
-    reason = result.message or result.stderr or "unknown error"
+    reason = result.message or "unknown error"
     log_task(logging.ERROR, "Error %s", reason, task_id=task_id, to_console=True)
 
 
@@ -627,15 +600,11 @@ def append_task_execution_log(
     command: str,
     status: str,
     exit_code: int,
-    stdout_text: str,
-    stderr_text: str,
     message: str | None = None,
     base_dir: Path | None = None,
     argv: list[str] | None = None,
     task: str | None = None,
     outcome: str | None = None,
-    stdout_full: str | None = None,
-    stderr_full: str | None = None,
     started_at: str | None = None,
     finished_at: str | None = None,
 ) -> Path:
@@ -650,6 +619,7 @@ def append_task_execution_log(
     resolved_outcome = outcome or (
         "Success" if status == "successed" else "Fail" if status == "failed" else "Error"
     )
+    result_status = status if status in {"successed", "failed"} else outcome_to_report_status(resolved_outcome)
     path = resolve_task_record_path(task_id, date_str, base_dir=base_dir)
     record = {
         "received_at": received_at,
@@ -663,76 +633,20 @@ def append_task_execution_log(
         "argv": list(argv) if argv is not None else [],
         "status": "completed",
         "outcome": resolved_outcome,
-        "result_status": status if status in {"successed", "failed"} else outcome_to_report_status(resolved_outcome),
+        "result_status": result_status,
         "exit_code": exit_code,
         "message": message or "",
-        "stdout": stdout_text,
-        "stderr": stderr_text,
-        "stdout_full": stdout_full if stdout_full is not None else stdout_text,
-        "stderr_full": stderr_full if stderr_full is not None else stderr_text,
-        "report": {
-            "task_ref": task_ref,
-            "status": status if status in {"successed", "failed"} else outcome_to_report_status(resolved_outcome),
-            "exit_code": exit_code,
-            "stdout": stdout_text,
-            "stderr": stderr_text,
-        },
+        "report": commander_report_payload(
+            task_ref,
+            result_status,
+            exit_code,
+            message,
+        ),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as handle:
         write_task_markdown(handle, record)
     return path
-
-
-def save_task_record(
-    task_id: str,
-    date_str: str,
-    content: dict,
-    received_at: str,
-    stdout: str,
-    stderr: str,
-) -> Path:
-    command = ""
-    task_ref = task_id
-    if isinstance(content, dict):
-        command = str(content.get("command") or "")
-        task_ref = str(content.get("task_ref") or task_id)
-    return append_task_execution_log(
-        task_id=task_id,
-        task_ref=task_ref,
-        date_str=date_str,
-        received_at=received_at,
-        command=command,
-        status="unknown",
-        exit_code=-1,
-        stdout_text=stdout,
-        stderr_text=stderr,
-        message="legacy save_task_record",
-    )
-
-
-def save_command_output(
-    task_id: str,
-    received_at: str,
-    task_ref: str,
-    command: str,
-    status: str,
-    exit_code: int,
-    stdout_text: str,
-    stderr_text: str,
-) -> Path:
-    date_str = task_ref.split("_", 1)[0] if "_" in task_ref else date.today().isoformat()
-    return append_task_execution_log(
-        task_id=task_id,
-        task_ref=task_ref,
-        date_str=date_str,
-        received_at=received_at,
-        command=command,
-        status=status,
-        exit_code=exit_code,
-        stdout_text=stdout_text,
-        stderr_text=stderr_text,
-    )
 
 
 def pending_reports_path(base_dir: Path | None = None) -> Path:
@@ -761,7 +675,7 @@ def enqueue_pending_report(
     record = {
         "commander_host": commander_host,
         "commander_port": commander_port,
-        "payload": payload,
+        "payload": strip_report_streams(payload),
         "attempts": 0,
         "last_error": last_error,
         "created_at": now,
@@ -885,16 +799,6 @@ def start_report_retry_thread(base_dir: Path | None = None) -> None:
             time.sleep(REPORT_RETRY_INTERVAL_SECONDS)
 
     threading.Thread(target=retry_loop, daemon=True).start()
-
-
-def _read_temp_output_limited(temp_file, max_bytes: int) -> tuple[str, bool]:
-    temp_file.seek(0)
-    data = temp_file.read(max_bytes + 1)
-    truncated = len(data) > max_bytes
-    text = data[:max_bytes].decode("utf-8", errors="replace")
-    if truncated:
-        text += "\n...[truncated]"
-    return text, truncated
 
 
 def _register_active_process(proc: subprocess.Popen) -> None:
@@ -1023,100 +927,31 @@ def dispatch_prompt_from_payload(payload: dict) -> str:
     return strip_opencode_run_prefix(raw)
 
 
-def _copy_temp_file_to_path(temp_file, dest: Path | None) -> None:
-    if dest is None:
-        return
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    temp_file.seek(0)
-    with dest.open("wb") as out:
-        shutil.copyfileobj(temp_file, out)
-
-
-def _read_command_outputs(
-    stdout_tmp,
-    stderr_tmp,
-    max_output_bytes: int,
-    stdout_path: Path | None,
-    stderr_path: Path | None,
-) -> tuple[str, str, bool]:
-    for temp_file, dest in ((stdout_tmp, stdout_path), (stderr_tmp, stderr_path)):
-        try:
-            _copy_temp_file_to_path(temp_file, dest)
-        except OSError as exc:
-            logging.warning("Failed to persist command output to %s: %s", dest, exc)
-    out, out_truncated = _read_temp_output_limited(stdout_tmp, max_output_bytes)
-    err_out, err_truncated = _read_temp_output_limited(stderr_tmp, max_output_bytes)
-    return out, err_out, out_truncated or err_truncated
-
-
 @dataclass
 class CommandResult:
-    stdout: str
-    stderr: str
     exit_code: int
     outcome: str
     message: str | None = None
-    stdout_full: str = ""
-    stderr_full: str = ""
-    stdout_path: Path | None = None
-    stderr_path: Path | None = None
-
-    def __post_init__(self) -> None:
-        if self.stdout_path is None and not self.stdout_full:
-            self.stdout_full = self.stdout
-        if self.stderr_path is None and not self.stderr_full:
-            self.stderr_full = self.stderr
 
     @property
     def report_status(self) -> str:
         return outcome_to_report_status(self.outcome)
 
-    def __iter__(self):
-        yield self.stdout
-        yield self.stderr
-        yield self.exit_code
-        yield self.report_status
-        yield self.message
-
-
-def as_command_result(value: CommandResult | Sequence[object]) -> CommandResult:
-    if isinstance(value, CommandResult):
-        return value
-    out, err_out, exit_code, status, msg = value
-    status_text = str(status)
-    if status_text in {"Success", "successed"}:
-        outcome = "Success"
-    elif status_text == "Error":
-        outcome = "Error"
-    else:
-        outcome = "Fail"
-    return CommandResult(
-        str(out),
-        str(err_out),
-        int(exit_code),
-        outcome,
-        None if msg is None else str(msg),
-    )
-
 
 def execute_command(
     command: str | Sequence[str],
     timeout_sec: int,
-    max_output_bytes: int = MAX_COMMAND_OUTPUT_BYTES,
     *,
     task_ref: str = "",
     task_id: str | None = None,
     env: Mapping[str, str] | None = None,
-    full_stdout_path: Path | None = None,
-    full_stderr_path: Path | None = None,
 ) -> CommandResult:
     """Execute a command in its own process group and clean the whole tree on timeout."""
     if _SHUTTING_DOWN.is_set():
-        msg = "Execution cancelled during shutdown"
-        return CommandResult("", "soldier is shutting down", -1, "Error", msg)
+        return CommandResult(-1, "Error", "Execution cancelled during shutdown")
     popen_options: dict = {
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.PIPE,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
     }
     if env is not None:
         popen_options["env"] = dict(env)
@@ -1131,75 +966,34 @@ def execute_command(
     else:
         popen_options["start_new_session"] = True
 
-    def _result(
-        stdout: str,
-        stderr: str,
-        exit_code: int,
-        outcome: str,
-        message: str | None,
-    ) -> CommandResult:
-        return CommandResult(
-            stdout,
-            stderr,
-            exit_code,
-            outcome,
-            message,
-            stdout_path=full_stdout_path,
-            stderr_path=full_stderr_path,
-        )
+    try:
+        proc = subprocess.Popen(popen_target, **popen_options)
+    except OSError as exc:
+        return CommandResult(-1, "Error", f"Execution failed: {exc}")
 
-    with tempfile.TemporaryFile() as stdout_tmp, tempfile.TemporaryFile() as stderr_tmp:
-        popen_options["stdout"] = stdout_tmp
-        popen_options["stderr"] = stderr_tmp
+    _register_active_process(proc)
+    try:
+        if _SHUTTING_DOWN.is_set():
+            terminate_process_tree(proc, "soldier shutdown race", task_id=task_id)
+            return CommandResult(-1, "Error", "Execution cancelled during shutdown")
         try:
-            proc = subprocess.Popen(popen_target, **popen_options)
-        except OSError as exc:
-            return CommandResult("", str(exc), -1, "Error", f"Execution failed: {exc}")
-
-        _register_active_process(proc)
-        try:
-            if _SHUTTING_DOWN.is_set():
-                terminate_process_tree(proc, "soldier shutdown race", task_id=task_id)
-                msg = "Execution cancelled during shutdown"
-                return CommandResult("", "soldier is shutting down", -1, "Error", msg)
-            try:
-                exit_code = proc.wait(timeout=timeout_sec)
-            except subprocess.TimeoutExpired:
-                terminate_process_tree(
-                    proc,
-                    f"task timeout: {task_ref or _command_label(command)[:80]}",
-                    task_id=task_id,
-                )
-                out, err_out, truncated = _read_command_outputs(
-                    stdout_tmp, stderr_tmp, max_output_bytes, full_stdout_path, full_stderr_path
-                )
-                if not err_out:
-                    err_out = "timeout"
-                msg = f"Command timeout (>{timeout_sec}s); process tree terminated"
-                if truncated:
-                    msg += "; output truncated"
-                return _result(out, err_out, -1, "Fail", msg)
-
-            out, err_out, truncated = _read_command_outputs(
-                stdout_tmp, stderr_tmp, max_output_bytes, full_stdout_path, full_stderr_path
+            exit_code = proc.wait(timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            terminate_process_tree(
+                proc,
+                f"task timeout: {task_ref or _command_label(command)[:80]}",
+                task_id=task_id,
             )
-            if exit_code == 0:
-                outcome = "Success"
-                msg = "output truncated" if truncated else None
-            else:
-                outcome = "Fail"
-                msg = f"Command exit code {exit_code}"
-                if truncated:
-                    msg += "; output truncated"
-            return _result(out, err_out, exit_code, outcome, msg)
-        finally:
-            _unregister_active_process(proc)
-
-
-
-
-
-
+            return CommandResult(
+                -1,
+                "Fail",
+                f"Command timeout (>{timeout_sec}s); process tree terminated",
+            )
+        if exit_code == 0:
+            return CommandResult(exit_code, "Success", None)
+        return CommandResult(exit_code, "Fail", f"Command exit code {exit_code}")
+    finally:
+        _unregister_active_process(proc)
 
 
 def task_ref_full(date_str: str, role: str, task_id: str) -> str:
@@ -1315,6 +1109,7 @@ def send_report(
     commander_port: int,
     payload: dict,
 ) -> tuple[dict | None, str | None]:
+    payload = strip_report_streams(payload)
     line = json.dumps(payload, ensure_ascii=False) + "\n"
     try:
         with socket.create_connection(
@@ -1587,18 +1382,13 @@ def handle_dispatch_connection(
         argv = ["opencode", "run", *OPENCODE_RUN_FLAGS, prompt]
         started_at = _now_iso()
         command_line = format_opencode_command(argv, prompt)
-        stdout_sidecar: Path | None = None
-        stderr_sidecar: Path | None = None
-        if claim.handle is not None:
-            stdout_sidecar = task_output_sidecar_path(claim.handle.path, "stdout")
-            stderr_sidecar = task_output_sidecar_path(claim.handle.path, "stderr")
         try:
             argv = build_opencode_argv(prompt)
             command_line = format_opencode_command(argv, prompt)
         except FileNotFoundError as exc:
             log_task(logging.INFO, "Command: %s", command_line, task_id=task_id)
             log_task(logging.INFO, "Started at %s", started_at, task_id=task_id)
-            result = CommandResult("", str(exc), -1, "Error", str(exc))
+            result = CommandResult(-1, "Error", str(exc))
         else:
             log_task(logging.INFO, "Command: %s", command_line, task_id=task_id)
             log_task(logging.INFO, "Started at %s", started_at, task_id=task_id)
@@ -1610,31 +1400,24 @@ def handle_dispatch_connection(
                     claim.handle.persist()
                 except OSError:
                     pass
-            result = as_command_result(
-                execute_command(
-                    argv,
-                    timeout_sec,
-                    task_ref=full_ref,
-                    task_id=task_id,
-                    env=opencode_run_env(),
-                    full_stdout_path=stdout_sidecar,
-                    full_stderr_path=stderr_sidecar,
-                )
+            result = execute_command(
+                argv,
+                timeout_sec,
+                task_ref=full_ref,
+                task_id=task_id,
+                env=opencode_run_env(),
             )
         finished_at = _now_iso()
         log_task(logging.INFO, "Finished at %s", finished_at, task_id=task_id)
         log_task(logging.INFO, "Outcome: %s", result.outcome, task_id=task_id)
         _log_console_outcome(result, task_id)
 
-        report = {
-            "task_ref": full_ref,
-            "status": result.report_status,
-            "exit_code": result.exit_code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-        }
-        if result.message is not None:
-            report["message"] = result.message
+        report = commander_report_payload(
+            full_ref,
+            result.report_status,
+            result.exit_code,
+            result.message,
+        )
 
         try:
             if claim.handle is not None:
@@ -1645,14 +1428,8 @@ def handle_dispatch_connection(
                     report,
                     status=result.report_status,
                     exit_code=result.exit_code,
-                    stdout_text=result.stdout,
-                    stderr_text=result.stderr,
                     message=result.message,
                     outcome=result.outcome,
-                    stdout_full=None if result.stdout_path else result.stdout_full,
-                    stderr_full=None if result.stderr_path else result.stderr_full,
-                    stdout_path=result.stdout_path,
-                    stderr_path=result.stderr_path,
                     started_at=started_at,
                     finished_at=finished_at,
                     command=command_line,
@@ -1666,14 +1443,10 @@ def handle_dispatch_connection(
                     command=command_line,
                     status=result.report_status,
                     exit_code=result.exit_code,
-                    stdout_text=result.stdout,
-                    stderr_text=result.stderr,
                     message=result.message,
                     argv=argv,
                     task=prompt,
                     outcome=result.outcome,
-                    stdout_full=result.stdout_full,
-                    stderr_full=result.stderr_full,
                     started_at=started_at,
                     finished_at=finished_at,
                 )
@@ -1813,10 +1586,6 @@ def run_report(args: argparse.Namespace, config_path: Path) -> int:
         payload["message"] = args.message
     if args.exit_code is not None:
         payload["exit_code"] = args.exit_code
-    if args.stdout is not None:
-        payload["stdout"] = args.stdout
-    if args.stderr is not None:
-        payload["stderr"] = args.stderr
     resp, serr = send_report(host, port, payload)
     if serr:
         logging.error(serr)
@@ -1864,8 +1633,6 @@ Default reads {DEFAULT_CONFIG_NAME} in same directory:
     report_p.add_argument("--status", required=True, choices=["successed", "failed"])
     report_p.add_argument("--message", default=None)
     report_p.add_argument("--exit-code", type=int, default=None, dest="exit_code")
-    report_p.add_argument("--stdout", default=None, help="optional output text")
-    report_p.add_argument("--stderr", default=None)
     sub.add_parser(
         "replay-failed-reports",
         help="retry records in runtime/failed_reports.jsonl once",

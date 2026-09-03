@@ -379,8 +379,6 @@ class DailyTaskRepository:
         status: str,
         message: str | None,
         exit_code: int | None,
-        stdout: str | None,
-        stderr: str | None,
     ) -> dict[str, Any]:
         parsed, err = parse_task_ref(task_ref)
         if err:
@@ -414,10 +412,6 @@ class DailyTaskRepository:
                         item["report_message"] = message
                     if exit_code is not None:
                         item["exit_code"] = exit_code
-                    if stdout is not None:
-                        item["stdout"] = self._truncate(stdout)
-                    if stderr is not None:
-                        item["stderr"] = self._truncate(stderr)
                     save_json_atomic(path, data)
                     break
             else:
@@ -449,15 +443,8 @@ class DailyTaskRepository:
                 item["expiry_time"] = ""
                 item["completed_at"] = ""
                 item["exit_code"] = None
-                item["stdout"] = ""
-                item["stderr"] = ""
                 if message is not None:
                     item["report_message"] = message
                 save_json_atomic(path, data)
                 return True
         return False
-
-    def _truncate(self, text: str) -> str:
-        if len(text) <= self.max_store_text:
-            return text
-        return text[: self.max_store_text - 20] + "\n...[truncated]"

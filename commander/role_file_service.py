@@ -265,8 +265,6 @@ class RoleTaskFileService:
                                 "completed_at": "",
                                 "report_message": "",
                                 "exit_code": None,
-                                "stdout": "",
-                                "stderr": "",
                             }
                             for key, value in defaults.items():
                                 if key not in item:

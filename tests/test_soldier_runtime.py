@@ -20,6 +20,10 @@ from unittest import mock
 import soldier.soldier as soldier
 
 
+def _ok_result() -> soldier.CommandResult:
+    return soldier.CommandResult(0, "Success", None)
+
+
 def _clear_root_handlers() -> None:
     root = logging.getLogger()
     for handler in list(root.handlers):
@@ -108,8 +112,6 @@ class SoldierRuntimeTests(unittest.TestCase):
                 command='opencode run --auto "Check email"',
                 status="successed",
                 exit_code=0,
-                stdout_text="line1\nline2\n",
-                stderr_text="",
                 argv=["opencode", "run", "--auto", "Check email"],
                 base_dir=base,
             )
@@ -129,11 +131,10 @@ class SoldierRuntimeTests(unittest.TestCase):
                 "command",
             ):
                 self.assertNotIn(f"{key}:", yaml_block)
-            self.assertIn("## Output", text)
+            self.assertIn("## Command", text)
+            self.assertNotIn("## Output", text)
             self.assertNotIn("## stdout", text)
             self.assertNotIn("## stderr", text)
-            self.assertIn("\nline1\nline2\n", text.split("## Output", 1)[1])
-            self.assertNotIn("\\n", text.split("## Output", 1)[1])
             payload = soldier.parse_task_markdown(text)
             self.assertEqual(payload["received_at"], "2026-04-29T09:08:09+08:00")
             self.assertIn("opencode", payload["command"])
@@ -145,60 +146,10 @@ class SoldierRuntimeTests(unittest.TestCase):
             self.assertNotIn("report", payload)
             report = soldier.report_from_task_record(payload)
             assert report is not None
-            self.assertEqual(report["stdout"], "line1\nline2\n")
+            self.assertNotIn("stdout", report)
+            self.assertNotIn("stderr", report)
             self.assertEqual(report["exit_code"], 0)
             self.assertEqual(payload["task_id"], "c01b883dfefd4c85")
-
-    def test_append_task_execution_log_strips_ansi_and_merges_streams(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = soldier.append_task_execution_log(
-                task_id="c01b883dfefd4c85",
-                task_ref="2026-04-29_accountancy_c01b883dfefd4c85",
-                date_str="2026-04-29",
-                received_at="2026-04-29T09:08:09+08:00",
-                command='opencode run --auto "Check email"',
-                status="successed",
-                exit_code=0,
-                stdout_text="Upload complete.\n",
-                stderr_text="\x1b[0m\r\n→ Skill \"ftp-use\"\r\n",
-                argv=["opencode", "run", "--auto", "Check email"],
-                base_dir=Path(tmp),
-            )
-            text = path.read_text(encoding="utf-8")
-            output = text.split("## Output", 1)[1]
-            self.assertNotIn("\x1b", output)
-            self.assertIn('→ Skill "ftp-use"', output)
-            self.assertIn("Upload complete.", output)
-            self.assertLess(output.find("Skill"), output.find("Upload complete."))
-
-    def test_append_task_execution_log_renders_jsonl_thinking(self) -> None:
-        jsonl = "\n".join(
-            [
-                '{"type": "reasoning", "part": {"text": "Need the ftp-use skill."}}',
-                '{"type": "tool_use", "part": {"tool": "skill", "state": {"input": {"name": "ftp-use"}, "status": "completed"}}}',
-                '{"type": "text", "part": {"text": "Upload complete."}}',
-            ]
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            path = soldier.append_task_execution_log(
-                task_id="c01b883dfefd4c85",
-                task_ref="2026-04-29_accountancy_c01b883dfefd4c85",
-                date_str="2026-04-29",
-                received_at="2026-04-29T09:08:09+08:00",
-                command='opencode run --auto --thinking --format json "Check email"',
-                status="successed",
-                exit_code=0,
-                stdout_text=jsonl,
-                stderr_text="",
-                argv=["opencode", "run", "--auto", "--thinking", "--format", "json", "Check email"],
-                base_dir=Path(tmp),
-            )
-            output = path.read_text(encoding="utf-8").split("## Output", 1)[1]
-            self.assertIn("Thinking:\nNeed the ftp-use skill.", output)
-            self.assertIn('→ Skill "ftp-use"', output)
-            self.assertIn("Upload complete.", output)
-            self.assertIn("--thinking", path.read_text(encoding="utf-8"))
-            self.assertNotIn('"type": "reasoning"', output)
 
     def test_pending_and_task_records_live_under_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -251,7 +202,7 @@ class SoldierRuntimeTests(unittest.TestCase):
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
             mock.patch("soldier.soldier.claim_task_execution", return_value=soldier.ClaimResult("claimed", {})),
-            mock.patch("soldier.soldier.execute_command", return_value=("ok", "", 0, "successed", None)),
+            mock.patch("soldier.soldier.execute_command", return_value=_ok_result()),
             mock.patch("soldier.soldier.append_task_execution_log", return_value=Path("runtime/tasks/2026-04-29/c01b883dfefd4c85.md")),
             mock.patch("soldier.soldier.send_report", return_value=({"ok": True}, None)),
         ):
@@ -274,7 +225,7 @@ class SoldierRuntimeTests(unittest.TestCase):
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
             mock.patch("soldier.soldier.claim_task_execution", return_value=soldier.ClaimResult("claimed", {})),
-            mock.patch("soldier.soldier.execute_command", return_value=("ok", "", 0, "successed", None)),
+            mock.patch("soldier.soldier.execute_command", return_value=_ok_result()),
             mock.patch("soldier.soldier.append_task_execution_log", return_value=Path("runtime/tasks/2026-04-29/c01b883dfefd4c85.md")),
             mock.patch("soldier.soldier.send_report", return_value=(None, "boom")),
             mock.patch("soldier.soldier.enqueue_pending_report"),
@@ -286,29 +237,14 @@ class SoldierRuntimeTests(unittest.TestCase):
         self.assertEqual(acknowledgment["status"], "accepted")
         self.assertTrue(conn.closed)
 
-    def test_execute_command_truncates_large_output(self) -> None:
+    def test_execute_command_success_discards_process_output(self) -> None:
         command = f'"{sys.executable}" -c "print(\'x\' * 40)"'
-        with tempfile.TemporaryDirectory() as tmp:
-            stdout_path = Path(tmp) / "out.stdout"
-            stderr_path = Path(tmp) / "out.stderr"
-            result = soldier.execute_command(
-                command,
-                timeout_sec=10,
-                max_output_bytes=10,
-                full_stdout_path=stdout_path,
-                full_stderr_path=stderr_path,
-            )
-            out, err, exit_code, status, msg = result
-
-            self.assertEqual(exit_code, 0)
-            self.assertEqual(status, "successed")
-            self.assertIn("...[truncated]", out)
-            self.assertEqual(err, "")
-            self.assertEqual(msg, "output truncated")
-            self.assertEqual(result.outcome, "Success")
-            self.assertEqual(result.stdout_full, "")
-            self.assertGreater(stdout_path.stat().st_size, 10)
-            self.assertTrue(stderr_path.is_file())
+        result = soldier.execute_command(command, timeout_sec=10)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.outcome, "Success")
+        self.assertEqual(result.report_status, "successed")
+        self.assertIsNone(result.message)
+        self.assertFalse(hasattr(result, "stdout"))
 
     def test_execute_command_nonzero_exit_is_fail_not_error(self) -> None:
         command = f'"{sys.executable}" -c "raise SystemExit(7)"'
@@ -375,6 +311,22 @@ class SoldierRuntimeTests(unittest.TestCase):
             failed = json.loads(failed_lines[0])
             self.assertEqual(failed["attempts"], 3)
             self.assertEqual(failed["last_error"], "still down")
+
+    def test_enqueue_pending_report_drops_legacy_streams(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            payload = {
+                "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
+                "status": "successed",
+                "exit_code": 0,
+                "stdout": "x" * 100,
+                "stderr": "err",
+            }
+            soldier.enqueue_pending_report("127.0.0.1", 38471, payload, "initial", base_dir=base_dir)
+            stored = json.loads(soldier.pending_reports_path(base_dir).read_text(encoding="utf-8"))
+            self.assertNotIn("stdout", stored["payload"])
+            self.assertNotIn("stderr", stored["payload"])
+            self.assertEqual(stored["payload"]["status"], "successed")
 
     def test_claim_task_execution_blocks_running_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -474,8 +426,6 @@ class SoldierRuntimeTests(unittest.TestCase):
                 {"task_ref": "2026-04-29_accountancy_c01b883dfefd4c85", "status": "successed", "exit_code": 0},
                 status="successed",
                 exit_code=0,
-                stdout_text="done",
-                stderr_text="",
                 message=None,
             )
             claimed.handle.close()
@@ -484,11 +434,11 @@ class SoldierRuntimeTests(unittest.TestCase):
             self.assertEqual(payload["status"], "completed")
             self.assertNotIn("exit_code", payload)
             self.assertNotIn("report", payload)
-            self.assertIn("done", path.read_text(encoding="utf-8"))
+            self.assertNotIn("## Output", path.read_text(encoding="utf-8"))
             report = soldier.report_from_task_record(payload)
             assert report is not None
             self.assertEqual(report["status"], "successed")
-            self.assertIn("done", report["stdout"])
+            self.assertNotIn("stdout", report)
             replay = soldier.claim_task_execution(
                 "2026-04-29",
                 "c01b883dfefd4c85",
@@ -575,7 +525,7 @@ class SoldierRuntimeTests(unittest.TestCase):
                 if claimed.handle is not None:
                     claimed.handle.close()
 
-    def test_complete_streams_sidecar_into_markdown(self) -> None:
+    def test_complete_does_not_write_output_section(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
             claimed = soldier.claim_task_execution(
@@ -588,35 +538,22 @@ class SoldierRuntimeTests(unittest.TestCase):
                 base_dir=base_dir,
             )
             assert claimed.handle is not None
-            stdout_path = soldier.task_output_sidecar_path(claimed.handle.path, "stdout")
-            stderr_path = soldier.task_output_sidecar_path(claimed.handle.path, "stderr")
-            stdout_path.write_text("full-line-1\nfull-line-2\n", encoding="utf-8")
-            stderr_path.write_text("", encoding="utf-8")
             claimed.handle.complete(
                 {
                     "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
                     "status": "successed",
                     "exit_code": 0,
-                    "stdout": "full-line",
-                    "stderr": "",
                 },
                 status="successed",
                 exit_code=0,
-                stdout_text="full-line",
-                stderr_text="",
                 message=None,
-                stdout_path=stdout_path,
-                stderr_path=stderr_path,
             )
             path = claimed.handle.path
             claimed.handle.close()
             text = path.read_text(encoding="utf-8")
-            self.assertIn("full-line-1\nfull-line-2\n", text.split("## Output", 1)[1])
-            self.assertIn("## Output", text)
+            self.assertIn("## Command", text)
+            self.assertNotIn("## Output", text)
             self.assertNotIn("## stdout", text)
-            self.assertNotIn("stdout_path", text.split("---", 2)[1])
-            self.assertFalse(stdout_path.exists())
-            self.assertFalse(stderr_path.exists())
 
     def test_clean_old_task_records_keeps_fresh_empty_date_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -651,7 +588,7 @@ class SoldierRuntimeTests(unittest.TestCase):
 
         def fake_execute(*args: object, **kwargs: object):
             order.append("execute")
-            return ("ok", "", 0, "successed", None)
+            return _ok_result()
 
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
@@ -686,6 +623,11 @@ class SoldierRuntimeTests(unittest.TestCase):
             "stdout": "ok",
             "stderr": "",
         }
+        expected = {
+            "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
+            "status": "successed",
+            "exit_code": 0,
+        }
 
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
@@ -696,7 +638,7 @@ class SoldierRuntimeTests(unittest.TestCase):
             soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)
 
         execute_mock.assert_not_called()
-        send_mock.assert_called_once_with("127.0.0.1", 38471, report)
+        send_mock.assert_called_once_with("127.0.0.1", 38471, expected)
         self.assertTrue(conn.closed)
 
     def test_completed_task_replays_reconstructed_report_without_saved_blob(self) -> None:
@@ -716,8 +658,6 @@ class SoldierRuntimeTests(unittest.TestCase):
             "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
             "status": "successed",
             "exit_code": 0,
-            "stdout": "session\n\nUpload complete.\n",
-            "stderr": "",
         }
 
         with (
@@ -769,6 +709,11 @@ class SoldierRuntimeTests(unittest.TestCase):
             "stdout": "ok",
             "stderr": "",
         }
+        expected = {
+            "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
+            "status": "successed",
+            "exit_code": 0,
+        }
 
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
@@ -778,7 +723,7 @@ class SoldierRuntimeTests(unittest.TestCase):
         ):
             soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)
 
-        enqueue_mock.assert_called_once_with("127.0.0.1", 38471, report, "down")
+        enqueue_mock.assert_called_once_with("127.0.0.1", 38471, expected, "down")
 
     def test_handle_dispatch_runs_opencode_argv_with_prompt_only(self) -> None:
         conn = FakeDispatchConnection()
@@ -789,7 +734,7 @@ class SoldierRuntimeTests(unittest.TestCase):
             "command": f'opencode run "{prompt}"',
             "task": prompt,
         }
-        execute_mock = mock.Mock(return_value=("ok", "", 0, "successed", None))
+        execute_mock = mock.Mock(return_value=_ok_result())
 
         with (
             mock.patch("soldier.soldier.recv_one_line", return_value=json.dumps(payload).encode("utf-8")),
@@ -855,18 +800,20 @@ class SoldierRuntimeTests(unittest.TestCase):
             script = Path(tmp) / "spawn_child.py"
             script.write_text(
                 "import subprocess, sys, time\n"
+                "from pathlib import Path\n"
                 "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-                "print(child.pid, flush=True)\n"
+                "Path(sys.argv[1]).write_text(str(child.pid), encoding='utf-8')\n"
                 "time.sleep(60)\n",
                 encoding="utf-8",
             )
-            command = f'"{sys.executable}" "{script}"'
+            pid_file = Path(tmp) / "child.pid"
+            command = f'"{sys.executable}" "{script}" "{pid_file}"'
 
-            stdout, _, exit_code, status, _ = soldier.execute_command(command, timeout_sec=1)
+            result = soldier.execute_command(command, timeout_sec=1)
 
-            self.assertEqual(exit_code, -1)
-            self.assertEqual(status, "failed")
-            child_pid = int(stdout.strip())
+            self.assertEqual(result.exit_code, -1)
+            self.assertEqual(result.report_status, "failed")
+            child_pid = int(pid_file.read_text(encoding="utf-8").strip())
             listing = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {child_pid}", "/FO", "CSV", "/NH"],
                 capture_output=True,

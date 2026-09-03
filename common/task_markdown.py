@@ -333,7 +333,10 @@ def report_from_task_record(record: Mapping[str, Any] | None) -> dict[str, Any] 
         return None
     existing = record.get("report")
     if isinstance(existing, dict):
-        return existing
+        payload = dict(existing)
+        payload.pop("stdout", None)
+        payload.pop("stderr", None)
+        return payload
     task_ref = str(record.get("task_ref") or "")
     status = str(record.get("result_status") or "")
     if status not in {"successed", "failed"}:
@@ -346,16 +349,15 @@ def report_from_task_record(record: Mapping[str, Any] | None) -> dict[str, Any] 
             return None
     if not task_ref:
         return None
-    output = record.get("output")
-    if not isinstance(output, str):
-        output = process_output_from_record(record)
-    return {
+    payload: dict[str, Any] = {
         "task_ref": task_ref,
         "status": status,
         "exit_code": 0 if status == "successed" else -1,
-        "stdout": output,
-        "stderr": "",
     }
+    message = record.get("message")
+    if isinstance(message, str) and message:
+        payload["message"] = message
+    return payload
 
 
 def write_frontmatter(
@@ -402,7 +404,7 @@ def write_task_markdown(
         write("\n")
     write(f"{fence}\n")
     has_output = bool(stderr or stdout)
-    if record.get("status") != "completed" and not has_output:
+    if not has_output:
         return
     write(f"\n## Output\n\n{fence}text\n")
     write(output)

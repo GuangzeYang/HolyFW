@@ -15,7 +15,7 @@ from typing import Any, Mapping
 from common import assign_task_id, strip_opencode_run_prefix
 from common.task_markdown import OPENCODE_RUN_FLAGS, format_opencode_session
 
-from attacker.capture_paths import OUTPUT_DIR_ENV, TASK_ID_ENV
+from attacker.capture_paths import OUTPUT_DIR_ENV, TASK_ID_ENV, resolve_attacker_skill_root
 from attacker.task_record import task_record_path, write_attacker_task_record
 
 OPENCODE_PERMISSION_ALLOW: dict[str, object] = {
@@ -104,6 +104,9 @@ def run_opencode(
     except FileNotFoundError as exc:
         logger.error("%s", exc)
         return MISSING_EXIT_CODE, str(exc), ""
+    skill_cwd = resolve_attacker_skill_root()
+    if skill_cwd is not None:
+        logger.info("opencode cwd=%s", skill_cwd)
     try:
         completed = subprocess.run(
             argv,
@@ -113,6 +116,7 @@ def run_opencode(
             errors="replace",
             timeout=timeout_seconds,
             check=False,
+            cwd=str(skill_cwd) if skill_cwd is not None else None,
             env=dict(env) if env is not None else opencode_run_env(),
         )
     except subprocess.TimeoutExpired:

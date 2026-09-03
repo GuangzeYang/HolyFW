@@ -13,9 +13,9 @@ from unittest import mock
 
 from common.agent_request_abc import AgentResponse
 
-from attacker.execute import execute_task
+from attacker.execute import execute_task, run_opencode
 from attacker.generation import fill_next_batch, load_generation_resources, parse_generated_tasks
-from attacker.capture_paths import capture_file_stem, dataset_output_dir
+from attacker.capture_paths import capture_file_stem, dataset_output_dir, resolve_attacker_skill_root
 from attacker.runtime import run_loop, step
 from attacker.task_file import (
     all_completed,
@@ -286,6 +286,26 @@ class CapturePathTests(unittest.TestCase):
 
     def test_fallback_stem_has_no_date_suffix(self) -> None:
         self.assertEqual(capture_file_stem("discovery.host-identify", env={}), "discovery_host-identify")
+
+    def test_resolve_attacker_skill_root_prefers_installed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            installed = Path(tmp) / ".config" / "opencode" / "skills" / "ad-attack"
+            installed.mkdir(parents=True)
+            (installed / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+            with mock.patch.object(Path, "home", return_value=Path(tmp)):
+                self.assertEqual(resolve_attacker_skill_root(), installed)
+
+
+class RunOpencodeCwdTests(unittest.TestCase):
+    def test_run_opencode_sets_cwd_to_skill_root(self) -> None:
+        skill = Path("/tmp/ad-attack-skill")
+        completed = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("attacker.execute.resolve_opencode_executable", return_value="opencode"):
+            with mock.patch("attacker.execute.resolve_attacker_skill_root", return_value=skill):
+                with mock.patch("attacker.execute.subprocess.run", return_value=completed) as run:
+                    code, _out, _err = run_opencode("hello", 10)
+        self.assertEqual(code, 0)
+        self.assertEqual(run.call_args.kwargs.get("cwd"), str(skill))
 
 
 class RunLoopTests(unittest.TestCase):

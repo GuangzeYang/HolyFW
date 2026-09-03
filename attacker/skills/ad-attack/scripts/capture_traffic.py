@@ -29,6 +29,10 @@ from pathlib import Path
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = SKILL_ROOT / "config.json"
 STATE_FILE_NAME = ".capture_traffic_state.json"
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+import winproc  # noqa: E402
 
 try:
     from attacker.capture_paths import capture_file_stem, dataset_output_dir
@@ -113,9 +117,8 @@ def _launch_tshark(tshark: str, iface: str, file_path: Path) -> int:
 
 def _stop_process(pid: int) -> None:
     if os.name == "nt":
-        subprocess.run(
+        winproc.run(
             ["taskkill", "/PID", str(pid), "/F", "/T"],
-            capture_output=True,
             timeout=30,
         )
     else:
@@ -129,13 +132,43 @@ def _stop_process(pid: int) -> None:
     time.sleep(2)
 
 
+def _reclaim_stale_capture() -> dict | None:
+    """Stop a live leftover tshark, or drop a lock whose PID is already dead."""
+    sf = state_file()
+    if not sf.exists():
+        return None
+    try:
+        state = json.loads(sf.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        try:
+            sf.unlink()
+        except OSError:
+            pass
+        return {"reclaimed": "corrupt_state"}
+    pid = state.get("pid")
+    alive = pid is not None and winproc.pid_alive(int(pid))
+    if alive:
+        _stop_process(int(pid))
+        action = "stopped_live"
+    else:
+        action = "dropped_dead"
+    try:
+        sf.unlink()
+    except OSError:
+        pass
+    return {
+        "reclaimed": action,
+        "previous_pid": pid,
+        "previous_label": state.get("label"),
+        "previous_file": state.get("file"),
+    }
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     out_dir = output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if state_file().exists():
-        print(json.dumps({"ok": False, "error": "a traffic capture is already active"}))
-        return 1
+    reclaimed = _reclaim_stale_capture()
 
     iface = args.iface or default_interface()
     tshark = tshark_path()
@@ -146,6 +179,22 @@ def cmd_start(args: argparse.Namespace) -> int:
     file_path = out_dir / _pcap_name(args.label)
 
     pid = _launch_tshark(tshark, iface, file_path)
+    time.sleep(0.5)
+    if not winproc.pid_alive(pid):
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": (
+                        f"tshark pid {pid} exited immediately; "
+                        f"check interface '{iface}' and Npcap"
+                    ),
+                    "iface": iface,
+                    "file": str(file_path),
+                }
+            )
+        )
+        return 1
 
     state = {
         "label": args.label,
@@ -158,7 +207,10 @@ def cmd_start(args: argparse.Namespace) -> int:
         json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    print(json.dumps({"ok": True, "pid": pid, "file": str(file_path), "iface": iface}))
+    result = {"ok": True, "pid": pid, "file": str(file_path), "iface": iface}
+    if reclaimed:
+        result["reclaimed"] = reclaimed
+    print(json.dumps(result))
     return 0
 
 
