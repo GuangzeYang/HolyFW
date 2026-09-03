@@ -49,6 +49,9 @@ Each id maps to exactly one command (see SKILL.md).
 | discovery | domain group enumeration | `discovery.group-enum` |
 | discovery | password policy discovery | `discovery.password-policy` |
 | discovery | domain trust discovery | `discovery.trust-enum` |
+| discovery | security software discovery | `discovery.security-software` |
+| discovery | local group enumeration | `discovery.local-groups` |
+| discovery | BloodHound domain mapping | `discovery.bloodhound` |
 | credential | password spraying | `credential.password-spray` |
 | credential | single-account brute force | `credential.brute-user` |
 | credential | brute force | `credential.brute-force` |
@@ -57,6 +60,7 @@ Each id maps to exactly one command (see SKILL.md).
 | credential | credential dumping (SAM/LSA) | `credential.dump-secrets` |
 | credential | DCSync | `credential.dcsync` |
 | credential | GPP password (cPassword) | `credential.gpp-password` |
+| credential | LSASS memory dump | `credential.lsass-dump` |
 | lateral | pass-the-hash (PsExec) | `lateral.pth-psexec` |
 | lateral | pass-the-hash (WMI) | `lateral.pth-wmiexec` |
 | lateral | pass-the-hash (SMBExec) | `lateral.pth-smbexec` |
@@ -70,12 +74,19 @@ Each id maps to exactly one command (see SKILL.md).
 | lateral | delegation abuse (S4U) | `lateral.delegation-s4u` |
 | lateral | pass-the-ticket | `lateral.pass-the-ticket` |
 | lateral | lateral tool transfer | `lateral.tool-transfer` |
+| lateral | remote shell (WinRM) | `lateral.exec-winrm` |
+| lateral | remote scheduled task | `lateral.exec-schtasks` |
 | collection | data from network shared drive | `collection.share-download` |
+| collection | local file collection | `collection.local-file` |
+| collection | archive collected data | `collection.archive` |
 | persistence | golden ticket | `persistence.golden-ticket` |
 | persistence | silver ticket | `persistence.silver-ticket` |
 | persistence | create machine account | `persistence.add-computer` |
-| persistence | RBCD delegation | `persistence.rbcd` |
-| persistence | reset account password | `persistence.reset-password` |
+| persistence | RBCD delegation | `persistence.rbcd` (RESTRICTED) |
+| persistence | reset account password | `persistence.reset-password` (RESTRICTED) |
+| persistence | windows service persistence | `persistence.service` |
+
+> `persistence.rbcd` and `persistence.reset-password` are **forbidden** (they modify an existing AD account in place). Never generate them. Every other technique id above is available.
 
 ## 4. Object resolution rules
 
@@ -118,6 +129,9 @@ opencode run "Use the ad-attack skill: using the password of user alice, execute
 opencode run "Use the ad-attack skill: execute discovery.group-enum against domain."
 opencode run "Use the ad-attack skill: execute discovery.password-policy against domain."
 opencode run "Use the ad-attack skill: execute discovery.trust-enum against domain."
+opencode run "Use the ad-attack skill: execute discovery.security-software against domain."
+opencode run "Use the ad-attack skill: execute discovery.local-groups against domain."
+opencode run "Use the ad-attack skill: using the password of user alice, execute discovery.bloodhound against domain."
 ```
 
 ### Credential Access
@@ -131,6 +145,7 @@ opencode run "Use the ad-attack skill: using the password of user alice, execute
 opencode run "Use the ad-attack skill: using the password of user alice, execute credential.dump-secrets against host 192.168.14.71."
 opencode run "Use the ad-attack skill: using the ntlm_hash of user admin, execute credential.dcsync against domain."
 opencode run "Use the ad-attack skill: using the password of user alice, execute credential.gpp-password against domain."
+opencode run "Use the ad-attack skill: using the password of user admin, execute credential.lsass-dump against host 192.168.14.71."
 ```
 
 ### Lateral Movement
@@ -149,12 +164,16 @@ opencode run "Use the ad-attack skill: using the password of user alice, execute
 opencode run "Use the ad-attack skill: using the password of user svc_sql, execute lateral.delegation-s4u against host 192.168.14.71."
 opencode run "Use the ad-attack skill: using the ccache_file of ticket tgt[0], execute lateral.pass-the-ticket against host 192.168.14.71."
 opencode run "Use the ad-attack skill: using the tools of campaign, execute lateral.tool-transfer against host 192.168.14.71."
+opencode run "Use the ad-attack skill: using the password of user alice, execute lateral.exec-winrm against host 192.168.14.71."
+opencode run "Use the ad-attack skill: using the password of user alice, execute lateral.exec-schtasks against host 192.168.14.71."
 ```
 
 ### Collection
 
 ```
 opencode run "Use the ad-attack skill: using the password of user alice, execute collection.share-download against host 192.168.14.71."
+opencode run "Use the ad-attack skill: using the password of user alice, execute collection.local-file against host 192.168.14.71."
+opencode run "Use the ad-attack skill: execute collection.archive against domain."
 ```
 
 ### Persistence
@@ -163,9 +182,10 @@ opencode run "Use the ad-attack skill: using the password of user alice, execute
 opencode run "Use the ad-attack skill: using the ntlm_hash of user krbtgt, execute persistence.golden-ticket against domain."
 opencode run "Use the ad-attack skill: using the ntlm_hash of user svc_sql, execute persistence.silver-ticket against host 192.168.14.71."
 opencode run "Use the ad-attack skill: using the machine_account of campaign, execute persistence.add-computer against domain."
-opencode run "Use the ad-attack skill: using the machine_account of campaign, execute persistence.rbcd against host 192.168.14.71."
-opencode run "Use the ad-attack skill: using the password of user admin, execute persistence.reset-password against host 192.168.14.71."
+opencode run "Use the ad-attack skill: using the password of user admin, execute persistence.service against host 192.168.14.71."
 ```
+
+> `persistence.rbcd` and `persistence.reset-password` are forbidden (in-place modification of an existing AD account); never emit them.
 
 ## 7. Guardrails (do / don't)
 

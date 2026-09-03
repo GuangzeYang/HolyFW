@@ -32,6 +32,7 @@
     },
     "trusts": [],
     "rbcd": [],
+    "security_products": [],
     "updated_at": ""
   },
   "hosts": [
@@ -135,7 +136,9 @@
     "local_admin_account": {
       "name": "NDRTEST\\attdemo",
       "password": "Njupt@241"
-    }
+    },
+    "local_admins": [],
+    "staging_dir": ""
   },
   "tickets": {
     "tgt": [],
