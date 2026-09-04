@@ -6,7 +6,7 @@
       "env": "DEEPSEEK_API_KEY",
       "enable": true
     },
-    "zhipu": {
+    "zhipuai": {
       "base_url": "https://open.bigmodel.cn/api/paas/v4",
       "models": "GLM-4.7-Flash",
       "env": "ZHIPU_API_KEY",
