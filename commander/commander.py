@@ -24,7 +24,6 @@ from typing import Any, Callable
 
 try:
     from commander.dispatch_client import DispatchClient
-    from commander.failure_governor import EmailAlerter, RoleFailureGovernor
     from commander.logging_setup import (
         configure_commander_root_logging,
         log_extra,
@@ -37,7 +36,6 @@ try:
     from commander.target_config import load_all_roles, load_daily_generation_roles
 except ImportError:
     from dispatch_client import DispatchClient
-    from failure_governor import EmailAlerter, RoleFailureGovernor
     from logging_setup import configure_commander_root_logging, log_extra, reattach_commander_dated_file_handler
     from policies import EarliestPendingSelectionPolicy
     from repository import DailyTaskRepository
@@ -49,8 +47,6 @@ from common import parse_task_ref
 try:
     from runtime_config import (
         get_dispatch_config,
-        get_email_alert_config,
-        get_failure_policy_config,
         get_generator_config,
         get_logging_config,
         get_paths_config,
@@ -63,8 +59,6 @@ try:
 except ImportError:
     from commander.runtime_config import (
         get_dispatch_config,
-        get_email_alert_config,
-        get_failure_policy_config,
         get_generator_config,
         get_logging_config,
         get_paths_config,
@@ -114,7 +108,6 @@ def handle_commander(
     max_line_bytes: int,
     recv_chunk_bytes: int,
     socket_timeout_seconds: int,
-    failure_governor: RoleFailureGovernor | None = None,
 ) -> None:
     logging.debug("Commander connected from %s", addr)
     try:
@@ -171,23 +164,6 @@ def handle_commander(
                 logging.error("Failed — %s", task_id, extra=extras)
             else:
                 logging.debug("Reported as %s — %s", status, task_id, extra=extras)
-            if failure_governor is not None and parse_error is None and parsed_ref is not None:
-                task_day, role, _ = parsed_ref
-                if status == "successed":
-                    failure_governor.record_success(
-                        role,
-                        task_day,
-                        task_ref,
-                        result_key=task_ref,
-                    )
-                elif status == "failed":
-                    failure_governor.record_failure(
-                        role,
-                        task_day,
-                        msg or f"Task execution failed with exit_code={exit_code}",
-                        task_ref,
-                        result_key=task_ref,
-                    )
         else:
             logging.debug(
                 "Report rejected — %s — %s",
@@ -214,7 +190,6 @@ class TaskScanner:
         constraints_resource_file: Path,
         logs_dir: Path,
         log_level_name: str,
-        failure_governor: RoleFailureGovernor | None = None,
         periodic_hook: Callable[[], None] | None = None,
         max_dispatch_lateness_minutes: int = 6,
         debug: bool = False,
@@ -227,7 +202,6 @@ class TaskScanner:
         self.data_dir = repository.data_dir
         self.logs_dir = logs_dir.resolve()
         self.log_level_name = log_level_name
-        self.failure_governor = failure_governor
         self._periodic_hook = periodic_hook
         self._attached_log_date = date.today()
         self.dispatch_client = DispatchClient(
@@ -262,7 +236,6 @@ class TaskScanner:
             repository=self.repository,
             selection_policy=self.selection_policy,
             dispatch_task=self.dispatch_client.dispatch,
-            failure_governor=self.failure_governor,
             max_dispatch_lateness_minutes=self.max_dispatch_lateness_minutes,
             debug=debug,
         )
@@ -331,18 +304,9 @@ class TaskScanner:
         self.role_file_service.apply_base_time_shift(role_file)
 
         for expired in self.repository.expire_waiting_tasks(date_str):
-            role = expired["role"]
             task_ref = expired["task_ref"]
             reason = expired["reason"]
             logging.error("Expired waiting task %s: %s", task_ref, reason)
-            if self.failure_governor is not None:
-                self.failure_governor.record_failure(
-                    role,
-                    date_str,
-                    reason,
-                    task_ref,
-                    result_key=task_ref or None,
-                )
 
         tasks_by_role = self._load_role_tasks(role_file)
         logging.debug(f"Loaded tasks for {len(tasks_by_role)} roles")
@@ -418,8 +382,6 @@ def serve(
     logs_dir: Path,
     log_level_name: str,
     worker_threads: int,
-    failure_policy_config: dict[str, Any],
-    email_alert_config: dict[str, Any],
     max_dispatch_lateness_minutes: int = 6,
     debug: bool = False,
     statistic_output_dir: Path | None = None,
@@ -433,12 +395,6 @@ def serve(
     )
     roles = load_all_roles(target_ini_path)
     generation_roles = load_daily_generation_roles(target_ini_path)
-    failure_governor = RoleFailureGovernor(
-        resolve_config_relative_path(failure_policy_config["state_file"]),
-        cooldown_seconds=failure_policy_config["cooldown_seconds"],
-        max_consecutive_failures=failure_policy_config["max_consecutive_failures"],
-        email_alerter=EmailAlerter(email_alert_config),
-    )
     logging.debug("Initializing TaskScanner with data_dir=%s", data_dir)
     scanner = TaskScanner(
         repository,
@@ -451,7 +407,6 @@ def serve(
         constraints_resource_file=constraints_resource_file,
         logs_dir=logs_dir,
         log_level_name=log_level_name,
-        failure_governor=failure_governor,
         max_dispatch_lateness_minutes=max_dispatch_lateness_minutes,
         debug=debug,
         target_ini_path=target_ini_path,
@@ -477,7 +432,6 @@ def serve(
                 max_line_bytes,
                 recv_chunk_bytes,
                 socket_timeout_seconds,
-                failure_governor,
             )
     finally:
         if "executor" in locals():
@@ -541,8 +495,6 @@ def main(argv: list[str] | None = None) -> None:
     scanner_config = get_scanner_config(runtime_config)
     storage_config = get_storage_config(runtime_config)
     dispatch_config = get_dispatch_config(runtime_config)
-    failure_policy_config = get_failure_policy_config(runtime_config)
-    email_alert_config = get_email_alert_config(runtime_config)
     generator_config = get_generator_config(runtime_config)
     paths_config = get_paths_config(runtime_config)
     logging_config = get_logging_config(runtime_config)
@@ -600,8 +552,6 @@ def main(argv: list[str] | None = None) -> None:
         logs_dir=logs_dir,
         log_level_name=log_level_name,
         worker_threads=server_config["worker_threads"],
-        failure_policy_config=failure_policy_config,
-        email_alert_config=email_alert_config,
         max_dispatch_lateness_minutes=scanner_config["max_dispatch_lateness_minutes"],
         debug=args.debug,
         statistic_output_dir=statistic_output_dir,

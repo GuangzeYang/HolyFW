@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for commander breaker reset day-state clearing."""
+"""Tests for commander day-state reset (task file and logs)."""
 
 from __future__ import annotations
 
@@ -10,12 +10,6 @@ from pathlib import Path
 from unittest import mock
 
 from commander.breaker_control import clear_day_runtime_files, main, reset_day_state
-from commander.failure_governor import RoleFailureGovernor
-
-
-class FakeAlerter:
-    def send_role_opened(self, role: str, day: str, state: dict):
-        return True, None
 
 
 class ClearDayRuntimeFilesTests(unittest.TestCase):
@@ -67,16 +61,6 @@ class ResetDayStateTests(unittest.TestCase):
         self.task_file = self.data_dir / f"tasks_{self.day[5:]}.json"
         self.task_file.write_text('{"hr": [{"time": "11:00"}]}', encoding="utf-8")
         (self.logs_dir / f"commander_{self.day}.log").write_text("old\n", encoding="utf-8")
-        self.state_file = self.root / "role_failures.json"
-        self.governor = RoleFailureGovernor(
-            self.state_file,
-            cooldown_seconds=300,
-            max_consecutive_failures=3,
-            email_alerter=FakeAlerter(),
-        )
-        for index in range(3):
-            self.governor.record_failure("hr", self.day, f"fail {index}")
-        self.assertFalse(self.governor.can_dispatch("hr", self.day)[0])
 
         self.scanner = {"data_dir": str(self.data_dir), "base_time": 11}
         self.paths = {"logs_dir": str(self.logs_dir)}
@@ -92,7 +76,7 @@ class ResetDayStateTests(unittest.TestCase):
             ),
         )
 
-    def test_clears_breaker_tasks_and_logs_without_generating(self) -> None:
+    def test_clears_tasks_and_logs_without_generating(self) -> None:
         for patcher in self._patches():
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -100,25 +84,20 @@ class ResetDayStateTests(unittest.TestCase):
         payload = reset_day_state(
             day=self.day,
             emit_status=lambda _message: None,
-            governor=self.governor,
         )
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["cleared_breaker_roles"], ["hr"])
-        self.assertTrue(self.governor.can_dispatch("hr", self.day)[0])
+        self.assertNotIn("cleared_breaker_roles", payload)
         self.assertFalse(self.task_file.exists())
         self.assertNotIn("generation", payload)
 
 
 class BreakerCliTests(unittest.TestCase):
-    def test_circuit_only_role_uses_legacy_reset(self) -> None:
-        with mock.patch("commander.breaker_control._build_governor") as build:
-            governor = mock.Mock()
-            governor.reset.return_value = True
-            build.return_value = governor
-            code = main(["reset", "--circuit-only", "--role", "hr"])
+    def test_reset_invokes_day_state_reset(self) -> None:
+        with mock.patch("commander.breaker_control.reset_day_state") as reset:
+            reset.return_value = {"ok": True, "day": "2026-09-04"}
+            code = main(["reset", "--date", "2026-09-04"])
         self.assertEqual(code, 0)
-        governor.reset.assert_called_once_with("hr", mock.ANY)
-        governor.reset_day.assert_not_called()
+        reset.assert_called_once_with(day="2026-09-04")
 
 
 if __name__ == "__main__":

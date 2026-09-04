@@ -45,7 +45,7 @@ def _print_root_help() -> int:
         "  dispatch   Send one task to a soldier\n"
         "  victim     On-demand victim campaign (step/show/dispatch)\n"
         "  schedule   Sample or plot the arrival-time model\n"
-        "  breaker    Inspect breakers, or reset today's run (tasks, logs, breaker state)\n"
+        "  breaker    Reset today's run (delete task file and commander logs)\n"
         "  build      Write DeepSeek provider env-key config into ~/.config/opencode\n"
         "             (add --test to verify OpenCode load and the DeepSeek provider)\n"
         "  config     Set LLM API key (required); optional --llm-provider / --model; push to soldiers\n"

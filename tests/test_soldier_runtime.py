@@ -151,6 +151,27 @@ class SoldierRuntimeTests(unittest.TestCase):
             self.assertEqual(report["exit_code"], 0)
             self.assertEqual(payload["task_id"], "c01b883dfefd4c85")
 
+    def test_append_task_execution_log_writes_output_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            path = soldier.append_task_execution_log(
+                task_id="c01b883dfefd4c85",
+                task_ref="2026-04-29_accountancy_c01b883dfefd4c85",
+                date_str="2026-04-29",
+                received_at="2026-04-29T09:08:09+08:00",
+                command='opencode run --auto "Check email"',
+                status="failed",
+                exit_code=1,
+                message="Command exit code 1",
+                argv=["opencode", "run", "--auto", "Check email"],
+                outcome="Fail",
+                stdout='{"type":"text","part":{"text":"navigate failed"}}\n',
+                base_dir=base,
+            )
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("## Output", text)
+            self.assertIn("navigate failed", text)
+
     def test_pending_and_task_records_live_under_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -237,21 +258,25 @@ class SoldierRuntimeTests(unittest.TestCase):
         self.assertEqual(acknowledgment["status"], "accepted")
         self.assertTrue(conn.closed)
 
-    def test_execute_command_success_discards_process_output(self) -> None:
+    def test_execute_command_success_captures_process_output(self) -> None:
         command = f'"{sys.executable}" -c "print(\'x\' * 40)"'
         result = soldier.execute_command(command, timeout_sec=10)
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(result.outcome, "Success")
         self.assertEqual(result.report_status, "successed")
         self.assertIsNone(result.message)
-        self.assertFalse(hasattr(result, "stdout"))
+        self.assertIn("x" * 40, result.stdout)
 
     def test_execute_command_nonzero_exit_is_fail_not_error(self) -> None:
-        command = f'"{sys.executable}" -c "raise SystemExit(7)"'
+        command = (
+            f'"{sys.executable}" -c '
+            '"import sys; sys.stderr.write(\'boom-err\\n\'); raise SystemExit(7)"'
+        )
         result = soldier.execute_command(command, timeout_sec=10)
         self.assertEqual(result.outcome, "Fail")
         self.assertEqual(result.report_status, "failed")
         self.assertEqual(result.exit_code, 7)
+        self.assertIn("boom-err", result.stderr)
 
     def test_execute_command_missing_binary_is_error(self) -> None:
         result = soldier.execute_command(
@@ -524,6 +549,47 @@ class SoldierRuntimeTests(unittest.TestCase):
             finally:
                 if claimed.handle is not None:
                     claimed.handle.close()
+
+    def test_complete_writes_output_section_from_opencode_streams(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            claimed = soldier.claim_task_execution(
+                "2026-04-29",
+                "c01b883dfefd4c85",
+                "2026-04-29_accountancy_c01b883dfefd4c85",
+                "echo ok",
+                "2026-04-29T01:00:00+00:00",
+                999,
+                base_dir=base_dir,
+            )
+            assert claimed.handle is not None
+            claimed.handle.complete(
+                {
+                    "task_ref": "2026-04-29_accountancy_c01b883dfefd4c85",
+                    "status": "failed",
+                    "exit_code": 1,
+                },
+                status="failed",
+                exit_code=1,
+                message="Command exit code 1",
+                outcome="Fail",
+                stdout=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {"data": {"message": "net::ERR_HTTP_RESPONSE_CODE_FAILURE"}},
+                    }
+                )
+                + "\n",
+            )
+            path = claimed.handle.path
+            claimed.handle.close()
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("## Command", text)
+            self.assertIn("## Output", text)
+            self.assertNotIn("## stdout", text)
+            payload = soldier.parse_task_markdown(text)
+            self.assertEqual(payload["status"], "completed")
+            self.assertIn("ERR_HTTP_RESPONSE_CODE_FAILURE", payload.get("output", ""))
 
     def test_complete_does_not_write_output_section(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

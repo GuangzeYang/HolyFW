@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
 from common import existing_task_id, new_task_id
 
@@ -19,22 +19,6 @@ except ImportError:
     from commander.repository import DailyTaskRepository
 
 
-class FailureGovernor(Protocol):
-    def can_dispatch(self, role: str, day: str) -> tuple[bool, str | None]:
-        ...
-
-    def record_failure(
-        self,
-        role: str,
-        day: str,
-        reason: str,
-        task_ref: str = "",
-        *,
-        result_key: str | None = None,
-    ) -> dict[str, Any]:
-        ...
-
-
 class TaskScanService:
     """Scan role task lists and dispatch eligible tasks using injected dependencies."""
 
@@ -43,14 +27,12 @@ class TaskScanService:
         repository: DailyTaskRepository,
         selection_policy: PendingSelectionPolicy,
         dispatch_task: Callable[..., Any],
-        failure_governor: FailureGovernor | None = None,
         max_dispatch_lateness_minutes: int = 6,
         debug: bool = False,
     ):
         self.repository = repository
         self.selection_policy = selection_policy
         self.dispatch_task = dispatch_task
-        self.failure_governor = failure_governor
         self.max_dispatch_lateness_minutes = max_dispatch_lateness_minutes
         self.debug = debug
 
@@ -63,15 +45,6 @@ class TaskScanService:
     ) -> None:
         """Process one scan cycle over all roles with pointer-based scheduling."""
         for role_key in roles:
-            if self.failure_governor is not None:
-                allowed, reason = self.failure_governor.can_dispatch(role_key, date_str)
-                if not allowed:
-                    logging.warning(
-                        "Skipping dispatch: %s",
-                        reason,
-                        extra=log_extra(role_key),
-                    )
-                    continue
             tasks_any = tasks_by_role.get(role_key)
             if not isinstance(tasks_any, list) or not tasks_any:
                 continue
@@ -246,15 +219,6 @@ class TaskScanService:
                     update_fields,
                     only_if_unissued=True,
                 )
-                is_busy = bool(getattr(outcome, "busy", False))
-                if self.failure_governor is not None and not is_busy:
-                    task_ref = str(getattr(outcome, "task_ref", "") or "")
-                    self.failure_governor.record_failure(
-                        role_key,
-                        date_str,
-                        failure_message,
-                        task_ref,
-                    )
                 break
 
     def _clock_wrap_day_offset(self, tasks: list[dict[str, Any]], index: int) -> int:

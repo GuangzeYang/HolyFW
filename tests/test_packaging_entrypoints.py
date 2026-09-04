@@ -61,7 +61,7 @@ class CommanderCliRouteTests(unittest.TestCase):
     def test_breaker_subcommand_rewrites_sys_argv(self) -> None:
         with mock.patch("commander.breaker_control.main", return_value=0) as breaker:
             with self.assertRaises(SystemExit) as ctx:
-                commander_cli.main(["breaker", "status"])
+                commander_cli.main(["breaker", "reset"])
         self.assertEqual(ctx.exception.code, 0)
         breaker.assert_called_once_with()
 

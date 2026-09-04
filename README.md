@@ -410,14 +410,13 @@ Replace `<DC_IP>` with an operator-approved domain controller. Do not paste hash
 soldier report --task-ref "2026-04-21_hr_a1b2c3d4e5f67890" --status successed --exit-code 0
 ```
 
-#### View or lift character circuit breaker status
+#### Reset today's commander run
 
 ```powershell
-commander breaker status
 commander breaker reset
 ```
 
-`breaker reset` clears every role's breaker for the day, deletes today's `tasks_MM-DD.json` (and generation leftovers), truncates `commander/logs/commander_YYYY-MM-DD.log`, and removes `agent_responses_YYYY-MM-DD`. It does not generate tasks. A running commander generation loop will recreate the daily file afterward. Use `commander breaker reset --circuit-only --role hr` to lift a single role's breaker without wiping tasks or logs.
+`breaker reset` deletes today's `tasks_MM-DD.json` (and generation leftovers), truncates `commander/logs/commander_YYYY-MM-DD.log`, and removes `agent_responses_YYYY-MM-DD`. It does not generate tasks. A running commander generation loop will recreate the daily file afterward.
 
 #### Manually retry records that ultimately failed to report.
 
@@ -462,30 +461,6 @@ Controls task dispatch:
 - `soldier_timeout_seconds`: TCP timeout used by `dispatch.py` when connecting to `soldier`
 - `client_timeout_seconds`: Timeout for the `dispatch.py` subprocess invoked by `commander`; must be at least 5 seconds longer than `soldier_timeout_seconds`
 - `timeout_minutes`: Waiting-expiration period written to a task after dispatch
-
-### failure_policy
-
-Limit consecutive failures by role：
-
-- `cooldown_seconds`: The pause duration after the first and second failures; currently set to `300` seconds.
-- `max_consecutive_failures`: The threshold for triggering the circuit breaker based on consecutive failures; currently set to `3`.
-- `state_file`: The file used to persist the circuit breaker state; restarting Commander will not bypass the circuit breaker.
-
-Once the threshold is reached, the role will not initiate new tasks for the remainder of the day. A `busy` status simply indicates that the Soldier has hit its concurrency limit and does not count as a failure; while a successful result resets the consecutive failure count, a triggered circuit breaker must be manually reset or will only clear upon the change of date.
-
-### email_alert
-
-An alert can be sent via QQ Mail SMTP when a role circuit-breaker trips. This feature is disabled by default; to enable it, you must:
-
-1. Enable the SMTP service in your QQ Mail account and generate an authorization code.
-2. Fill in the `sender` and `recipients` fields in `commander/config.json` and set `enabled=true`.
-3. Store the authorization code in an environment variable rather than writing it to the configuration file:
-
-```powershell
-$env:HOLYFW_QQ_SMTP_AUTH_CODE = "Your QQ Mail SMTP authorization code"
-```
-
-By default, the system uses `smtp.qq.com:465` with SSL. Email delivery failures will not prevent the role circuit-breaker from tripping, nor will they trigger `opencode`.
 
 ### generator
 
@@ -614,9 +589,9 @@ Format: `time - LEVEL - role[index] - message`. Production (`INFO`) records task
 
 File logs live under `soldier/logs/`; per-task transcripts live under `soldier/runtime/`:
 
-- `soldier_YYYY-MM-DD.log` — lifecycle log (`time - LEVEL - task_id - message`): receive time, start time, full `opencode run --auto ...` command, finish time, outcome (`Success` / `Fail` / `Error`), report time, and report result (`ok`, `queued: ...`, or `send failed: ...`)
-- Console — only `Received` plus the outcome: `Success` (INFO), `Fail` with reason (WARNING, OpenCode started but non-zero or timeout), `Error` with the exception (ERROR, soldier could not start OpenCode)
-- `runtime/tasks/YYYY-MM-DD/<task_id>.md` — Markdown record with YAML-like frontmatter and the Command section. OpenCode output is not captured here; inspect the local OpenCode session. The date folder is the `task_ref` date. Soldier still claims by `task_id` across dates.
+- `soldier_YYYY-MM-DD.log` — lifecycle log (`time - LEVEL - task_id - message`): receive time, start time, full `opencode run --auto ...` command, finish time, outcome (`Success` / `Fail` / `Error`), a short OpenCode output preview on Fail/Error, report time, and report result (`ok`, `queued: ...`, or `send failed: ...`)
+- Console — only `Received` plus the outcome: `Success` (INFO), `Fail` with reason and output preview (WARNING, OpenCode started but non-zero or timeout), `Error` with the exception (ERROR, soldier could not start OpenCode)
+- `runtime/tasks/YYYY-MM-DD/<task_id>.md` — Markdown record with YAML-like frontmatter, the Command section, and an Output section with the OpenCode transcript (JSONL rendered to text). The date folder is the `task_ref` date. Soldier still claims by `task_id` across dates.
 
 Operational state (not the per-task transcript) also lives under `soldier/runtime/`:
 

@@ -114,25 +114,6 @@ def _validate_schema(data: dict[str, Any]) -> None:
         )
     _validate_positive_int(data, "dispatch.timeout_minutes")
 
-    _validate_positive_int(data, "failure_policy.cooldown_seconds")
-    _validate_positive_int(data, "failure_policy.max_consecutive_failures")
-    _read_required(data, "failure_policy.state_file", str)
-
-    email_enabled = _read_required(data, "email_alert.enabled", bool)
-    _read_required(data, "email_alert.smtp_host", str)
-    _validate_positive_int(data, "email_alert.smtp_port")
-    email_sender = _read_required(data, "email_alert.sender", str)
-    email_recipients = _read_required(data, "email_alert.recipients", list)
-    _read_required(data, "email_alert.auth_code_env", str)
-    _validate_positive_int(data, "email_alert.timeout_seconds")
-    _validate_positive_int(data, "email_alert.retry_limit")
-    if not all(isinstance(item, str) and item.strip() for item in email_recipients):
-        raise ValueError("Config key email_alert.recipients must contain only non-empty strings")
-    if email_enabled and (not email_sender.strip() or not email_recipients):
-        raise ValueError(
-            "Enabled email alerts require email_alert.sender and at least one recipient"
-        )
-
     tasks_per_role = _validate_positive_int(data, "generator.time_model.tasks_per_role")
     _validate_positive_int(data, "generator.max_attempts")
     _validate_positive_int(data, "generator.generation_retry_interval_seconds")
@@ -239,29 +220,6 @@ def get_dispatch_config(data: dict[str, Any]) -> dict[str, Any]:
         "soldier_timeout_seconds": float(_read_required(data, "dispatch.soldier_timeout_seconds", (int, float))),
         "client_timeout_seconds": _read_required(data, "dispatch.client_timeout_seconds", int),
         "timeout_minutes": _read_required(data, "dispatch.timeout_minutes", int),
-    }
-
-
-def get_failure_policy_config(data: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "cooldown_seconds": _read_required(data, "failure_policy.cooldown_seconds", int),
-        "max_consecutive_failures": _read_required(
-            data, "failure_policy.max_consecutive_failures", int
-        ),
-        "state_file": _read_required(data, "failure_policy.state_file", str),
-    }
-
-
-def get_email_alert_config(data: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "enabled": _read_required(data, "email_alert.enabled", bool),
-        "smtp_host": _read_required(data, "email_alert.smtp_host", str),
-        "smtp_port": _read_required(data, "email_alert.smtp_port", int),
-        "sender": _read_required(data, "email_alert.sender", str),
-        "recipients": list(_read_required(data, "email_alert.recipients", list)),
-        "auth_code_env": _read_required(data, "email_alert.auth_code_env", str),
-        "timeout_seconds": _read_required(data, "email_alert.timeout_seconds", int),
-        "retry_limit": _read_required(data, "email_alert.retry_limit", int),
     }
 
 

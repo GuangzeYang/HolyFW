@@ -151,45 +151,5 @@ class DispatchLatenessWindowTests(unittest.TestCase):
         self.assertTrue(self.repo.load_day(self.today)["hr"][0]["is_load"])
 
 
-class ClosedCircuitGovernor:
-    def can_dispatch(self, role: str, day: str) -> tuple[bool, str | None]:
-        return False, "role circuit is open: Command exit code 1"
-
-    def record_failure(self, *args, **kwargs):
-        return {}
-
-
-class CircuitBreakerLogTests(unittest.TestCase):
-    def test_open_circuit_logs_warning_and_skips_dispatch(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        repo = DailyTaskRepository(Path(tmp.name), lock_timeout=5, max_store_text=1024)
-        today = datetime.now().strftime("%Y-%m-%d")
-        dispatched: list[str] = []
-
-        def fake_dispatch(role: str, task_text: str, task_time: str | None = None, **_kwargs):
-            dispatched.append(task_text)
-            return True
-
-        repo.save_day(today, {"hr": [_pending_task("00:01", "blocked task")]})
-        service = TaskScanService(
-            repository=repo,
-            selection_policy=EarliestPendingSelectionPolicy(),
-            dispatch_task=fake_dispatch,
-            failure_governor=ClosedCircuitGovernor(),
-            max_dispatch_lateness_minutes=6,
-            debug=False,
-        )
-        with self.assertLogs(level="WARNING") as captured:
-            service.process_roles(
-                tasks_by_role=repo.load_day(today),
-                roles=("hr",),
-                role_pointers={},
-                date_str=today,
-            )
-        self.assertTrue(any("Skipping dispatch" in line and "role circuit is open" in line for line in captured.output))
-        self.assertEqual(dispatched, [])
-
-
 if __name__ == "__main__":
     unittest.main()

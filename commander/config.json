@@ -23,21 +23,6 @@
     "client_timeout_seconds": 125,
     "timeout_minutes": 20
   },
-  "failure_policy": {
-    "cooldown_seconds": 300,
-    "max_consecutive_failures": 3,
-    "state_file": "runtime_state/role_failures.json"
-  },
-  "email_alert": {
-    "enabled": false,
-    "smtp_host": "smtp.qq.com",
-    "smtp_port": 465,
-    "sender": "",
-    "recipients": [],
-    "auth_code_env": "HOLYFW_QQ_SMTP_AUTH_CODE",
-    "timeout_seconds": 30,
-    "retry_limit": 2
-  },
   "generator": {
     "max_attempts": 6,
     "generation_retry_interval_seconds": 1800,

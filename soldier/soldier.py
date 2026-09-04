@@ -20,6 +20,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -50,6 +51,7 @@ from common import (
 )
 from common.task_markdown import (
     OPENCODE_RUN_FLAGS,
+    format_opencode_session,
     report_from_task_record,
     parse_task_markdown as parse_shared_task_markdown,
     render_task_markdown as render_shared_task_markdown,
@@ -79,6 +81,7 @@ REPORT_RETRY_INTERVAL_SECONDS = 60
 REPORT_SOCKET_TIMEOUT_SECONDS = 60
 RUNNING_STALE_GRACE_SECONDS = 120
 PROCESS_TREE_KILL_TIMEOUT_SECONDS = 30
+OUTPUT_LOG_PREVIEW_CHARS = 500
 SOLDIER_DATED_FILE_HANDLER_NAME = "soldier_dated_file"
 SOLDIER_CONSOLE_HANDLER_NAME = "soldier_console"
 SOLDIER_LOG_FORMAT = "%(asctime)s - %(levelname)s - %(task)s - %(message)s"
@@ -379,6 +382,8 @@ class TaskRecordFile:
         started_at: str | None = None,
         finished_at: str | None = None,
         command: str | None = None,
+        stdout: str = "",
+        stderr: str = "",
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         self.record["status"] = "completed"
@@ -393,6 +398,8 @@ class TaskRecordFile:
         self.record["message"] = message or ""
         self.record["result_status"] = status
         self.record["outcome"] = outcome or ("Success" if status == "successed" else "Fail")
+        self.record["stdout"] = stdout or ""
+        self.record["stderr"] = stderr or ""
         self.persist()
 
     def abort(self) -> None:
@@ -586,16 +593,33 @@ def strip_report_streams(payload: dict) -> dict:
     return cleaned
 
 
+def _process_output_preview(result: CommandResult) -> str:
+    text = format_opencode_session(result.stdout or "", result.stderr or "").strip()
+    if not text:
+        return ""
+    compact = " ".join(text.split())
+    if len(compact) <= OUTPUT_LOG_PREVIEW_CHARS:
+        return compact
+    return compact[:OUTPUT_LOG_PREVIEW_CHARS] + "..."
+
+
 def _log_console_outcome(result: CommandResult, task_id: str) -> None:
+    preview = _process_output_preview(result)
     if result.outcome == "Success":
         log_task(logging.INFO, "Success", task_id=task_id, to_console=True)
         return
     if result.outcome == "Fail":
         reason = result.message or f"exit_code={result.exit_code}"
-        log_task(logging.WARNING, "Fail %s", reason, task_id=task_id, to_console=True)
+        if preview:
+            log_task(logging.WARNING, "Fail %s; output %s", reason, preview, task_id=task_id, to_console=True)
+        else:
+            log_task(logging.WARNING, "Fail %s", reason, task_id=task_id, to_console=True)
         return
     reason = result.message or "unknown error"
-    log_task(logging.ERROR, "Error %s", reason, task_id=task_id, to_console=True)
+    if preview:
+        log_task(logging.ERROR, "Error %s; output %s", reason, preview, task_id=task_id, to_console=True)
+    else:
+        log_task(logging.ERROR, "Error %s", reason, task_id=task_id, to_console=True)
 
 
 def append_task_execution_log(
@@ -614,6 +638,8 @@ def append_task_execution_log(
     outcome: str | None = None,
     started_at: str | None = None,
     finished_at: str | None = None,
+    stdout: str = "",
+    stderr: str = "",
 ) -> Path:
     """Write a completed task Markdown record keyed by task_id."""
     prompt = strip_opencode_run_prefix(task if task is not None else command)
@@ -643,6 +669,8 @@ def append_task_execution_log(
         "result_status": result_status,
         "exit_code": exit_code,
         "message": message or "",
+        "stdout": stdout or "",
+        "stderr": stderr or "",
         "report": commander_report_payload(
             task_ref,
             result_status,
@@ -984,10 +1012,21 @@ class CommandResult:
     exit_code: int
     outcome: str
     message: str | None = None
+    stdout: str = ""
+    stderr: str = ""
 
     @property
     def report_status(self) -> str:
         return outcome_to_report_status(self.outcome)
+
+
+def _read_captured_stream(handle: IO[bytes]) -> str:
+    try:
+        handle.flush()
+        handle.seek(0)
+        return handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def execute_command(
@@ -1001,51 +1040,73 @@ def execute_command(
     """Execute a command in its own process group and clean the whole tree on timeout."""
     if _SHUTTING_DOWN.is_set():
         return CommandResult(-1, "Error", "Execution cancelled during shutdown")
-    popen_options: dict = {
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    if env is not None:
-        popen_options["env"] = dict(env)
-    if isinstance(command, str):
-        popen_target: str | list[str] = command
-        popen_options["shell"] = True
-    else:
-        popen_target = [str(part) for part in command]
-        popen_options["shell"] = False
-    if os.name == "nt":
-        popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        popen_options["start_new_session"] = True
-
+    stdout_handle = tempfile.TemporaryFile()
+    stderr_handle = tempfile.TemporaryFile()
     try:
-        proc = subprocess.Popen(popen_target, **popen_options)
-    except OSError as exc:
-        return CommandResult(-1, "Error", f"Execution failed: {exc}")
+        popen_options: dict = {
+            "stdout": stdout_handle,
+            "stderr": stderr_handle,
+        }
+        if env is not None:
+            popen_options["env"] = dict(env)
+        if isinstance(command, str):
+            popen_target: str | list[str] = command
+            popen_options["shell"] = True
+        else:
+            popen_target = [str(part) for part in command]
+            popen_options["shell"] = False
+        if os.name == "nt":
+            popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_options["start_new_session"] = True
 
-    _register_active_process(proc)
-    try:
-        if _SHUTTING_DOWN.is_set():
-            terminate_process_tree(proc, "soldier shutdown race", task_id=task_id)
-            return CommandResult(-1, "Error", "Execution cancelled during shutdown")
         try:
-            exit_code = proc.wait(timeout=timeout_sec)
-        except subprocess.TimeoutExpired:
-            terminate_process_tree(
-                proc,
-                f"task timeout: {task_ref or _command_label(command)[:80]}",
-                task_id=task_id,
-            )
+            proc = subprocess.Popen(popen_target, **popen_options)
+        except OSError as exc:
+            return CommandResult(-1, "Error", f"Execution failed: {exc}")
+
+        _register_active_process(proc)
+        try:
+            if _SHUTTING_DOWN.is_set():
+                terminate_process_tree(proc, "soldier shutdown race", task_id=task_id)
+                return CommandResult(
+                    -1,
+                    "Error",
+                    "Execution cancelled during shutdown",
+                    stdout=_read_captured_stream(stdout_handle),
+                    stderr=_read_captured_stream(stderr_handle),
+                )
+            try:
+                exit_code = proc.wait(timeout=timeout_sec)
+            except subprocess.TimeoutExpired:
+                terminate_process_tree(
+                    proc,
+                    f"task timeout: {task_ref or _command_label(command)[:80]}",
+                    task_id=task_id,
+                )
+                return CommandResult(
+                    -1,
+                    "Fail",
+                    f"Command timeout (>{timeout_sec}s); process tree terminated",
+                    stdout=_read_captured_stream(stdout_handle),
+                    stderr=_read_captured_stream(stderr_handle),
+                )
+            stdout_text = _read_captured_stream(stdout_handle)
+            stderr_text = _read_captured_stream(stderr_handle)
+            if exit_code == 0:
+                return CommandResult(exit_code, "Success", None, stdout=stdout_text, stderr=stderr_text)
             return CommandResult(
-                -1,
+                exit_code,
                 "Fail",
-                f"Command timeout (>{timeout_sec}s); process tree terminated",
+                f"Command exit code {exit_code}",
+                stdout=stdout_text,
+                stderr=stderr_text,
             )
-        if exit_code == 0:
-            return CommandResult(exit_code, "Success", None)
-        return CommandResult(exit_code, "Fail", f"Command exit code {exit_code}")
+        finally:
+            _unregister_active_process(proc)
     finally:
-        _unregister_active_process(proc)
+        stdout_handle.close()
+        stderr_handle.close()
 
 
 def task_ref_full(date_str: str, role: str, task_id: str) -> str:
@@ -1482,6 +1543,8 @@ def handle_dispatch_connection(
                     started_at=started_at,
                     finished_at=finished_at,
                     command=command_line,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
                 )
             else:
                 append_task_execution_log(
@@ -1498,6 +1561,8 @@ def handle_dispatch_connection(
                     outcome=result.outcome,
                     started_at=started_at,
                     finished_at=finished_at,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
                 )
         except OSError as e:
             log_task(logging.ERROR, "Error %s", e, task_id=task_id, to_console=True)
