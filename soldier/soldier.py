@@ -55,8 +55,14 @@ from common.task_markdown import (
     render_task_markdown as render_shared_task_markdown,
     write_task_markdown as write_shared_task_markdown,
 )
-from common.llm_catalog import enabled_provider, lookup_provider, opencode_model_spec
-from common.user_env import set_user_env
+from common.llm_catalog import (
+    LLM_MODEL_ENV,
+    LLM_PROVIDER_ENV,
+    enabled_provider,
+    lookup_provider,
+    save_enabled_selection,
+)
+from common.user_env import get_user_env, set_user_env
 
 DEFAULT_PORT = 38471
 DEFAULT_LISTEN_PORT = 38472
@@ -911,32 +917,57 @@ OPENCODE_PERMISSION_ALLOW: dict[str, object] = {
 
 
 def build_opencode_argv(prompt: str) -> list[str]:
-    name, record = enabled_provider()
     return [
         resolve_opencode_executable(),
         "run",
         *OPENCODE_RUN_FLAGS,
         "--model",
-        opencode_model_spec(name, record),
+        runtime_opencode_model_spec(),
         prompt,
     ]
+
+
+def runtime_opencode_model_spec() -> str:
+    name = get_user_env(LLM_PROVIDER_ENV)
+    model = get_user_env(LLM_MODEL_ENV)
+    if name and model:
+        return f"{name}/{model}"
+    catalog_name, record = enabled_provider()
+    return f"{name or catalog_name}/{model or record.models}"
 
 
 def apply_llm_config(payload: dict) -> dict[str, object]:
     provider = payload.get("provider")
     api_key = payload.get("api_key")
+    model = payload.get("model")
     if not isinstance(provider, str) or not provider.strip():
         raise ValueError("Missing or invalid provider")
     if not isinstance(api_key, str) or not api_key.strip():
         raise ValueError("Missing or invalid api_key")
     record = lookup_provider(provider.strip())
+    resolved_model = model.strip() if isinstance(model, str) and model.strip() else record.models
     set_user_env(record.env, api_key.strip())
-    logging.info("LLM config applied for provider %s", provider.strip())
+    set_user_env(LLM_PROVIDER_ENV, provider.strip())
+    set_user_env(LLM_MODEL_ENV, resolved_model)
+    json_written = False
+    try:
+        save_enabled_selection(provider.strip(), resolved_model)
+        json_written = True
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        logging.warning("Could not update workspace llm.json: %s", exc)
+    logging.info(
+        "LLM config applied for provider %s model %s json_written=%s",
+        provider.strip(),
+        resolved_model,
+        json_written,
+    )
     return {
         "ok": True,
         "status": "configured",
         "provider": provider.strip(),
         "env": record.env,
+        "model": resolved_model,
+        "json_written": json_written,
     }
 
 

@@ -180,6 +180,7 @@ def send_llm_config(
     soldier_port: int,
     provider: str,
     api_key: str,
+    model: str,
     *,
     timeout: float,
 ) -> dict[str, Any]:
@@ -187,6 +188,7 @@ def send_llm_config(
         "type": "llm_config",
         "provider": provider,
         "api_key": api_key,
+        "model": model,
     }
     return send_soldier_payload(
         soldier_host,

@@ -48,7 +48,7 @@ def _print_root_help() -> int:
         "  breaker    Inspect breakers, or reset today's run (tasks, logs, breaker state)\n"
         "  build      Write DeepSeek provider env-key config into ~/.config/opencode\n"
         "             (add --test to verify OpenCode load and the DeepSeek provider)\n"
-        "  config     Set the enabled LLM provider API key (user env) and push it to soldiers\n"
+        "  config     Set LLM API key (required); optional --llm-provider / --model; push to soldiers\n"
     )
     parser.print_help()
     return 0

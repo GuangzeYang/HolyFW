@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 LLM_JSON_NAME = "llm.json"
+LLM_PROVIDER_ENV = "HOLYFW_LLM_PROVIDER"
+LLM_MODEL_ENV = "HOLYFW_LLM_MODEL"
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -21,22 +23,47 @@ class ProviderRecord:
     enable: bool
 
 
+def workspace_llm_json_path() -> Path:
+    """Return the writable checkout llm.json. Never a site-packages copy."""
+    from common import is_install_tree, locate_holyfw_root
+
+    path = locate_holyfw_root() / LLM_JSON_NAME
+    if is_install_tree(path):
+        raise FileNotFoundError(f"Refusing packaged llm.json path: {path}")
+    return path
+
+
 def llm_json_path() -> Path:
     """Return the workspace llm.json, else the packaged copy."""
-    from common import locate_holyfw_root
-
     try:
-        candidate = locate_holyfw_root() / LLM_JSON_NAME
+        candidate = workspace_llm_json_path()
         if candidate.is_file():
             return candidate
     except FileNotFoundError:
         pass
-    from holyfw_assets import bundled_file
-
-    found = bundled_file(LLM_JSON_NAME)
+    found = _bundled_llm_json()
     if found is None or not found.is_file():
         raise FileNotFoundError(f"{LLM_JSON_NAME} not found in the workspace or package")
     return found
+
+
+def _bundled_llm_json() -> Path | None:
+    from holyfw_assets import bundled_file
+
+    return bundled_file(LLM_JSON_NAME)
+
+
+def ensure_workspace_llm_json() -> Path:
+    """Return a writable workspace llm.json, copying the packaged catalog if needed."""
+    dest = workspace_llm_json_path()
+    if dest.is_file():
+        return dest
+    src = _bundled_llm_json()
+    if src is None or not src.is_file():
+        raise FileNotFoundError(f"{LLM_JSON_NAME} not found in the workspace or package")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    return dest
 
 
 def load_llm_catalog(path: Path | None = None) -> dict[str, ProviderRecord]:
@@ -88,6 +115,58 @@ def lookup_provider(name: str, path: Path | None = None) -> ProviderRecord:
 
 def opencode_model_spec(name: str, record: ProviderRecord) -> str:
     return f"{name}/{record.models}"
+
+
+def resolve_config_selection(
+    provider: str | None = None,
+    model: str | None = None,
+    *,
+    path: Path | None = None,
+) -> tuple[str, ProviderRecord, str, bool]:
+    """Resolve CLI provider/model against llm.json. persist is True when either flag is set."""
+    persist = bool((provider or "").strip() or (model or "").strip())
+    if (provider or "").strip():
+        record = lookup_provider(provider, path)
+        name = record.name
+    else:
+        name, record = enabled_provider(path)
+    resolved_model = (model or "").strip() or record.models
+    if not resolved_model:
+        raise ValueError("model is empty")
+    return name, record, resolved_model, persist
+
+
+def save_enabled_selection(name: str, models: str, path: Path | None = None) -> ProviderRecord:
+    """Flip enable and update models in the workspace llm.json. Does not write api_key."""
+    from common import is_install_tree
+
+    source = path if path is not None else ensure_workspace_llm_json()
+    if is_install_tree(source):
+        raise ValueError(f"Refusing to write packaged llm.json: {source}")
+    if not source.is_file():
+        raise FileNotFoundError(f"Cannot write {source}; need a workspace llm.json")
+    key = (name or "").strip()
+    model = (models or "").strip()
+    if not key or not model:
+        raise ValueError("provider name and model are required")
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"{source} must be a JSON object")
+    providers = raw.get("provider")
+    if not isinstance(providers, dict) or key not in providers:
+        known = ", ".join(sorted(str(item) for item in providers)) if isinstance(providers, dict) else ""
+        raise ValueError(f"Unknown LLM provider {key!r}; expected one of: {known}")
+    for item_name, body in providers.items():
+        if not isinstance(body, dict):
+            raise ValueError(f"{source} provider {item_name!r} must be an object")
+        if "api_key" in body:
+            raise ValueError(f"{source} must not contain api_key")
+        body["enable"] = str(item_name) == key
+        if str(item_name) == key:
+            body["models"] = model
+    source.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    catalog = load_llm_catalog(source)
+    return catalog[key]
 
 
 def _parse_provider(name: str, body: Any, *, source: Path) -> ProviderRecord:
