@@ -75,6 +75,22 @@ def _truncation_reason(role: str, finish_reason: str | None) -> str:
     return f"Model response for role '{role}' was truncated by provider{suffix}"
 
 
+def _client_base_url(agent_client: AgentRequestABC) -> str:
+    direct = getattr(agent_client, "api_base_url", "")
+    if direct:
+        return str(direct)
+    config = getattr(agent_client, "config", None)
+    return str(getattr(config, "api_base_url", "") or "")
+
+
+def _llm_status_line(agent_client: AgentRequestABC) -> str:
+    return (
+        f"LLM provider={agent_client.provider_name} "
+        f"model={agent_client.model} "
+        f"base_url={_client_base_url(agent_client)}"
+    )
+
+
 def _parse_failure_reason(role: str) -> str:
     return f"Model response for role '{role}' did not contain a valid JSON object"
 
@@ -244,6 +260,7 @@ def generate_role_tasks(
         "runtime_error": 0,
     }
     last_failure_reason: str | None = None
+    emit_status(_llm_status_line(agent_client))
 
     try:
         persisted_data = load_task_file(final_file)
@@ -324,7 +341,10 @@ def generate_role_tasks(
                 {"role": "system", "content": system_text},
                 {"role": "user", "content": user_text},
             ]
-            emit_status(f"Generation attempt {attempt}/{max_attempts} for role '{role}'")
+            emit_status(
+                f"Generation attempt {attempt}/{max_attempts} for role '{role}' "
+                f"model={agent_client.model} base_url={_client_base_url(agent_client)}"
+            )
             try:
                 _cleanup_file(role_candidate_file)
                 response = agent_client.request_completion(
@@ -337,7 +357,8 @@ def generate_role_tasks(
                     role=role,
                     attempt=attempt,
                     provider=agent_client.provider_name,
-                    model=response.model,
+                    model=agent_client.model,
+                    base_url=_client_base_url(agent_client),
                     status_code=response.status_code,
                     finish_reason=response.finish_reason,
                     response_text=response.response_text,
@@ -434,6 +455,7 @@ def generate_role_tasks(
                     attempt=attempt,
                     provider=agent_client.provider_name,
                     model=agent_client.model,
+                    base_url=_client_base_url(agent_client),
                     status_code=exc.status_code,
                     error_text=exc.response_text or str(exc),
                     request_state="failed",
@@ -450,6 +472,7 @@ def generate_role_tasks(
                         attempt=attempt,
                         provider=agent_client.provider_name,
                         model=agent_client.model,
+                        base_url=_client_base_url(agent_client),
                         status_code=exc.status_code,
                         raw_response_text=exc.response_text,
                         error_text=exc.response_text,

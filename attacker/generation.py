@@ -150,9 +150,26 @@ def request_task_batch(
 ) -> list[str]:
     last_error = "empty model response"
     attempts = max(1, int(max_attempts))
-    logger.info("Requesting %s attacker task string(s) from DeepSeek (max_attempts=%s)", batch_size, attempts)
+    provider = getattr(agent_client, "provider_name", None) or "LLM"
+    model = getattr(agent_client, "model", "") or ""
+    base_url = getattr(agent_client, "api_base_url", "") or ""
+    logger.info(
+        "Requesting %s attacker task string(s) from %s model=%s base_url=%s (max_attempts=%s)",
+        batch_size,
+        provider,
+        model,
+        base_url,
+        attempts,
+    )
     for attempt in range(1, attempts + 1):
-        logger.info("DeepSeek fill attempt %s/%s", attempt, attempts)
+        logger.info(
+            "LLM fill attempt %s/%s provider=%s model=%s base_url=%s",
+            attempt,
+            attempts,
+            provider,
+            model,
+            base_url,
+        )
         system_text, user_text = build_generation_messages(
             batch_size=batch_size,
             tasks=tasks,
@@ -172,18 +189,18 @@ def request_task_batch(
             )
         except AgentTimeoutError as exc:
             last_error = str(exc)
-            logger.warning("DeepSeek fill attempt %s/%s timed out: %s", attempt, attempts, exc)
+            logger.warning("LLM fill attempt %s/%s timed out: %s", attempt, attempts, exc)
             continue
         except AgentRequestError as exc:
             last_error = str(exc)
-            logger.warning("DeepSeek fill attempt %s/%s failed: %s", attempt, attempts, exc)
+            logger.warning("LLM fill attempt %s/%s failed: %s", attempt, attempts, exc)
             continue
         parsed = parse_generated_tasks(response.response_text)
         if len(parsed) >= batch_size:
-            logger.info("DeepSeek returned %s task string(s)", batch_size)
+            logger.info("LLM returned %s task string(s)", batch_size)
             return parsed[:batch_size]
         if parsed:
-            logger.info("DeepSeek returned %s task string(s) (requested %s)", len(parsed), batch_size)
+            logger.info("LLM returned %s task string(s) (requested %s)", len(parsed), batch_size)
             return parsed
         last_error = f"attempt {attempt}: no task strings in model response"
         logger.warning("%s", last_error)

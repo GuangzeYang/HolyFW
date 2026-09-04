@@ -746,13 +746,9 @@ class SoldierRuntimeTests(unittest.TestCase):
                 return_value=Path("runtime/tasks/2026-04-29/c01b883dfefd4c85.md"),
             ),
             mock.patch("soldier.soldier.send_report", return_value=({"ok": True}, None)),
-            mock.patch("soldier.soldier.get_user_env", return_value=""),
             mock.patch(
-                "soldier.soldier.enabled_provider",
-                return_value=(
-                    "deepseek",
-                    mock.Mock(models="deepseek-v4-flash", env="DEEPSEEK_API_KEY"),
-                ),
+                "soldier.soldier.runtime_opencode_model_spec",
+                return_value="deepseek/deepseek-v4-flash",
             ),
         ):
             soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)

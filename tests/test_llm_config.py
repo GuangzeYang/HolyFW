@@ -12,8 +12,6 @@ from pathlib import Path
 from unittest import mock
 
 from common.llm_catalog import (
-    LLM_MODEL_ENV,
-    LLM_PROVIDER_ENV,
     ProviderRecord,
     enabled_provider,
     load_llm_catalog,
@@ -105,6 +103,38 @@ class LlmCatalogTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 lookup_provider("openai", path)
 
+    def test_rejects_unsupported_provider_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "llm.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "provider": {
+                            "openai": {
+                                "base_url": "https://api.openai.com/v1",
+                                "models": "gpt-4o",
+                                "env": "OPENAI_API_KEY",
+                                "enable": True,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                load_llm_catalog(path)
+            self.assertIn("not supported", str(ctx.exception))
+            _write_catalog(path)
+            with self.assertRaises(ValueError) as ctx:
+                lookup_provider("openai", path)
+            self.assertIn("Unsupported", str(ctx.exception))
+            with self.assertRaises(ValueError) as ctx:
+                resolve_config_selection("openai", None, path=path)
+            self.assertIn("Unsupported", str(ctx.exception))
+            with self.assertRaises(ValueError) as ctx:
+                save_enabled_selection("openai", "gpt-4o", path=path)
+            self.assertIn("Unsupported", str(ctx.exception))
+
     def test_resolve_and_save_enabled_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "llm.json"
@@ -127,6 +157,26 @@ class LlmCatalogTests(unittest.TestCase):
             catalog = load_llm_catalog(path)
             self.assertEqual(catalog["deepseek"].models, "deepseek-v4-pro")
             self.assertTrue(catalog["deepseek"].enable)
+
+    def test_format_enabled_llm_log_includes_model_and_base_url(self) -> None:
+        from common.llm_catalog import format_enabled_llm_log
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "llm.json"
+            _write_catalog(path, deepseek_enable=False, zhipu_enable=True)
+            text = format_enabled_llm_log(path)
+        self.assertIn("LLM provider=zhipu", text)
+        self.assertIn("model=GLM-4.7-Flash", text)
+        self.assertIn("base_url=https://open.bigmodel.cn/api/paas/v4", text)
+
+    def test_llm_json_path_does_not_use_packaged_catalog(self) -> None:
+        from common.llm_catalog import llm_json_path
+
+        missing = Path("/no/such/workspace/llm.json")
+        with mock.patch("common.llm_catalog.workspace_llm_json_path", return_value=missing):
+            with self.assertRaises(FileNotFoundError) as ctx:
+                llm_json_path()
+        self.assertIn("HOLYFW_ROOT", str(ctx.exception))
 
 
 class UserEnvTests(unittest.TestCase):
@@ -153,7 +203,16 @@ class CommanderConfigTests(unittest.TestCase):
         text = build_parser().format_help()
         self.assertIn("--api-key", text)
         self.assertIn("--llm-provider", text)
+        self.assertIn("deepseek", text)
+        self.assertIn("zhipu", text)
         self.assertIn("--model", text)
+
+    def test_config_rejects_unsupported_provider(self) -> None:
+        from commander.config_control import main as config_main
+
+        with self.assertRaises(SystemExit) as ctx:
+            config_main(["--llm-provider", "openai", "--api-key", "sk-test"])
+        self.assertNotEqual(ctx.exception.code, 0)
 
     def test_config_requires_api_key(self) -> None:
         from commander.config_control import main as config_main
@@ -174,11 +233,11 @@ class CommanderConfigTests(unittest.TestCase):
         )
         with (
             mock.patch(
-                "commander.config_control.resolve_config_selection",
+                "common.llm_config_cli.resolve_config_selection",
                 return_value=("deepseek", record, "deepseek-v4-flash", False),
             ),
-            mock.patch("commander.config_control.save_enabled_selection", return_value=record) as save,
-            mock.patch("commander.config_control.set_user_env") as set_env,
+            mock.patch("common.llm_config_cli.save_enabled_selection", return_value=record) as save,
+            mock.patch("common.llm_config_cli.set_user_env") as set_env,
             mock.patch("commander.runtime_config.load_runtime_config", return_value={}),
             mock.patch(
                 "commander.runtime_config.get_dispatch_config",
@@ -226,11 +285,11 @@ class CommanderConfigTests(unittest.TestCase):
         )
         with (
             mock.patch(
-                "commander.config_control.resolve_config_selection",
+                "common.llm_config_cli.resolve_config_selection",
                 return_value=("zhipu", record, "GLM-4.7-Flash", True),
             ),
-            mock.patch("commander.config_control.save_enabled_selection", return_value=saved) as save,
-            mock.patch("commander.config_control.set_user_env") as set_env,
+            mock.patch("common.llm_config_cli.save_enabled_selection", return_value=saved) as save,
+            mock.patch("common.llm_config_cli.set_user_env") as set_env,
             mock.patch("commander.runtime_config.load_runtime_config", return_value={}),
             mock.patch(
                 "commander.runtime_config.get_dispatch_config",
@@ -273,11 +332,11 @@ class CommanderConfigTests(unittest.TestCase):
         )
         with (
             mock.patch(
-                "commander.config_control.resolve_config_selection",
+                "common.llm_config_cli.resolve_config_selection",
                 return_value=("deepseek", record, "deepseek-v4-pro", True),
             ),
-            mock.patch("commander.config_control.save_enabled_selection", return_value=saved) as save,
-            mock.patch("commander.config_control.set_user_env"),
+            mock.patch("common.llm_config_cli.save_enabled_selection", return_value=saved) as save,
+            mock.patch("common.llm_config_cli.set_user_env"),
             mock.patch("commander.runtime_config.load_runtime_config", return_value={}),
             mock.patch(
                 "commander.runtime_config.get_dispatch_config",
@@ -313,11 +372,11 @@ class CommanderConfigTests(unittest.TestCase):
 
         with (
             mock.patch(
-                "commander.config_control.resolve_config_selection",
+                "common.llm_config_cli.resolve_config_selection",
                 return_value=("deepseek", record, "deepseek-v4-flash", False),
             ),
-            mock.patch("commander.config_control.save_enabled_selection", return_value=record),
-            mock.patch("commander.config_control.set_user_env"),
+            mock.patch("common.llm_config_cli.save_enabled_selection", return_value=record),
+            mock.patch("common.llm_config_cli.set_user_env"),
             mock.patch("commander.runtime_config.load_runtime_config", return_value={}),
             mock.patch(
                 "commander.runtime_config.get_dispatch_config",
@@ -356,6 +415,61 @@ class CommanderConfigTests(unittest.TestCase):
         self.assertNotIn("models", payload)
 
 
+class AttackerConfigTests(unittest.TestCase):
+    def test_config_help_matches_commander_flags(self) -> None:
+        from attacker.config_control import build_parser
+        from commander.config_control import build_parser as commander_parser
+
+        attacker_help = build_parser().format_help()
+        commander_help = commander_parser().format_help()
+        for flag in ("--api-key", "--llm-provider", "--model", "deepseek", "zhipu"):
+            self.assertIn(flag, attacker_help)
+            self.assertIn(flag, commander_help)
+
+    def test_config_sets_enabled_env_without_fan_out(self) -> None:
+        from attacker.config_control import main as config_main
+
+        record = ProviderRecord(
+            name="zhipu",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            models="GLM-4.7-Flash",
+            env="ZHIPU_API_KEY",
+            enable=True,
+        )
+        with (
+            mock.patch(
+                "common.llm_config_cli.resolve_config_selection",
+                return_value=("zhipu", record, "GLM-4.7-Flash", True),
+            ),
+            mock.patch("common.llm_config_cli.save_enabled_selection", return_value=record) as save,
+            mock.patch("common.llm_config_cli.set_user_env") as set_env,
+            mock.patch(
+                "common.llm_config_cli.workspace_llm_json_path",
+                return_value=Path("llm.json"),
+            ),
+            mock.patch("commander.dispatch.send_llm_config") as send,
+        ):
+            code = config_main(["--llm-provider", "zhipu", "--api-key", " sk-z "])
+        self.assertEqual(code, 0)
+        save.assert_called_once_with("zhipu", "GLM-4.7-Flash")
+        set_env.assert_called_once_with("ZHIPU_API_KEY", "sk-z")
+        send.assert_not_called()
+
+    def test_cli_config_does_not_start_run_loop(self) -> None:
+        import attacker.cli as attacker_cli
+
+        with (
+            mock.patch("attacker.config_control.main", return_value=0) as config,
+            mock.patch("attacker.cli.run_loop") as run,
+            mock.patch("attacker.cli.configure_attacker_logging") as logs,
+        ):
+            code = attacker_cli.main(["config", "--llm-provider", "zhipu", "--api-key", "sk-z"])
+        self.assertEqual(code, 0)
+        config.assert_called_once_with(["--llm-provider", "zhipu", "--api-key", "sk-z"])
+        run.assert_not_called()
+        logs.assert_not_called()
+
+
 class SoldierLlmConfigTests(unittest.TestCase):
     def test_apply_llm_config_sets_user_env_without_echoing_key(self) -> None:
         payload = {
@@ -386,17 +500,20 @@ class SoldierLlmConfigTests(unittest.TestCase):
         ):
             ack = soldier.apply_llm_config(payload)
         save.assert_called_once_with("deepseek", "deepseek-v4-flash")
-        set_env.assert_has_calls(
-            [
-                mock.call("DEEPSEEK_API_KEY", "sk-live"),
-                mock.call(LLM_PROVIDER_ENV, "deepseek"),
-                mock.call(LLM_MODEL_ENV, "deepseek-v4-flash"),
-            ]
-        )
+        set_env.assert_called_once_with("DEEPSEEK_API_KEY", "sk-live")
         self.assertEqual(ack["status"], "configured")
         self.assertEqual(ack["model"], "deepseek-v4-flash")
         self.assertTrue(ack["json_written"])
         self.assertNotIn("api_key", ack)
+
+    def test_apply_llm_config_rejects_unsupported_provider(self) -> None:
+        with mock.patch("soldier.soldier.set_user_env") as set_env:
+            with self.assertRaises(ValueError) as ctx:
+                soldier.apply_llm_config(
+                    {"type": "llm_config", "provider": "openai", "api_key": "sk", "model": "gpt-4o"}
+                )
+        set_env.assert_not_called()
+        self.assertIn("Unsupported", str(ctx.exception))
 
     def test_apply_llm_config_flips_enable_in_workspace_json(self) -> None:
         payload = {
@@ -430,14 +547,33 @@ class SoldierLlmConfigTests(unittest.TestCase):
             self.assertTrue(ack["json_written"])
             self.assertNotIn("api_key", path.read_text(encoding="utf-8"))
 
-    def test_build_opencode_argv_prefers_stored_selection(self) -> None:
-        values = {LLM_PROVIDER_ENV: "zhipu", LLM_MODEL_ENV: "GLM-4.7-Flash"}
+    def test_build_opencode_argv_uses_llm_json_enable(self) -> None:
+        record = ProviderRecord(
+            name="zhipu",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            models="GLM-4.7-Flash",
+            env="ZHIPU_API_KEY",
+            enable=True,
+        )
         with (
             mock.patch("soldier.soldier.resolve_opencode_executable", return_value="opencode"),
-            mock.patch("soldier.soldier.get_user_env", side_effect=lambda key: values.get(key, "")),
+            mock.patch("soldier.soldier.enabled_provider", return_value=("zhipu", record)),
         ):
             argv = soldier.build_opencode_argv("hi")
         self.assertEqual(argv[argv.index("--model") + 1], "zhipu/GLM-4.7-Flash")
+
+    def test_build_opencode_argv_rejects_unsupported_provider(self) -> None:
+        with (
+            mock.patch("soldier.soldier.resolve_opencode_executable", return_value="opencode"),
+            mock.patch(
+                "soldier.soldier.enabled_provider",
+                side_effect=ValueError("Unsupported LLM provider 'openai'; expected one of: deepseek, zhipu"),
+            ),
+        ):
+            with self.assertRaises(ValueError) as ctx:
+                soldier.build_opencode_argv("hi")
+        self.assertIn("Unsupported", str(ctx.exception))
+        self.assertIn("deepseek", str(ctx.exception))
 
     def test_handle_dispatch_applies_llm_config_without_opencode(self) -> None:
         conn = FakeDispatchConnection()

@@ -302,10 +302,34 @@ class RunOpencodeCwdTests(unittest.TestCase):
         completed = mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("attacker.execute.resolve_opencode_executable", return_value="opencode"):
             with mock.patch("attacker.execute.resolve_attacker_skill_root", return_value=skill):
-                with mock.patch("attacker.execute.subprocess.run", return_value=completed) as run:
-                    code, _out, _err = run_opencode("hello", 10)
+                with mock.patch(
+                    "attacker.execute.runtime_opencode_model_spec",
+                    return_value="deepseek/deepseek-v4-flash",
+                ):
+                    with mock.patch("attacker.execute.subprocess.run", return_value=completed) as run:
+                        code, _out, _err = run_opencode("hello", 10)
         self.assertEqual(code, 0)
         self.assertEqual(run.call_args.kwargs.get("cwd"), str(skill))
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index("--model") + 1], "deepseek/deepseek-v4-flash")
+
+    def test_build_opencode_argv_uses_llm_json_enable(self) -> None:
+        from common.llm_catalog import ProviderRecord
+        from attacker.execute import build_opencode_argv
+
+        record = ProviderRecord(
+            name="zhipu",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            models="GLM-4.7-Flash",
+            env="ZHIPU_API_KEY",
+            enable=True,
+        )
+        with (
+            mock.patch("attacker.execute.resolve_opencode_executable", return_value="opencode"),
+            mock.patch("attacker.execute.enabled_provider", return_value=("zhipu", record)),
+        ):
+            argv = build_opencode_argv("hi")
+        self.assertEqual(argv[argv.index("--model") + 1], "zhipu/GLM-4.7-Flash")
 
 
 class RunLoopTests(unittest.TestCase):

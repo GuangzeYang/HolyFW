@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from common import attacker_workspace_dir
 from common.deepseek_client import build_deepseek_client
+from common.llm_catalog import format_enabled_llm_log, llm_json_path
 from common.time_model import TimeModelConfig, generate_schedule
 from common.schedule_shift import (
     ORIGIN_HOUR,
@@ -359,6 +360,10 @@ def run_loop(
     )
     logger.info("Task file: %s", task_path)
     logger.info("Dataset directory: %s", logs_dir / initial_day.isoformat())
+    try:
+        logger.info("%s catalog=%s", format_enabled_llm_log(), llm_json_path())
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error("LLM catalog: %s", exc)
 
     client = agent_client
     system_prompt = prompt_template = ""
@@ -399,8 +404,14 @@ def run_loop(
                 logger.info("Filled batch via injected callback; saved %s", task_path)
                 return filled
             if client is None:
-                logger.info("Building DeepSeek client")
+                logger.info("Building LLM client")
                 client = build_deepseek_client(generator)
+                logger.info(
+                    "LLM provider=%s model=%s base_url=%s",
+                    client.provider_name,
+                    client.model,
+                    client.api_base_url,
+                )
             system_prompt, prompt_template, state = load_generation_resources()
             filled = fill_next_batch(
                 current,

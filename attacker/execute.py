@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from common import assign_task_id, strip_opencode_run_prefix
+from common.llm_catalog import enabled_provider, opencode_model_spec
 from common.task_markdown import OPENCODE_RUN_FLAGS, format_opencode_session
 
 from attacker.capture_paths import OUTPUT_DIR_ENV, TASK_ID_ENV, resolve_attacker_skill_root
@@ -45,14 +46,34 @@ def resolve_opencode_executable() -> str:
 
 
 def build_opencode_argv(prompt: str) -> list[str]:
-    return [resolve_opencode_executable(), "run", *OPENCODE_RUN_FLAGS, prompt]
+    return [
+        resolve_opencode_executable(),
+        "run",
+        *OPENCODE_RUN_FLAGS,
+        "--model",
+        runtime_opencode_model_spec(),
+        prompt,
+    ]
+
+
+def runtime_opencode_model_spec() -> str:
+    name, record = enabled_provider()
+    return opencode_model_spec(name, record)
 
 
 def format_opencode_command(prompt: str, argv: list[str] | None = None) -> str:
     if argv:
         return " ".join(shlex.quote(str(part)) for part in argv)
     if prompt:
-        return " ".join(shlex.quote(part) for part in ("opencode", "run", *OPENCODE_RUN_FLAGS, prompt))
+        try:
+            spec = runtime_opencode_model_spec()
+        except (FileNotFoundError, ValueError):
+            spec = ""
+        parts = ["opencode", "run", *OPENCODE_RUN_FLAGS]
+        if spec:
+            parts.extend(["--model", spec])
+        parts.append(prompt)
+        return " ".join(shlex.quote(part) for part in parts)
     return ""
 
 

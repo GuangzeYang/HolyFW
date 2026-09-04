@@ -362,6 +362,12 @@ class RoleTaskFileService:
                 if self._refresh_agent_client:
                     generator_config = get_generator_config(load_runtime_config())
                     self.agent_client = build_deepseek_client(generator_config)
+                    logging.info(
+                        "LLM provider=%s model=%s base_url=%s",
+                        self.agent_client.provider_name,
+                        self.agent_client.model,
+                        getattr(self.agent_client, "api_base_url", ""),
+                    )
                 result = generate_role_tasks(
                     source="role_file_service",
                     final_file=role_file,

@@ -9,8 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 LLM_JSON_NAME = "llm.json"
-LLM_PROVIDER_ENV = "HOLYFW_LLM_PROVIDER"
-LLM_MODEL_ENV = "HOLYFW_LLM_MODEL"
+SUPPORTED_PROVIDERS = frozenset({"deepseek", "zhipu"})
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -27,24 +26,21 @@ def workspace_llm_json_path() -> Path:
     """Return the writable checkout llm.json. Never a site-packages copy."""
     from common import is_install_tree, locate_holyfw_root
 
-    path = locate_holyfw_root() / LLM_JSON_NAME
+    path = locate_holyfw_root(package_hint=Path(__file__)) / LLM_JSON_NAME
     if is_install_tree(path):
         raise FileNotFoundError(f"Refusing packaged llm.json path: {path}")
     return path
 
 
 def llm_json_path() -> Path:
-    """Return the workspace llm.json, else the packaged copy."""
-    try:
-        candidate = workspace_llm_json_path()
-        if candidate.is_file():
-            return candidate
-    except FileNotFoundError:
-        pass
-    found = _bundled_llm_json()
-    if found is None or not found.is_file():
-        raise FileNotFoundError(f"{LLM_JSON_NAME} not found in the workspace or package")
-    return found
+    """Return the workspace llm.json. Never the packaged default catalog."""
+    candidate = workspace_llm_json_path()
+    if candidate.is_file():
+        return candidate
+    raise FileNotFoundError(
+        f"{LLM_JSON_NAME} not found at {candidate}. "
+        "Run from the HolyFW workspace, or set HOLYFW_ROOT to that workspace."
+    )
 
 
 def _bundled_llm_json() -> Path | None:
@@ -84,6 +80,11 @@ def load_llm_catalog(path: Path | None = None) -> dict[str, ProviderRecord]:
         key = str(name).strip()
         if not key:
             raise ValueError(f"{source} has an empty provider name")
+        if key not in SUPPORTED_PROVIDERS:
+            allowed = ", ".join(sorted(SUPPORTED_PROVIDERS))
+            raise ValueError(
+                f"{source} provider {key!r} is not supported; expected one of: {allowed}"
+            )
         record = _parse_provider(key, body, source=source)
         catalog[key] = record
         if record.enable:
@@ -99,12 +100,27 @@ def enabled_provider(path: Path | None = None) -> tuple[str, ProviderRecord]:
     catalog = load_llm_catalog(path)
     for name, record in catalog.items():
         if record.enable:
-            return name, record
+            return require_supported_provider(name), record
     raise ValueError("llm.json must have exactly one provider with enable=true")
 
 
-def lookup_provider(name: str, path: Path | None = None) -> ProviderRecord:
+def format_enabled_llm_log(path: Path | None = None) -> str:
+    """Return a commander log line for the enabled catalog entry."""
+    name, record = enabled_provider(path)
+    return f"LLM provider={name} model={record.models} base_url={record.base_url}"
+
+
+def require_supported_provider(name: str) -> str:
+    """Return a supported provider name or raise. Does not execute anything else."""
     key = (name or "").strip()
+    if key not in SUPPORTED_PROVIDERS:
+        allowed = ", ".join(sorted(SUPPORTED_PROVIDERS))
+        raise ValueError(f"Unsupported LLM provider {key!r}; expected one of: {allowed}")
+    return key
+
+
+def lookup_provider(name: str, path: Path | None = None) -> ProviderRecord:
+    key = require_supported_provider(name)
     catalog = load_llm_catalog(path)
     record = catalog.get(key)
     if record is None:
@@ -130,6 +146,7 @@ def resolve_config_selection(
         name = record.name
     else:
         name, record = enabled_provider(path)
+    require_supported_provider(name)
     resolved_model = (model or "").strip() or record.models
     if not resolved_model:
         raise ValueError("model is empty")
@@ -145,7 +162,7 @@ def save_enabled_selection(name: str, models: str, path: Path | None = None) -> 
         raise ValueError(f"Refusing to write packaged llm.json: {source}")
     if not source.is_file():
         raise FileNotFoundError(f"Cannot write {source}; need a workspace llm.json")
-    key = (name or "").strip()
+    key = require_supported_provider(name)
     model = (models or "").strip()
     if not key or not model:
         raise ValueError("provider name and model are required")

@@ -565,6 +565,12 @@ def main(argv: list[str] | None = None) -> None:
     logging.info("Starting commander, logs: %s", log_file)
     logging.info("Commander workspace: %s", logs_dir.parent)
     logging.info("Task file directory: %s", data_dir.resolve())
+    try:
+        from common.llm_catalog import format_enabled_llm_log, llm_json_path
+
+        logging.info("%s catalog=%s", format_enabled_llm_log(), llm_json_path())
+    except (FileNotFoundError, ValueError) as exc:
+        logging.error("LLM catalog: %s", exc)
     resolved_base_time = args.base_time if args.base_time is not None else scanner_config["base_time"]
     logging.info("Schedule base_time: %s", resolved_base_time)
 

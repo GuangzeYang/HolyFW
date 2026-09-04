@@ -79,7 +79,8 @@ HolyFramework/
 │   ├── role_task/                         # Directory containing shared daily task files
 │   └── logs/                              # Commander and dispatch log directory
 ├── attacker/
-│   ├── cli.py                             # Default command starts the attacker scheduler
+│   ├── cli.py                             # Default command starts the attacker scheduler; attacker config --api-key
+│   ├── config_control.py                  # attacker config --api-key: llm.json + user env (no soldier fan-out)
 │   ├── runtime.py                         # NHPP schedule, batch-of-5 fill, serial local execution
 │   ├── generation.py                      # LLM batch requests using skill prompts and state.json
 │   ├── execute.py                         # Local opencode run plus per-task Markdown transcript
@@ -87,7 +88,7 @@ HolyFramework/
 │   ├── task_record.py                     # Markdown transcript writer
 │   ├── breaker.py                         # attacker breaker reset: task file and/or state.json
 │   ├── AGENTS.md                          # Attacker OpenCode rules
-│   ├── opencode.json                      # Attacker permission + DeepSeek provider (no MCP)
+│   ├── opencode.json                      # Attacker permission + DeepSeek/Zhipu provider env keys (no MCP)
 │   ├── generator_system.md                # Task-generation system prompt
 │   ├── attacker_prompt_template.md        # Task-string grammar for the generator
 │   ├── skills/ad-attack/                  # Attacker OpenCode skill pack
@@ -202,9 +203,9 @@ Before running the project, review at least these configuration files:
 
 #### `llm.json`
 
-Root-level LLM catalog. Each key under `provider` is a vendor with fixed `base_url`, `models`, `env`, and `enable`. Exactly one provider must have `"enable": true`. The API key is never stored here.
+Root-level LLM catalog. Each key under `provider` must be one of the supported vendors (`deepseek`, `zhipu`). Any other name in `llm.json`, `--llm-provider`, or a stored selection is rejected and does not run. Exactly one provider must have `"enable": true`. The API key is never stored here.
 
-Commander generation reads `base_url` and `models` from the enabled entry on every generate. Soldier passes `--model {provider}/{model}` to `opencode run` (see [OpenCode CLI](https://opencode.ai/docs/zh-cn/cli/#run-1)). `--api-key` is required; `--llm-provider` and `--model` are optional and default to the current `enable: true` entry:
+Commander generation POSTs to the `enable: true` entry's `base_url` (OpenAI-compatible `/chat/completions`) using that entry's `models`. Soldier only passes `--model {provider}/{model}` to `opencode run`; OpenCode switches the vendor endpoint from that spec (see [OpenCode CLI](https://opencode.ai/docs/zh-cn/cli/#run-1)). `--api-key` is required; `--llm-provider` and `--model` are optional and default to the current `enable: true` entry:
 
 ```bash
 commander config --api-key <secret>
@@ -212,7 +213,7 @@ commander config --llm-provider zhipu --api-key <secret>
 commander config --llm-provider zhipu --api-key <secret> --model GLM-4.7-Flash
 ```
 
-That command writes the selected provider's `env` as a Windows user-level environment variable (creates it if missing), always updates workspace `llm.json` enable/models (exactly one `enable: true`), and pushes provider, key, and model to every soldier. Each soldier writes the same enable/models into its own workspace `llm.json`. After updating soldier code, restart `soldier listen` on every role host; an old listen process treats config as a task and returns `Missing or invalid task_ref`.
+That command updates workspace `llm.json` enable/models (exactly one `enable: true`), writes the selected provider's API-key env var, and pushes provider, key, and model to every soldier. Each soldier writes the same enable/models into its own workspace `llm.json`. After `commander config`, restart a long-running `commander` so generation re-reads `llm.json`. After updating soldier code, restart `soldier listen` on every role host; an old listen process treats config as a task and returns `Missing or invalid task_ref`.
 
 #### `commander/config.json`
 
@@ -220,7 +221,7 @@ This is the main `commander` configuration file. It controls listening, scanning
 
 - `commander` listens on `0.0.0.0:38471`
 - Scan interval: `60` seconds
-- Task generation uses the enabled provider in `llm.json` (`base_url` and `models`). Timeout and token limits still come from `generator` in `config.json` (`request_timeout_seconds`, `max_tokens`).
+- Task generation POSTs to the `llm.json` `enable: true` entry (`base_url` and `models`). Timeout and token limits still come from `generator` in `config.json` (`request_timeout_seconds`, `max_tokens`). `generator.api_base_url` / `generator.model` are leftover fields and are not used for the HTTP request.
 
 The API key is read from the user-level environment variable named by `llm.json` (`DEEPSEEK_API_KEY` or `ZHIPU_API_KEY`). It is not stored in `commander/config.json` or `llm.json`. `commander build` writes `{env:...}` placeholders into `~/.config/opencode/opencode.json`. See `commander config` and the generator section below.
 
@@ -269,7 +270,7 @@ Roles: `hr`, `accountancy`, `manager`, `programmer`, `victim`.
 
 #### Install OpenCode skills on an attacker host
 
-Copies skills from `attacker/skills/` into `~/.config/opencode/skills/`, writes `~/.config/opencode/opencode.json` from `attacker/opencode.json` (permission + DeepSeek provider only; no MCP), and writes `~/.config/opencode/AGENTS.md` from `attacker/AGENTS.md`. Clears `%USERPROFILE%\.cache\opencode` (not `auth.json`). Does not install Playwright. Run once on the attacker host:
+Copies skills from `attacker/skills/` into `~/.config/opencode/skills/`, writes `~/.config/opencode/opencode.json` from `attacker/opencode.json` (permission + DeepSeek/Zhipu provider env keys; no MCP), and writes `~/.config/opencode/AGENTS.md` from `attacker/AGENTS.md`. Clears `%USERPROFILE%\.cache\opencode` (not `auth.json`). Does not install Playwright. Run once on the attacker host:
 
 ```bash
 attacker build
@@ -291,11 +292,13 @@ commander build --test
 
 #### Set the LLM API key (and optionally provider/model)
 
-`--api-key` is required. `--llm-provider` and `--model` default to the current `llm.json` enable entry. Every run updates workspace `llm.json` on commander and on each soldier (exactly one `enable: true`) and pushes `provider` + key + `model`. The key is never written to JSON. Update and restart `soldier listen` on all role hosts first; otherwise old processes return `Missing or invalid task_ref`.
+`--api-key` is required. `--llm-provider` and `--model` default to the current `llm.json` enable entry. `commander config` also pushes `provider` + key + `model` to soldiers. `attacker config` uses the same flags and the same workspace `llm.json`, but does not contact soldiers. The key is never written to JSON. Restart a long-running `commander` or `attacker` after config so it re-reads `llm.json`. Update and restart `soldier listen` on all role hosts first; otherwise old processes return `Missing or invalid task_ref`.
 
 ```bash
 commander config --api-key <secret>
 commander config --llm-provider zhipu --api-key <secret> --model GLM-4.7-Flash
+attacker config --api-key <secret>
+attacker config --llm-provider zhipu --api-key <secret> --model GLM-4.7-Flash
 ```
 
 #### Start soldier
@@ -354,10 +357,11 @@ regardless of how late they are. With `--debug`, tasks more than
 
 #### Start attacker
 
-On the attacker host, install skills once with `attacker build`, set `DEEPSEEK_API_KEY`, then start the scheduler. With no subcommand it runs immediately, same as `attacker run`:
+On the attacker host, install skills once with `attacker build`, set the LLM key with the same flags as commander, then start the scheduler. HTTP generation and `opencode run --model` both follow workspace `llm.json` (`enable: true`). With no subcommand it runs immediately, same as `attacker run`:
 
 ```bash
 attacker build
+attacker config --llm-provider zhipu --api-key <secret>
 attacker
 ```
 
@@ -485,7 +489,7 @@ By default, the system uses `smtp.qq.com:465` with SSL. Email delivery failures 
 
 ### generator
 
-Controls retry/timeout for task generation (`max_attempts`, `request_timeout_seconds`, `max_tokens`). Runtime `base_url` and model name come from the enabled provider in `llm.json`, not from `generator.api_base_url` / `generator.model`.
+Controls retry/timeout for task generation (`max_attempts`, `request_timeout_seconds`, `max_tokens`). Runtime `base_url` and model name come from the enabled provider in `llm.json`, not from `generator.api_base_url` / `generator.model`. Commander logs `LLM provider=... model=... base_url=...` at startup, on each generate, and in `agent_responses_*/` interactive files.
 
 The API key is not stored in `config.json` or `llm.json`. Set it with:
 
@@ -493,7 +497,7 @@ The API key is not stored in `config.json` or `llm.json`. Set it with:
 commander config --api-key <secret>
 ```
 
-Optional `--llm-provider` and `--model` select a catalog entry and model (only `--api-key` is required). That writes the selected provider's user-level environment variable and pushes provider, key, and model to soldiers. If the variable is missing or blank, Python client construction fails with an error naming that variable.
+Optional `--llm-provider` and `--model` select a catalog entry and model (only `--api-key` is required). That flips `llm.json` enable/models, writes the selected provider's API-key env var, and pushes provider, key, and model to soldiers. If the API-key variable is missing or blank, Python client construction fails with an error naming that variable.
 
 ### paths
 
@@ -637,7 +641,7 @@ Attacker records live under `attacker/logs/`:
 - Both `commander` and `soldier` use bounded thread pools for TCP processing, with a default maximum of 6 concurrent workers.
 - Dispatch binds a task as `waiting` before sending it to `soldier`. If sending fails, the task is rolled back to a retryable state.
 - If `soldier` cannot report to `commander`, the report is added to a local queue and retried up to three times in the background.
-- The generator uses the enabled provider in `llm.json`. Set the key with `commander config --api-key` (optional `--llm-provider` / `--model`). After updating soldier, restart `soldier listen` on every role host so config is not treated as a task. Run `soldier build` once after adding a new OpenCode provider block (for example zhipu).
+- The generator POSTs to the `llm.json` `enable: true` `base_url` / `models`. Set the key with `commander config --api-key` (optional `--llm-provider` / `--model`), then restart a long-running `commander`. After updating soldier, restart `soldier listen` on every role host so config is not treated as a task. Run `soldier build` once after adding a new OpenCode provider block (for example zhipu).
 
 ## Development and Regression Testing
 

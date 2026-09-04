@@ -359,6 +359,7 @@ class LoggingSetupTests(unittest.TestCase):
                 attempt=3,
                 provider="deepseek",
                 model="deepseek-chat",
+                base_url="https://api.deepseek.com",
                 status_code=200,
                 finish_reason="stop",
                 response_text="role work content",
@@ -376,6 +377,8 @@ class LoggingSetupTests(unittest.TestCase):
             self.assertIn("attempt: 3", content)
             self.assertIn("note: interactive", content)
             self.assertIn("caller: generate_role_task", content)
+            self.assertIn("model: deepseek-chat", content)
+            self.assertIn("base_url: https://api.deepseek.com", content)
             self.assertIn("finish_reason: stop", content)
             self.assertIn("request_state: finished", content)
             self.assertNotIn("--- PROMPT_TEXT ---", content)
@@ -477,6 +480,7 @@ class DeepSeekClientTests(unittest.TestCase):
                 DeepSeekAgentClient(self.config).request_completion("hello")
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("bad request", ctx.exception.response_text)
+        self.assertIn("LLM API (deepseek)", str(ctx.exception))
 
     def test_request_deepseek_completion_raises_timeout_on_url_error(self) -> None:
         with mock.patch.object(
@@ -505,13 +509,61 @@ class DeepSeekClientTests(unittest.TestCase):
             enable=True,
         )
         with (
-            mock.patch.object(deepseek_client, "enabled_provider", return_value=("deepseek", record)),
+            mock.patch.object(
+                deepseek_client,
+                "enabled_provider",
+                return_value=("deepseek", record),
+            ),
             mock.patch.object(deepseek_client, "get_user_env", return_value="env-secret"),
         ):
             client = deepseek_client.build_deepseek_client(generator_config)
         self.assertEqual(client.config.api_key, "env-secret")
         self.assertEqual(client.config.model, "deepseek-v4-flash")
         self.assertEqual(client.provider_name, "deepseek")
+
+    def test_build_deepseek_client_posts_to_zhipu_when_selected(self) -> None:
+        from common.llm_catalog import ProviderRecord
+
+        generator_config = {
+            "request_timeout_seconds": 10,
+            "max_tokens": 8192,
+        }
+        record = ProviderRecord(
+            name="zhipu",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            models="GLM-4.7-Flash",
+            env="ZHIPU_API_KEY",
+            enable=True,
+        )
+        with (
+            mock.patch.object(
+                deepseek_client,
+                "enabled_provider",
+                return_value=("zhipu", record),
+            ),
+            mock.patch.object(deepseek_client, "get_user_env", return_value="zhipu-secret"),
+        ):
+            client = deepseek_client.build_deepseek_client(generator_config)
+        self.assertEqual(client.provider_name, "zhipu")
+        self.assertEqual(client.config.model, "GLM-4.7-Flash")
+        self.assertEqual(client.config.api_base_url, "https://open.bigmodel.cn/api/paas/v4")
+        payload = {
+            "model": "GLM-4.7-Flash",
+            "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
+        }
+        with mock.patch.object(
+            deepseek_client.urllib.request,
+            "urlopen",
+            return_value=FakeHTTPResponse(payload),
+        ) as mocked:
+            client.request_completion("hello")
+        request_obj = mocked.call_args.args[0]
+        self.assertEqual(
+            request_obj.full_url,
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        )
+        body = json.loads(request_obj.data.decode("utf-8"))
+        self.assertEqual(body["model"], "GLM-4.7-Flash")
 
     def test_build_deepseek_client_raises_when_env_missing(self) -> None:
         from common.llm_catalog import ProviderRecord
@@ -530,7 +582,11 @@ class DeepSeekClientTests(unittest.TestCase):
             enable=True,
         )
         with (
-            mock.patch.object(deepseek_client, "enabled_provider", return_value=("deepseek", record)),
+            mock.patch.object(
+                deepseek_client,
+                "enabled_provider",
+                return_value=("deepseek", record),
+            ),
             mock.patch.object(deepseek_client, "get_user_env", return_value=""),
         ):
             with self.assertRaises(ValueError) as ctx:
@@ -1069,11 +1125,19 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertEqual(len(response_logs), 1)
             response_log_text = response_logs[0].read_text(encoding="utf-8")
             self.assertIn("provider: fake", response_log_text)
+            self.assertIn("model: fake-model", response_log_text)
+            self.assertIn("base_url:", response_log_text)
             self.assertIn("role: hr", response_log_text)
             self.assertIn("note: interactive", response_log_text)
             self.assertIn("--- RESPONSE_TEXT ---", response_log_text)
             self.assertNotIn("--- PROMPT_TEXT ---", response_log_text)
             self.assertTrue(any("Successfully generated unified tasks" in item for item in statuses))
+            self.assertTrue(
+                any(
+                    item.startswith("LLM provider=fake") and "model=fake-model" in item
+                    for item in statuses
+                )
+            )
 
     def test_generate_role_tasks_uses_realized_schedule_length(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

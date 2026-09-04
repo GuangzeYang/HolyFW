@@ -6,8 +6,11 @@ import argparse
 import json
 import sys
 
-from common.llm_catalog import resolve_config_selection, save_enabled_selection
-from common.user_env import set_user_env
+from common.llm_config_cli import (
+    add_llm_config_arguments,
+    apply_local_llm_config,
+    format_local_config_line,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,47 +21,22 @@ def build_parser() -> argparse.ArgumentParser:
             "then push the selection to soldiers"
         ),
     )
-    parser.add_argument(
-        "--api-key",
-        required=True,
-        help="API key for the selected provider (never stored in JSON)",
-    )
-    parser.add_argument(
-        "--llm-provider",
-        default=None,
-        help="provider name from llm.json (default: the enable=true entry)",
-    )
-    parser.add_argument(
-        "--model",
-        default=None,
-        help="model id for OpenCode --model provider/model (default: that provider's models in llm.json)",
-    )
+    add_llm_config_arguments(parser)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    api_key = (args.api_key or "").strip()
-    if not api_key:
-        print("error: --api-key is empty", file=sys.stderr)
-        return 1
-    if args.llm_provider is not None and not str(args.llm_provider).strip():
-        print("error: --llm-provider is empty", file=sys.stderr)
-        return 1
-    if args.model is not None and not str(args.model).strip():
-        print("error: --model is empty", file=sys.stderr)
-        return 1
     try:
-        name, record, model, _persist = resolve_config_selection(args.llm_provider, args.model)
-        record = save_enabled_selection(name, model)
-        set_user_env(record.env, api_key)
+        name, record, model, catalog = apply_local_llm_config(
+            api_key=args.api_key,
+            llm_provider=args.llm_provider,
+            model=args.model,
+        )
     except (FileNotFoundError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(
-        f"local: set user environment {record.env} for provider {name} model {model}",
-        flush=True,
-    )
+    print(format_local_config_line(catalog, name, model, record.env), flush=True)
 
     from commander.dispatch import send_llm_config
     from commander.runtime_config import (
@@ -88,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{role}: fail {exc}", flush=True)
             failed += 1
             continue
-        resp = send_llm_config(host, port, name, api_key, model, timeout=timeout)
+        resp = send_llm_config(host, port, name, args.api_key.strip(), model, timeout=timeout)
         ok = bool(resp.get("ok"))
         status = str(resp.get("status") or ("ok" if ok else "fail"))
         extra = resp.get("error")

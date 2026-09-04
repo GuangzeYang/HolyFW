@@ -189,6 +189,20 @@ class AttackerCliRouteTests(unittest.TestCase):
         run.assert_not_called()
         logs.assert_not_called()
 
+    def test_config_does_not_start_run_loop(self) -> None:
+        import attacker.cli as attacker_cli
+
+        with (
+            mock.patch("attacker.config_control.main", return_value=0) as config,
+            mock.patch("attacker.cli.run_loop") as run,
+            mock.patch("attacker.cli.configure_attacker_logging") as logs,
+        ):
+            code = attacker_cli.main(["config", "--api-key", "sk-test"])
+        self.assertEqual(code, 0)
+        config.assert_called_once_with(["--api-key", "sk-test"])
+        run.assert_not_called()
+        logs.assert_not_called()
+
     def test_attacker_build_installs_from_package_dir(self) -> None:
         from attacker.host_build import run_build
 

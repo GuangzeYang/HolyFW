@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""DeepSeek-backed implementation of the abstract model request interface."""
+"""OpenAI-compatible HTTP client for commander/attacker task generation."""
 
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import time
 import urllib.error
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from common.agent_request_abc import AgentRequestABC, AgentRequestError, AgentResponse, AgentTimeoutError
-from common.llm_catalog import enabled_provider
+from common.llm_catalog import enabled_provider, llm_json_path
 from common.user_env import get_user_env
 
 DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
@@ -29,7 +30,7 @@ class DeepSeekConfig:
 
 
 class DeepSeekAgentClient(AgentRequestABC):
-    """DeepSeek implementation using the OpenAI-compatible chat completions API."""
+    """OpenAI-compatible chat completions client (DeepSeek, Zhipu, and similar)."""
 
     def __init__(self, config: DeepSeekConfig) -> None:
         self.config = config
@@ -43,8 +44,15 @@ class DeepSeekAgentClient(AgentRequestABC):
         return self.config.model
 
     @property
+    def api_base_url(self) -> str:
+        return self.config.api_base_url
+
+    @property
     def request_timeout_seconds(self) -> int:
         return self.config.request_timeout_seconds
+
+    def _api_label(self) -> str:
+        return f"LLM API ({self.config.provider_name})"
 
     def request_completion(
         self,
@@ -73,6 +81,13 @@ class DeepSeekAgentClient(AgentRequestABC):
             },
             method="POST",
         )
+        logging.info(
+            "LLM HTTP POST provider=%s model=%s base_url=%s endpoint=%s",
+            self.config.provider_name,
+            self.config.model,
+            self.config.api_base_url,
+            endpoint,
+        )
         start = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=self.config.request_timeout_seconds) as response:
@@ -82,7 +97,7 @@ class DeepSeekAgentClient(AgentRequestABC):
             elapsed = time.monotonic() - start
             raw_text = exc.read().decode("utf-8", errors="replace")
             raise AgentRequestError(
-                f"DeepSeek API returned HTTP {exc.code}",
+                f"{self._api_label()} returned HTTP {exc.code}",
                 status_code=exc.code,
                 response_text=raw_text,
                 elapsed_seconds=elapsed,
@@ -90,7 +105,7 @@ class DeepSeekAgentClient(AgentRequestABC):
         except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
             elapsed = time.monotonic() - start
             raise AgentTimeoutError(
-                f"DeepSeek API request timed out or failed to connect: {exc}",
+                f"{self._api_label()} request timed out or failed to connect: {exc}",
                 response_text="",
                 elapsed_seconds=elapsed,
             ) from None
@@ -100,7 +115,7 @@ class DeepSeekAgentClient(AgentRequestABC):
             payload_json = json.loads(raw_text)
         except json.JSONDecodeError:
             raise AgentRequestError(
-                "DeepSeek API response was not valid JSON",
+                f"{self._api_label()} response was not valid JSON",
                 status_code=status_code,
                 response_text=raw_text,
                 elapsed_seconds=elapsed,
@@ -132,6 +147,17 @@ def build_deepseek_client(generator_config: dict[str, Any]) -> DeepSeekAgentClie
         request_timeout_seconds=int(generator_config["request_timeout_seconds"]),
         max_tokens=int(generator_config["max_tokens"]),
         provider_name=name,
+    )
+    try:
+        catalog_path = str(llm_json_path())
+    except FileNotFoundError:
+        catalog_path = "(missing)"
+    logging.info(
+        "LLM provider=%s model=%s base_url=%s catalog=%s",
+        name,
+        record.models,
+        record.base_url,
+        catalog_path,
     )
     return DeepSeekAgentClient(config)
 

@@ -84,6 +84,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         while True:
             agent_client = build_deepseek_client(generator_config)
+            emit_status(
+                f"LLM provider={agent_client.provider_name} "
+                f"model={agent_client.model} base_url={agent_client.api_base_url}"
+            )
             _, output_file = build_controlled_task_file_paths(output_dir, date.today())
             result = generate_role_tasks(
                 source="generate_role_task",

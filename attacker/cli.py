@@ -44,6 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="cmd", help="subcommand")
 
+    sub.add_parser(
+        "config",
+        help="set LLM API key (required); optional --llm-provider / --model",
+    )
+
     run_p = sub.add_parser("run", help="start the attacker scheduler (default; runs continuously across days)")
     run_p.add_argument("--date", default="", help="YYYY-MM-DD used for the task file (default: today, or yesterday if that shifted window is still open)")
     run_p.add_argument("--seed", type=int, default=None, help="Override the NHPP seed")
@@ -154,8 +159,13 @@ def cmd_breaker(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw and raw[0] == "config":
+        from attacker.config_control import main as config_main
+
+        return config_main(raw[1:])
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw)
     if args.cmd == "build":
         from attacker.host_build import run_build
 

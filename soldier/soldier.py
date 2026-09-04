@@ -56,13 +56,12 @@ from common.task_markdown import (
     write_task_markdown as write_shared_task_markdown,
 )
 from common.llm_catalog import (
-    LLM_MODEL_ENV,
-    LLM_PROVIDER_ENV,
     enabled_provider,
     lookup_provider,
+    opencode_model_spec,
     save_enabled_selection,
 )
-from common.user_env import get_user_env, set_user_env
+from common.user_env import set_user_env
 
 DEFAULT_PORT = 38471
 DEFAULT_LISTEN_PORT = 38472
@@ -928,12 +927,8 @@ def build_opencode_argv(prompt: str) -> list[str]:
 
 
 def runtime_opencode_model_spec() -> str:
-    name = get_user_env(LLM_PROVIDER_ENV)
-    model = get_user_env(LLM_MODEL_ENV)
-    if name and model:
-        return f"{name}/{model}"
-    catalog_name, record = enabled_provider()
-    return f"{name or catalog_name}/{model or record.models}"
+    name, record = enabled_provider()
+    return opencode_model_spec(name, record)
 
 
 def apply_llm_config(payload: dict) -> dict[str, object]:
@@ -947,8 +942,6 @@ def apply_llm_config(payload: dict) -> dict[str, object]:
     record = lookup_provider(provider.strip())
     resolved_model = model.strip() if isinstance(model, str) and model.strip() else record.models
     set_user_env(record.env, api_key.strip())
-    set_user_env(LLM_PROVIDER_ENV, provider.strip())
-    set_user_env(LLM_MODEL_ENV, resolved_model)
     json_written = False
     try:
         save_enabled_selection(provider.strip(), resolved_model)
