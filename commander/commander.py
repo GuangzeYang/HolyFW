@@ -46,8 +46,6 @@ except ImportError:
     from target_config import load_all_roles, load_daily_generation_roles
 from common import parse_task_ref
 
-from common.deepseek_client import build_deepseek_client
-
 try:
     from runtime_config import (
         get_dispatch_config,
@@ -249,7 +247,7 @@ class TaskScanner:
             self.data_dir,
             self.generation_roles,
             max_attempts=generator_config["max_attempts"],
-            agent_client=build_deepseek_client(generator_config),
+            agent_client=None,
             domain_resource_file=domain_resource_file,
             constraints_resource_file=constraints_resource_file,
             logs_dir=self.logs_dir,

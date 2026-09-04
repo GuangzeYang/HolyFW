@@ -140,7 +140,9 @@ The check also guarantees impacket is actually runnable: it reports `python_exec
 > python scripts/elevate.py --user ATYdemo --password '<pw>' -- whoami /groups
 >
 > # as a domain admin already in the local Administrators group
-> python scripts/elevate.py --user NDRTEST\<da> --password '<pw>' -- sysmon64.exe -c C:\path\sysmonconfig.xml
+> python scripts/elevate.py --user NDRTEST\<da> --password '<pw>' -- sysmon64.exe -c C:\path\attacker\sysmonconfig.xml
+>
+> Apply `attacker/sysmonconfig.xml` on the **attack host only**, by hand (`Sysmon64.exe -c <repo>\attacker\sysmonconfig.xml`). `attacker build` does not load Sysmon. Do not use this file on office role hosts.
 >
 > # the elevated process does NOT inherit this user's environment — pass PYTHONPATH etc. via --env
 > python scripts/elevate.py --user ATYdemo --password '<pw>' \

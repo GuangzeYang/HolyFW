@@ -488,6 +488,8 @@ class DeepSeekClientTests(unittest.TestCase):
                 DeepSeekAgentClient(self.config).request_completion("hello")
 
     def test_build_deepseek_client_reads_env_key(self) -> None:
+        from common.llm_catalog import ProviderRecord
+
         generator_config = {
             "api_base_url": "https://api.deepseek.com",
             "api_key": "json-key-must-be-ignored",
@@ -495,20 +497,42 @@ class DeepSeekClientTests(unittest.TestCase):
             "request_timeout_seconds": 10,
             "max_tokens": 8192,
         }
-        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "  env-secret  "}):
+        record = ProviderRecord(
+            name="deepseek",
+            base_url="https://api.deepseek.com",
+            models="deepseek-v4-flash",
+            env="DEEPSEEK_API_KEY",
+            enable=True,
+        )
+        with (
+            mock.patch.object(deepseek_client, "enabled_provider", return_value=("deepseek", record)),
+            mock.patch.object(deepseek_client, "get_user_env", return_value="env-secret"),
+        ):
             client = deepseek_client.build_deepseek_client(generator_config)
         self.assertEqual(client.config.api_key, "env-secret")
-        self.assertEqual(client.config.model, "deepseek-chat")
+        self.assertEqual(client.config.model, "deepseek-v4-flash")
+        self.assertEqual(client.provider_name, "deepseek")
 
     def test_build_deepseek_client_raises_when_env_missing(self) -> None:
+        from common.llm_catalog import ProviderRecord
+
         generator_config = {
             "api_base_url": "https://api.deepseek.com",
             "model": "deepseek-chat",
             "request_timeout_seconds": 10,
             "max_tokens": 8192,
         }
-        cleaned = {key: value for key, value in os.environ.items() if key != "DEEPSEEK_API_KEY"}
-        with mock.patch.dict(os.environ, cleaned, clear=True):
+        record = ProviderRecord(
+            name="deepseek",
+            base_url="https://api.deepseek.com",
+            models="deepseek-v4-flash",
+            env="DEEPSEEK_API_KEY",
+            enable=True,
+        )
+        with (
+            mock.patch.object(deepseek_client, "enabled_provider", return_value=("deepseek", record)),
+            mock.patch.object(deepseek_client, "get_user_env", return_value=""),
+        ):
             with self.assertRaises(ValueError) as ctx:
                 deepseek_client.build_deepseek_client(generator_config)
         self.assertIn("DEEPSEEK_API_KEY", str(ctx.exception))

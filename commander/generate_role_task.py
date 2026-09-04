@@ -80,10 +80,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     interval = generator_config["generation_retry_interval_seconds"]
-    agent_client = build_deepseek_client(generator_config)
 
     try:
         while True:
+            agent_client = build_deepseek_client(generator_config)
             _, output_file = build_controlled_task_file_paths(output_dir, date.today())
             result = generate_role_tasks(
                 source="generate_role_task",

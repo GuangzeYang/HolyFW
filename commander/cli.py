@@ -7,7 +7,7 @@ import sys
 from typing import Callable
 
 
-_SUBCOMMANDS = frozenset({"generate", "dispatch", "victim", "schedule", "breaker", "build"})
+_SUBCOMMANDS = frozenset({"generate", "dispatch", "victim", "schedule", "breaker", "build", "config"})
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -29,6 +29,7 @@ def _run_subcommand(name: str, argv: list[str]) -> int:
         "schedule": _run_schedule,
         "breaker": _run_breaker,
         "build": _run_build,
+        "config": _run_config,
     }
     return runners[name](argv)
 
@@ -47,6 +48,7 @@ def _print_root_help() -> int:
         "  breaker    Inspect breakers, or reset today's run (tasks, logs, breaker state)\n"
         "  build      Write DeepSeek provider env-key config into ~/.config/opencode\n"
         "             (add --test to verify OpenCode load and the DeepSeek provider)\n"
+        "  config     Set the enabled LLM provider API key (user env) and push it to soldiers\n"
     )
     parser.print_help()
     return 0
@@ -89,6 +91,12 @@ def _run_breaker(argv: list[str]) -> int:
     from commander import breaker_control
 
     return _run_with_sys_argv(breaker_control.main, argv)
+
+
+def _run_config(argv: list[str]) -> int:
+    from commander.config_control import main as config_main
+
+    return int(config_main(argv))
 
 
 def _run_build(argv: list[str]) -> int:

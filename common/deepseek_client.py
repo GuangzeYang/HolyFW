@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import os
 import socket
 import time
 import urllib.error
@@ -13,6 +12,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from common.agent_request_abc import AgentRequestABC, AgentRequestError, AgentResponse, AgentTimeoutError
+from common.llm_catalog import enabled_provider
+from common.user_env import get_user_env
 
 DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
 
@@ -24,6 +25,7 @@ class DeepSeekConfig:
     model: str
     request_timeout_seconds: int
     max_tokens: int
+    provider_name: str = "deepseek"
 
 
 class DeepSeekAgentClient(AgentRequestABC):
@@ -34,7 +36,7 @@ class DeepSeekAgentClient(AgentRequestABC):
 
     @property
     def provider_name(self) -> str:
-        return "deepseek"
+        return self.config.provider_name
 
     @property
     def model(self) -> str:
@@ -117,17 +119,19 @@ class DeepSeekAgentClient(AgentRequestABC):
 
 
 def build_deepseek_client(generator_config: dict[str, Any]) -> DeepSeekAgentClient:
-    api_key = os.environ.get(DEEPSEEK_API_KEY_ENV, "").strip()
+    name, record = enabled_provider()
+    api_key = get_user_env(record.env)
     if not api_key:
         raise ValueError(
-            f"DeepSeek API key is missing; set the {DEEPSEEK_API_KEY_ENV} environment variable"
+            f"LLM API key is missing; set the {record.env} user environment variable"
         )
     config = DeepSeekConfig(
-        api_base_url=str(generator_config["api_base_url"]),
+        api_base_url=record.base_url,
         api_key=api_key,
-        model=str(generator_config["model"]),
+        model=record.models,
         request_timeout_seconds=int(generator_config["request_timeout_seconds"]),
         max_tokens=int(generator_config["max_tokens"]),
+        provider_name=name,
     )
     return DeepSeekAgentClient(config)
 

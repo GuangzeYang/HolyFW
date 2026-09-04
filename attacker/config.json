@@ -28,5 +28,8 @@
   "paths": {
     "data_dir": "role_task",
     "logs_dir": "logs"
+  },
+  "extract": {
+    "lab_nets": ["172.16.24.0/24"]
   }
 }

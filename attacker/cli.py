@@ -9,6 +9,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from attacker.extract_pcap import add_extract_parser
 from attacker.logging_setup import configure_attacker_logging
 from attacker.runtime import load_config, resolve_logs_dir, resolve_workspace, run_loop
 from attacker.task_file import load_attacker_tasks, tasks_file_path
@@ -88,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="only delete today's task file; leave state.json and changes.json",
     )
     reset_p.add_argument("--date", default="", help="YYYY-MM-DD (default: today)")
+    add_extract_parser(sub)
     return parser
 
 
@@ -113,6 +115,19 @@ def cmd_show(*, config_path: Path | None, day: date) -> int:
     print(json.dumps(tasks, ensure_ascii=False, indent=2))
     print(f"# task file: {path}", flush=True)
     return 0
+
+
+def cmd_extract(args: argparse.Namespace) -> int:
+    from attacker.extract_pcap import run_extract
+
+    try:
+        config = load_config(args.config)
+        payload = run_extract(args, config=config)
+    except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError, RuntimeError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
+    return 0 if payload.get("ok") else 1
 
 
 def cmd_breaker(args: argparse.Namespace) -> int:
@@ -151,6 +166,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_show(config_path=args.config, day=_parse_day(args.date) or date.today())
     if args.cmd == "breaker":
         return cmd_breaker(args)
+    if args.cmd == "extract":
+        return cmd_extract(args)
     if args.cmd is None or args.cmd == "run":
         forever_flag = bool(getattr(args, "forever", False))
         once_flag = bool(getattr(args, "once", False))

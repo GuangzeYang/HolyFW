@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import IO, Mapping, Sequence
+from typing import IO, Callable, Mapping, Sequence
 import logging
 
 from filelock import FileLock, Timeout as FileLockTimeout
@@ -55,6 +55,8 @@ from common.task_markdown import (
     render_task_markdown as render_shared_task_markdown,
     write_task_markdown as write_shared_task_markdown,
 )
+from common.llm_catalog import enabled_provider, lookup_provider, opencode_model_spec
+from common.user_env import set_user_env
 
 DEFAULT_PORT = 38471
 DEFAULT_LISTEN_PORT = 38472
@@ -909,7 +911,33 @@ OPENCODE_PERMISSION_ALLOW: dict[str, object] = {
 
 
 def build_opencode_argv(prompt: str) -> list[str]:
-    return [resolve_opencode_executable(), "run", *OPENCODE_RUN_FLAGS, prompt]
+    name, record = enabled_provider()
+    return [
+        resolve_opencode_executable(),
+        "run",
+        *OPENCODE_RUN_FLAGS,
+        "--model",
+        opencode_model_spec(name, record),
+        prompt,
+    ]
+
+
+def apply_llm_config(payload: dict) -> dict[str, object]:
+    provider = payload.get("provider")
+    api_key = payload.get("api_key")
+    if not isinstance(provider, str) or not provider.strip():
+        raise ValueError("Missing or invalid provider")
+    if not isinstance(api_key, str) or not api_key.strip():
+        raise ValueError("Missing or invalid api_key")
+    record = lookup_provider(provider.strip())
+    set_user_env(record.env, api_key.strip())
+    logging.info("LLM config applied for provider %s", provider.strip())
+    return {
+        "ok": True,
+        "status": "configured",
+        "provider": provider.strip(),
+        "env": record.env,
+    }
 
 
 def opencode_run_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -1166,60 +1194,57 @@ def send_dispatch_response(conn: socket.socket, payload: dict) -> bool:
         return False
 
 
+def decode_dispatch_payload(raw: bytes) -> tuple[dict | None, str | None]:
+    if not raw.strip():
+        return None, "Empty request"
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, "JSON parsing failed"
+    if not isinstance(payload, dict):
+        return None, "Request body must be a JSON object"
+    return payload, None
+
+
+def read_dispatch_payload(conn: socket.socket) -> tuple[dict | None, str | None]:
+    try:
+        raw = recv_one_line(conn)
+    except ValueError as e:
+        return None, str(e)
+    return decode_dispatch_payload(raw)
+
+
 def handle_dispatch_connection(
     conn: socket.socket,
     commander_host: str,
     commander_port: int,
     timeout_sec: int,
+    payload: dict | None = None,
 ) -> None:
     logging.debug("Dispatch connection accepted")
     claim: ClaimResult | None = None
     try:
         conn.settimeout(timeout_sec + RUNNING_STALE_GRACE_SECONDS)
-        try:
-            raw = recv_one_line(conn)
-        except ValueError as e:
-            try:
-                conn.sendall(
-                    (json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False) + "\n").encode(
-                        "utf-8"
+        if payload is None:
+            incoming, error = read_dispatch_payload(conn)
+            if error is not None or incoming is None:
+                try:
+                    conn.sendall(
+                        (json.dumps({"ok": False, "error": error or "Invalid request"}, ensure_ascii=False) + "\n").encode(
+                            "utf-8"
+                        )
                     )
-                )
-            except OSError as os_err:
-                logging.warning(f"Failed to send error response to dispatch connection: {os_err}")
-            return
-        if not raw.strip():
+                except OSError as os_err:
+                    logging.warning(f"Failed to send error response to dispatch connection: {os_err}")
+                return
+            payload = incoming
+        if payload.get("type") == "llm_config":
             try:
-                conn.sendall(
-                    (json.dumps({"ok": False, "error": "Empty request"}, ensure_ascii=False) + "\n").encode(
-                        "utf-8"
-                    )
-                )
-            except OSError as os_err:
-                logging.warning(f"Failed to send error response to dispatch connection: {os_err}")
-            return
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            try:
-                conn.sendall(
-                    (json.dumps({"ok": False, "error": "JSON parsing failed"}, ensure_ascii=False) + "\n").encode(
-                        "utf-8"
-                    )
-                )
-            except OSError as os_err:
-                logging.warning(f"Failed to send error response to dispatch connection: {os_err}")
-            return
-        if not isinstance(payload, dict):
-            try:
-                conn.sendall(
-                    (
-                        json.dumps({"ok": False, "error": "Request body must be a JSON object"}, ensure_ascii=False)
-                        + "\n"
-                    ).encode("utf-8")
-                )
-            except OSError as os_err:
-                logging.warning(f"Failed to send error response to dispatch connection: {os_err}")
+                ack = apply_llm_config(payload)
+            except (ValueError, FileNotFoundError, OSError) as exc:
+                send_dispatch_response(conn, {"ok": False, "error": str(exc)})
+                return
+            send_dispatch_response(conn, ack)
             return
         task_ref = payload.get("task_ref")
         prompt = dispatch_prompt_from_payload(payload)
@@ -1385,7 +1410,7 @@ def handle_dispatch_connection(
         try:
             argv = build_opencode_argv(prompt)
             command_line = format_opencode_command(argv, prompt)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, ValueError) as exc:
             log_task(logging.INFO, "Command: %s", command_line, task_id=task_id)
             log_task(logging.INFO, "Started at %s", started_at, task_id=task_id)
             result = CommandResult(-1, "Error", str(exc))
@@ -1477,6 +1502,50 @@ def handle_dispatch_connection(
         conn.close()
 
 
+def process_accepted_connection(
+    conn: socket.socket,
+    addr: tuple,
+    commander_host: str,
+    commander_port: int,
+    timeout_sec: int,
+    *,
+    execution_slots: threading.BoundedSemaphore,
+    executor: ThreadPoolExecutor,
+    worker_threads: int,
+    run_claimed: Callable[[socket.socket, dict], None],
+) -> None:
+    """Handle one accepted TCP connection. LLM config bypasses the execution slot."""
+    conn.settimeout(timeout_sec + RUNNING_STALE_GRACE_SECONDS)
+    payload, error = read_dispatch_payload(conn)
+    if error is not None or payload is None:
+        send_dispatch_response(conn, {"ok": False, "error": error or "Invalid request"})
+        conn.close()
+        return
+    if payload.get("type") == "llm_config":
+        handle_dispatch_connection(
+            conn, commander_host, commander_port, timeout_sec, payload=payload
+        )
+        return
+    if not execution_slots.acquire(blocking=False):
+        logging.warning("Soldier at capacity; rejecting dispatch from %s", addr)
+        send_dispatch_response(
+            conn,
+            {
+                "ok": False,
+                "status": "busy",
+                "error": f"Soldier capacity reached ({worker_threads})",
+            },
+        )
+        conn.close()
+        return
+    try:
+        executor.submit(run_claimed, conn, payload)
+    except Exception:
+        execution_slots.release()
+        conn.close()
+        raise
+
+
 def spawn_sysmon_collector() -> subprocess.Popen | None:
     """Sysmon collection is manual-only; ``soldier`` does not start it."""
     logging.info("Sysmon collector is manual-only; run sysmon-collect as Administrator")
@@ -1531,9 +1600,9 @@ def run_listen(
         executor = ThreadPoolExecutor(max_workers=worker_threads)
         execution_slots = threading.BoundedSemaphore(worker_threads)
 
-        def run_claimed_connection(conn: socket.socket) -> None:
+        def run_claimed_connection(conn: socket.socket, payload: dict) -> None:
             try:
-                handle_dispatch_connection(conn, sh, sp, timeout_sec)
+                handle_dispatch_connection(conn, sh, sp, timeout_sec, payload=payload)
             finally:
                 execution_slots.release()
 
@@ -1549,24 +1618,17 @@ def run_listen(
                 conn, addr = sock.accept()
             except socket.timeout:
                 continue
-            if not execution_slots.acquire(blocking=False):
-                logging.warning("Soldier at capacity; rejecting dispatch from %s", addr)
-                send_dispatch_response(
-                    conn,
-                    {
-                        "ok": False,
-                        "status": "busy",
-                        "error": f"Soldier capacity reached ({worker_threads})",
-                    },
-                )
-                conn.close()
-                continue
-            try:
-                executor.submit(run_claimed_connection, conn)
-            except Exception:
-                execution_slots.release()
-                conn.close()
-                raise
+            process_accepted_connection(
+                conn,
+                addr,
+                sh,
+                sp,
+                timeout_sec,
+                execution_slots=execution_slots,
+                executor=executor,
+                worker_threads=worker_threads,
+                run_claimed=run_claimed_connection,
+            )
     finally:
         _SHUTTING_DOWN.set()
         sock.close()

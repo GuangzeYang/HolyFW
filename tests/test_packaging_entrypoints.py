@@ -31,6 +31,9 @@ class PyprojectEntrypointTests(unittest.TestCase):
         self.assertIn("common", text)
         self.assertIn("attacker", text)
         self.assertIn("attacker/config.json", text)
+        self.assertIn("attacker/sysmonconfig.xml", text)
+        self.assertIn('"llm.json" = "holyfw_assets/llm.json"', text)
+        self.assertIn("/llm.json", text)
         self.assertIn("attacker/AGENTS.md", text)
         self.assertIn("attacker/skills/**", text)
         self.assertNotIn(
@@ -74,6 +77,18 @@ class CommanderCliRouteTests(unittest.TestCase):
         self.assertIn("generate", text)
         self.assertIn("breaker", text)
         self.assertIn("build", text)
+        self.assertIn("config", text)
+
+    def test_config_subcommand_does_not_start_server(self) -> None:
+        with (
+            mock.patch("commander.config_control.main", return_value=0) as config,
+            mock.patch("commander.commander.main") as serve,
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                commander_cli.main(["config", "--api-key", "sk-test"])
+        self.assertEqual(ctx.exception.code, 0)
+        config.assert_called_once_with(["--api-key", "sk-test"])
+        serve.assert_not_called()
 
     def test_build_subcommand_does_not_start_server(self) -> None:
         with (
@@ -195,6 +210,14 @@ class BundledAssetTests(unittest.TestCase):
         self.assertEqual(
             provider["deepseek"]["options"]["apiKey"],
             "{env:DEEPSEEK_API_KEY}",
+        )
+        self.assertEqual(
+            provider["zhipu"]["options"]["apiKey"],
+            "{env:ZHIPU_API_KEY}",
+        )
+        self.assertEqual(
+            provider["zhipu"]["options"]["baseURL"],
+            "https://open.bigmodel.cn/api/paas/v4",
         )
 
     def test_config_relative_path_falls_back_to_bundled_basename(self) -> None:

@@ -30,6 +30,7 @@ artifacts = [
   "commander/prompt_resources/**",
   "soldier/soldier.ini",
   "attacker/config.json",
+  "attacker/sysmonconfig.xml",
   "attacker/AGENTS.md",
   "attacker/opencode.json",
   "attacker/generator_system.md",
@@ -45,6 +46,7 @@ packages = ["commander", "soldier", "attacker", "common", "holyfw_assets", "sysm
 "domain_resource.md" = "holyfw_assets/domain_resource.md"
 "task_generation_constraints.md" = "holyfw_assets/task_generation_constraints.md"
 "sysmonconfig.xml" = "sysmon_collector/sysmonconfig.xml"
+"llm.json" = "holyfw_assets/llm.json"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -58,6 +60,7 @@ include = [
   "/role_profiles",
   "/domain_resource.md",
   "/task_generation_constraints.md",
+  "/llm.json",
   "/tests",
   "/README.md",
   "/pyproject.toml",

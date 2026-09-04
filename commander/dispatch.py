@@ -72,6 +72,79 @@ def append_task(
     )
 
 
+def send_soldier_payload(
+    soldier_host: str,
+    soldier_port: int,
+    payload: dict[str, Any],
+    *,
+    timeout: float,
+    log_ref: str = "",
+) -> dict[str, Any]:
+    line = json.dumps(payload, ensure_ascii=False) + "\n"
+    buffer = b""
+    try:
+        with socket.create_connection((soldier_host, soldier_port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(line.encode("utf-8"))
+            if log_ref:
+                logging.debug(
+                    "Running — %s — Dispatched to (%s,%s)",
+                    log_ref.split("_")[-1] if "_" in log_ref else log_ref,
+                    soldier_host,
+                    soldier_port,
+                )
+            while b"\n" not in buffer:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buffer += chunk
+                if len(buffer) > 65536:
+                    return {"ok": False, "status": "rejected", "error": "Soldier response too long"}
+    except OSError as e:
+        label = log_ref or "llm_config"
+        logging.error("Failed to dispatch %s: %s", label, e)
+        result = {
+            "ok": False,
+            "status": "network_error",
+            "error": f"Connection failed: {e}",
+        }
+        if log_ref:
+            result["task_ref"] = log_ref
+        return result
+    if not buffer.strip():
+        result = {
+            "ok": False,
+            "status": "rejected",
+            "error": "Soldier closed without an acknowledgment",
+        }
+        if log_ref:
+            result["task_ref"] = log_ref
+        return result
+    try:
+        response = json.loads(buffer.split(b"\n", 1)[0].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        result = {
+            "ok": False,
+            "status": "rejected",
+            "error": "Soldier acknowledgment is not valid JSON",
+        }
+        if log_ref:
+            result["task_ref"] = log_ref
+        return result
+    if not isinstance(response, dict):
+        result = {
+            "ok": False,
+            "status": "rejected",
+            "error": "Soldier acknowledgment must be a JSON object",
+        }
+        if log_ref:
+            result["task_ref"] = log_ref
+        return result
+    if log_ref:
+        response.setdefault("task_ref", log_ref)
+    return response
+
+
 def send_to_soldier(
     soldier_host: str,
     soldier_port: int,
@@ -93,58 +166,35 @@ def send_to_soldier(
         "task_date": task_date,
         "planned_time": planned_time,
     }
-    line = json.dumps(payload, ensure_ascii=False) + "\n"
-    try:
-        with socket.create_connection((soldier_host, soldier_port), timeout=timeout) as sock:
-            sock.settimeout(timeout)
-            sock.sendall(line.encode("utf-8"))
-            logging.debug(
-                "Running — %s — Dispatched to (%s,%s)",
-                task_ref.split("_")[-1] if "_" in task_ref else task_ref,
-                soldier_host,
-                soldier_port,
-            )
-            buffer = b""
-            while b"\n" not in buffer:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                buffer += chunk
-                if len(buffer) > 65536:
-                    return {"ok": False, "status": "rejected", "error": "Soldier response too long"}
-    except OSError as e:
-        logging.error(f"Failed to dispatch task {task_ref}: {e}")
-        return {
-            "ok": False,
-            "status": "network_error",
-            "task_ref": task_ref,
-            "error": f"Connection failed: {e}",
-        }
-    if not buffer.strip():
-        return {
-            "ok": False,
-            "status": "rejected",
-            "task_ref": task_ref,
-            "error": "Soldier closed without an acknowledgment",
-        }
-    try:
-        response = json.loads(buffer.split(b"\n", 1)[0].decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return {
-            "ok": False,
-            "status": "rejected",
-            "task_ref": task_ref,
-            "error": "Soldier acknowledgment is not valid JSON",
-        }
-    if not isinstance(response, dict):
-        return {
-            "ok": False,
-            "status": "rejected",
-            "task_ref": task_ref,
-            "error": "Soldier acknowledgment must be a JSON object",
-        }
-    response.setdefault("task_ref", task_ref)
-    return response
+    return send_soldier_payload(
+        soldier_host,
+        soldier_port,
+        payload,
+        timeout=timeout,
+        log_ref=task_ref,
+    )
+
+
+def send_llm_config(
+    soldier_host: str,
+    soldier_port: int,
+    provider: str,
+    api_key: str,
+    *,
+    timeout: float,
+) -> dict[str, Any]:
+    payload = {
+        "type": "llm_config",
+        "provider": provider,
+        "api_key": api_key,
+    }
+    return send_soldier_payload(
+        soldier_host,
+        soldier_port,
+        payload,
+        timeout=timeout,
+        log_ref="llm_config",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

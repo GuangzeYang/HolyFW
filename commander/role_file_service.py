@@ -67,6 +67,7 @@ class RoleTaskFileService:
         statistic_output_dir: Path | None = None,
         base_time: int = 9,
     ):
+        self._refresh_agent_client = agent_client is None
         if (
             max_attempts is None
             or agent_client is None
@@ -358,6 +359,9 @@ class RoleTaskFileService:
         """Generate role tasks using the configured model client."""
         with self._generation_lock:
             try:
+                if self._refresh_agent_client:
+                    generator_config = get_generator_config(load_runtime_config())
+                    self.agent_client = build_deepseek_client(generator_config)
                 result = generate_role_tasks(
                     source="role_file_service",
                     final_file=role_file,

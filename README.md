@@ -37,16 +37,19 @@ flowchart TD
 ```text
 HolyFramework/
 ├── README.md                              # Main project documentation and current entry point
+├── llm.json                               # LLM provider catalog (base_url, models, env, enable)
 ├── common/                                # Shared path, task-format, time-model, and LLM client utilities
 │   ├── __init__.py                        # Validation, workspace paths, and task-file helpers
 │   ├── time_model.py                      # Thesis 3.4 NHPP schedule generator
 │   ├── agent_request_abc.py               # Abstract model-request interface
-│   └── deepseek_client.py                 # Default DeepSeek API client
+│   ├── deepseek_client.py                 # OpenAI-compatible LLM client
+│   ├── llm_catalog.py                     # Load and validate root llm.json
+│   └── user_env.py                        # Windows user-level environment variables
 ├── domain_resource.md                     # Domain scenarios and task-template resource read at runtime
 ├── task_generation_constraints.md         # Hard-requirement prompt template read at runtime
 ├── requirements.txt                       # Python dependencies
 ├── role_profiles/                         # Bundled OpenCode config, AGENTS.md, and office/victim skill packs
-│   ├── opencode.json                      # MCP servers, permissions, and DeepSeek provider env key
+│   ├── opencode.json                      # MCP servers, permissions, DeepSeek and Zhipu provider env keys
 │   ├── AGENTS.md                          # Role-stamped OpenCode agent rules
 │   ├── accountancy-skills/                # Accountancy host Skills
 │   ├── hr-skills/                         # HR host Skills
@@ -57,6 +60,7 @@ HolyFramework/
 │   ├── commander.py                       # Main entry point: TCP server, scanner thread, and dependency wiring
 │   ├── generate_role_task.py              # Standalone entry point for generating the daily task file
 │   ├── dispatch.py                        # CLI for manually dispatching a single task
+│   ├── config_control.py                  # commander config --api-key: user env + soldier fan-out
 │   ├── dispatch_client.py                 # Subprocess adapter used by the scanner to invoke dispatch.py
 │   ├── scanner_service.py                 # Main scanning and scheduling workflow
 │   ├── role_file_service.py               # Daily task-file generation, repair, loading, and saving
@@ -99,6 +103,7 @@ HolyFramework/
     ├── test_attacker_runtime.py           # Attacker batch fill, serial execution, and result logs
     ├── test_commander_logging_hook.py     # Commander log-switch hook tests
     ├── test_commander_refactor.py         # Core commander regression tests
+    ├── test_llm_config.py                 # llm.json enable invariant, config fan-out, soldier apply
     ├── test_common_work_windows.py        # Shared work-window utility tests
     ├── test_role_dependency_provider.py   # Role dependency-provider tests
     ├── test_soldier_runtime.py             # Soldier runtime tests
@@ -193,7 +198,19 @@ You also need:
 
 ### 2. Configuration
 
-Before running the project, review at least these three configuration files:
+Before running the project, review at least these configuration files:
+
+#### `llm.json`
+
+Root-level LLM catalog. Each key under `provider` is a vendor with fixed `base_url`, `models`, `env`, and `enable`. Exactly one provider must have `"enable": true`. The API key is never stored here.
+
+Commander generation reads `base_url` and `models` from the enabled entry on every generate. Soldier passes `--model {provider}/{models}` to `opencode run` (see [OpenCode CLI](https://opencode.ai/docs/zh-cn/cli/#run-1)). Switch vendors by flipping `enable`, then set the new vendor's key:
+
+```bash
+commander config --api-key <secret>
+```
+
+That command writes the enabled provider's `env` as a Windows user-level environment variable (creates it if missing) and pushes the same key to every soldier in `commander.ini`.
 
 #### `commander/config.json`
 
@@ -201,12 +218,9 @@ This is the main `commander` configuration file. It controls listening, scanning
 
 - `commander` listens on `0.0.0.0:38471`
 - Scan interval: `60` seconds
-- Task generation uses DeepSeek by default:
-  - `api_base_url`
-  - `model`
-  - `request_timeout_seconds`
+- Task generation uses the enabled provider in `llm.json` (`base_url` and `models`). Timeout and token limits still come from `generator` in `config.json` (`request_timeout_seconds`, `max_tokens`).
 
-The DeepSeek API key is read from the `DEEPSEEK_API_KEY` environment variable, not from `commander/config.json`. `commander build` writes `{env:DEEPSEEK_API_KEY}` into `~/.config/opencode/opencode.json` so OpenCode uses the same variable. See the generator section below.
+The API key is read from the user-level environment variable named by `llm.json` (`DEEPSEEK_API_KEY` or `ZHIPU_API_KEY`). It is not stored in `commander/config.json` or `llm.json`. `commander build` writes `{env:...}` placeholders into `~/.config/opencode/opencode.json`. See `commander config` and the generator section below.
 
 #### `commander/commander.ini`
 
@@ -272,6 +286,14 @@ commander build --test
 ```
 
 `commander build --test` only checks that OpenCode starts and that the DeepSeek provider can complete a short smoke prompt. It does not install or exercise skills or MCP servers.
+
+#### Set the enabled LLM API key
+
+Writes the enabled `llm.json` provider's API key to the current user's environment (create or overwrite), then pushes `provider` + key to each soldier. Soldiers apply the same user-level variable. The key is never written to JSON.
+
+```bash
+commander config --api-key <secret>
+```
 
 #### Start soldier
 
@@ -460,32 +482,15 @@ By default, the system uses `smtp.qq.com:465` with SSL. Email delivery failures 
 
 ### generator
 
-Controls task generation:
+Controls retry/timeout for task generation (`max_attempts`, `request_timeout_seconds`, `max_tokens`). Runtime `base_url` and model name come from the enabled provider in `llm.json`, not from `generator.api_base_url` / `generator.model`.
 
-- `max_attempts`: Number of generation attempts
-- `api_base_url`: Model API URL
-- `model`: Model name
-- `request_timeout_seconds`: Timeout for a single model request
+The API key is not stored in `config.json` or `llm.json`. Set it with:
 
-The DeepSeek API key is not stored in `config.json`. Set it in the process environment before `commander serve`, `commander generate`, or OpenCode:
-
-```powershell
-$env:DEEPSEEK_API_KEY = "..."
+```bash
+commander config --api-key <secret>
 ```
 
-Then run `commander build` so `~/.config/opencode/opencode.json` points at that variable:
-
-```json
-"provider": {
-  "deepseek": {
-    "options": {
-      "apiKey": "{env:DEEPSEEK_API_KEY}"
-    }
-  }
-}
-```
-
-If `DEEPSEEK_API_KEY` is missing or blank, Python client construction fails with an error naming that variable.
+That writes the enabled provider's user-level environment variable and pushes the key to soldiers. If the variable is missing or blank, Python client construction fails with an error naming that variable.
 
 ### paths
 
@@ -629,7 +634,7 @@ Attacker records live under `attacker/logs/`:
 - Both `commander` and `soldier` use bounded thread pools for TCP processing, with a default maximum of 6 concurrent workers.
 - Dispatch binds a task as `waiting` before sending it to `soldier`. If sending fails, the task is rolled back to a retryable state.
 - If `soldier` cannot report to `commander`, the report is added to a local queue and retried up to three times in the background.
-- The generator uses the DeepSeek API by default. Set `DEEPSEEK_API_KEY` in the environment, run `commander build` so OpenCode reads `{env:DEEPSEEK_API_KEY}`, and review the `generator` section in `commander/config.json` for non-secret model settings.
+- The generator uses the enabled provider in `llm.json`. Set its API key with `commander config --api-key`, keep exactly one `enable: true`, and run `soldier build` once after adding a new OpenCode provider block (for example zhipu).
 
 ## Development and Regression Testing
 

@@ -746,12 +746,32 @@ class SoldierRuntimeTests(unittest.TestCase):
                 return_value=Path("runtime/tasks/2026-04-29/c01b883dfefd4c85.md"),
             ),
             mock.patch("soldier.soldier.send_report", return_value=({"ok": True}, None)),
+            mock.patch(
+                "soldier.soldier.enabled_provider",
+                return_value=(
+                    "deepseek",
+                    mock.Mock(models="deepseek-v4-flash", env="DEEPSEEK_API_KEY"),
+                ),
+            ),
         ):
             soldier.handle_dispatch_connection(conn, "127.0.0.1", 38471, 5)
 
         execute_mock.assert_called_once()
         argv = execute_mock.call_args[0][0]
-        self.assertEqual(list(argv), ["opencode", "run", "--auto", "--thinking", "--format", "json", prompt])
+        self.assertEqual(
+            list(argv),
+            [
+                "opencode",
+                "run",
+                "--auto",
+                "--thinking",
+                "--format",
+                "json",
+                "--model",
+                "deepseek/deepseek-v4-flash",
+                prompt,
+            ],
+        )
         self.assertNotIn("opencode run", argv[3])
         env = execute_mock.call_args.kwargs.get("env")
         self.assertIsNotNone(env)
