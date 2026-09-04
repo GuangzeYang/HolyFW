@@ -17,6 +17,7 @@ from common.llm_catalog import (
     load_llm_catalog,
     lookup_provider,
     opencode_model_spec,
+    overwrite_workspace_llm_json,
     resolve_config_selection,
     save_enabled_selection,
 )
@@ -45,6 +46,29 @@ def _write_catalog(path: Path, *, deepseek_enable: bool = True, zhipu_enable: bo
         }
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _llm_json_text(
+    *,
+    provider: str = "deepseek",
+    models: str = "deepseek-v4-flash",
+    env: str = "DEEPSEEK_API_KEY",
+    base_url: str = "https://api.deepseek.com",
+    extra_providers: dict | None = None,
+) -> str:
+    body: dict = {
+        "provider": {
+            provider: {
+                "base_url": base_url,
+                "models": models,
+                "env": env,
+                "enable": True,
+            }
+        }
+    }
+    if extra_providers:
+        body["provider"].update(extra_providers)
+    return json.dumps(body, ensure_ascii=False, indent=2) + "\n"
 
 
 class LlmCatalogTests(unittest.TestCase):
@@ -182,6 +206,23 @@ class LlmCatalogTests(unittest.TestCase):
             self.assertEqual(catalog["deepseek"].models, "deepseek-v4-pro")
             self.assertTrue(catalog["deepseek"].enable)
 
+    def test_overwrite_workspace_llm_json_replaces_file_without_lookup(self) -> None:
+        incoming = _llm_json_text(
+            provider="openai",
+            models="gpt-4o",
+            env="OPENAI_API_KEY",
+            base_url="https://api.openai.com/v1",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "llm.json"
+            _write_catalog(path)
+            written = overwrite_workspace_llm_json(incoming, path=path)
+            self.assertEqual(written, path)
+            self.assertEqual(path.read_text(encoding="utf-8"), incoming)
+            name, record = enabled_provider(path)
+            self.assertEqual(name, "openai")
+            self.assertEqual(record.models, "gpt-4o")
+
     def test_format_enabled_llm_log_includes_model_and_base_url(self) -> None:
         from common.llm_catalog import format_enabled_llm_log
 
@@ -294,6 +335,7 @@ class CommanderConfigTests(unittest.TestCase):
         self.assertEqual(send.call_count, 2)
         self.assertEqual(send.call_args_list[0].args[:4], ("10.0.0.1", 38472, "deepseek", "sk-test"))
         self.assertEqual(send.call_args_list[0].args[4], "deepseek-v4-flash")
+        self.assertIn('"provider"', send.call_args_list[0].kwargs["llm_json"])
 
     def test_config_provider_flips_enable_and_sets_zhipu_env(self) -> None:
         from commander.config_control import main as config_main
@@ -343,6 +385,7 @@ class CommanderConfigTests(unittest.TestCase):
         set_env.assert_called_once_with("ZHIPU_API_KEY", "sk-z")
         bind_env.assert_called_once_with("zhipu", "ZHIPU_API_KEY")
         self.assertEqual(send.call_args.args[2:5], ("zhipu", "sk-z", "GLM-4.7-Flash"))
+        self.assertIn('"provider"', send.call_args.kwargs["llm_json"])
 
     def test_config_model_persists_for_current_provider(self) -> None:
         from commander.config_control import main as config_main
@@ -434,16 +477,26 @@ class CommanderConfigTests(unittest.TestCase):
         self.assertIn("too old for llm_config", joined)
         self.assertIn("restart soldier listen", joined)
 
-    def test_send_llm_config_payload_has_type_model_and_no_env_name(self) -> None:
+    def test_send_llm_config_payload_includes_workspace_llm_json(self) -> None:
         from commander.dispatch import send_llm_config
 
+        catalog = _llm_json_text(provider="zhipu", models="GLM-4.7-Flash", env="ZHIPU_API_KEY")
         with mock.patch("commander.dispatch.send_soldier_payload", return_value={"ok": True}) as send:
-            send_llm_config("127.0.0.1", 38472, "zhipu", "secret", "GLM-4.7-Flash", timeout=2.0)
+            send_llm_config(
+                "127.0.0.1",
+                38472,
+                "zhipu",
+                "secret",
+                "GLM-4.7-Flash",
+                timeout=2.0,
+                llm_json=catalog,
+            )
         payload = send.call_args.args[2]
         self.assertEqual(payload["type"], "llm_config")
         self.assertEqual(payload["provider"], "zhipu")
         self.assertEqual(payload["api_key"], "secret")
         self.assertEqual(payload["model"], "GLM-4.7-Flash")
+        self.assertEqual(payload["llm_json"], catalog)
         self.assertNotIn("env", payload)
         self.assertNotIn("models", payload)
 
@@ -507,115 +560,109 @@ class AttackerConfigTests(unittest.TestCase):
 
 class SoldierLlmConfigTests(unittest.TestCase):
     def test_apply_llm_config_sets_user_env_without_echoing_key(self) -> None:
+        incoming = _llm_json_text()
         payload = {
             "type": "llm_config",
-            "provider": "deepseek",
             "api_key": "sk-live",
-            "model": "deepseek-v4-flash",
+            "llm_json": incoming,
         }
-        with (
-            mock.patch(
-                "soldier.soldier.lookup_provider",
-                return_value=ProviderRecord(
-                    name="deepseek",
-                    base_url="https://api.deepseek.com",
-                    models="deepseek-v4-flash",
-                    env="DEEPSEEK_API_KEY",
-                    enable=True,
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "llm.json"
+            _write_catalog(path)
+            with (
+                mock.patch(
+                    "soldier.soldier.overwrite_workspace_llm_json",
+                    side_effect=lambda content: overwrite_workspace_llm_json(content, path=path),
                 ),
-            ),
-            mock.patch("soldier.soldier.set_user_env") as set_env,
-            mock.patch("soldier.soldier.bind_opencode_provider_api_key_env") as bind_env,
-            mock.patch("soldier.soldier.save_enabled_selection", return_value=ProviderRecord(
-                name="deepseek",
-                base_url="https://api.deepseek.com",
-                models="deepseek-v4-flash",
-                env="DEEPSEEK_API_KEY",
-                enable=True,
-            )) as save,
-        ):
-            ack = soldier.apply_llm_config(payload)
-        save.assert_called_once_with("deepseek", "deepseek-v4-flash")
+                mock.patch("soldier.soldier.set_user_env") as set_env,
+                mock.patch("soldier.soldier.bind_opencode_provider_api_key_env") as bind_env,
+            ):
+                ack = soldier.apply_llm_config(payload)
+            self.assertEqual(path.read_text(encoding="utf-8"), incoming)
         set_env.assert_called_once_with("DEEPSEEK_API_KEY", "sk-live")
         bind_env.assert_called_once_with("deepseek", "DEEPSEEK_API_KEY")
         self.assertEqual(ack["status"], "configured")
+        self.assertEqual(ack["provider"], "deepseek")
         self.assertEqual(ack["model"], "deepseek-v4-flash")
         self.assertTrue(ack["json_written"])
         self.assertNotIn("api_key", ack)
 
-    def test_apply_llm_config_rejects_unknown_provider(self) -> None:
+    def test_apply_llm_config_requires_llm_json(self) -> None:
         with (
-            mock.patch(
-                "soldier.soldier.lookup_provider",
-                side_effect=ValueError("Unknown LLM provider 'openai'; expected one of: deepseek, zhipu"),
-            ),
             mock.patch("soldier.soldier.set_user_env") as set_env,
             mock.patch("soldier.soldier.bind_opencode_provider_api_key_env"),
+            mock.patch("soldier.soldier.overwrite_workspace_llm_json") as overwrite,
         ):
             with self.assertRaises(ValueError) as ctx:
                 soldier.apply_llm_config(
                     {"type": "llm_config", "provider": "openai", "api_key": "sk", "model": "gpt-4o"}
                 )
+        overwrite.assert_not_called()
         set_env.assert_not_called()
-        self.assertIn("Unknown", str(ctx.exception))
+        self.assertIn("llm_json", str(ctx.exception))
 
-    def test_apply_llm_config_flips_enable_in_workspace_json(self) -> None:
+    def test_apply_llm_config_overwrites_local_catalog_without_provider_lookup(self) -> None:
+        incoming = _llm_json_text(
+            provider="openai",
+            models="gpt-4o",
+            env="OPENAI_API_KEY",
+            base_url="https://api.openai.com/v1",
+        )
         payload = {
             "type": "llm_config",
-            "provider": "zhipu",
             "api_key": "sk-live",
-            "model": "GLM-4.7-Flash",
+            "llm_json": incoming,
         }
-        zhipu = ProviderRecord(
-            name="zhipu",
-            base_url="https://open.bigmodel.cn/api/paas/v4",
-            models="GLM-4.7-Flash",
-            env="ZHIPU_API_KEY",
-            enable=False,
-        )
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "llm.json"
             _write_catalog(path, deepseek_enable=True, zhipu_enable=False)
             with (
-                mock.patch("soldier.soldier.lookup_provider", return_value=zhipu),
                 mock.patch(
-                    "soldier.soldier.save_enabled_selection",
-                    side_effect=lambda name, models: save_enabled_selection(name, models, path=path),
+                    "soldier.soldier.overwrite_workspace_llm_json",
+                    side_effect=lambda content: overwrite_workspace_llm_json(content, path=path),
                 ),
-                mock.patch("soldier.soldier.set_user_env"),
-                mock.patch("soldier.soldier.bind_opencode_provider_api_key_env"),
+                mock.patch("soldier.soldier.set_user_env") as set_env,
+                mock.patch("soldier.soldier.bind_opencode_provider_api_key_env") as bind_env,
             ):
                 ack = soldier.apply_llm_config(payload)
+            self.assertEqual(path.read_text(encoding="utf-8"), incoming)
             catalog = load_llm_catalog(path)
-            self.assertTrue(catalog["zhipu"].enable)
-            self.assertFalse(catalog["deepseek"].enable)
-            self.assertTrue(ack["json_written"])
+            self.assertEqual(set(catalog), {"openai"})
+            self.assertTrue(catalog["openai"].enable)
             self.assertNotIn("api_key", path.read_text(encoding="utf-8"))
+        set_env.assert_called_once_with("OPENAI_API_KEY", "sk-live")
+        bind_env.assert_called_once_with("openai", "OPENAI_API_KEY")
+        self.assertEqual(ack["provider"], "openai")
+        self.assertEqual(ack["model"], "gpt-4o")
+        self.assertTrue(ack["json_written"])
 
     def test_apply_llm_config_binds_opencode_env_placeholder(self) -> None:
-        payload = {
-            "type": "llm_config",
-            "provider": "zhipuai",
-            "api_key": "sk-live",
-            "model": "GLM-4.7-Flash",
-        }
-        record = ProviderRecord(
-            name="zhipuai",
-            base_url="https://open.bigmodel.cn/api/paas/v4",
+        incoming = _llm_json_text(
+            provider="zhipuai",
             models="GLM-4.7-Flash",
             env="ZHIPU_API_KEY",
-            enable=True,
+            base_url="https://open.bigmodel.cn/api/paas/v4",
         )
+        payload = {
+            "type": "llm_config",
+            "api_key": "sk-live",
+            "llm_json": incoming,
+        }
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "opencode.json"
+            catalog_path = Path(tmp) / "llm.json"
             dest.write_text(
                 json.dumps({"permission": {"*": "allow"}, "mcp": {"playwright": {}}}),
                 encoding="utf-8",
             )
             with (
-                mock.patch("soldier.soldier.lookup_provider", return_value=record),
+                mock.patch(
+                    "soldier.soldier.overwrite_workspace_llm_json",
+                    side_effect=lambda content: overwrite_workspace_llm_json(
+                        content, path=catalog_path
+                    ),
+                ),
                 mock.patch("soldier.soldier.set_user_env"),
-                mock.patch("soldier.soldier.save_enabled_selection", return_value=record),
                 mock.patch(
                     "soldier.soldier.bind_opencode_provider_api_key_env",
                     side_effect=lambda name, env: bind_opencode_provider_api_key_env(
@@ -632,6 +679,7 @@ class SoldierLlmConfigTests(unittest.TestCase):
             self.assertNotIn("sk-live", dest.read_text(encoding="utf-8"))
             self.assertIn("mcp", written)
             self.assertEqual(ack["env"], "ZHIPU_API_KEY")
+            self.assertEqual(catalog_path.read_text(encoding="utf-8"), incoming)
 
     def test_build_opencode_argv_uses_llm_json_enable(self) -> None:
         record = ProviderRecord(

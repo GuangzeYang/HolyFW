@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -405,6 +407,8 @@ class CommanderBuildTests(unittest.TestCase):
                 mock.patch("commander.host_build.COMMANDER_OPENCODE_JSON", bundled),
                 mock.patch("common.opencode_install.opencode_config_dir", return_value=oc),
                 mock.patch("common.opencode_install.opencode_cache_dir", return_value=cache),
+                mock.patch("common.opencode_install.opencode_runtime_cache_targets", return_value=[cache]),
+                mock.patch("common.opencode_install._stop_opencode_processes"),
                 mock.patch("common.opencode_install.ensure_playwright") as playwright,
                 mock.patch("common.opencode_install.copy_skills") as copy_skills_fn,
             ):
@@ -459,9 +463,103 @@ class AgentsAndCacheTests(unittest.TestCase):
             cache.mkdir()
             (cache / "stale.bin").write_text("x", encoding="utf-8")
 
-            self.assertTrue(clear_opencode_cache(cache))
+            self.assertEqual(clear_opencode_cache(cache), [cache])
             self.assertFalse(cache.exists())
-            self.assertFalse(clear_opencode_cache(cache))
+            self.assertEqual(clear_opencode_cache(cache), [])
+
+    def test_clears_readonly_nested_bin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            nested = cache / "bin"
+            nested.mkdir(parents=True)
+            locked = nested / "opencode.exe"
+            locked.write_text("x", encoding="utf-8")
+            os.chmod(locked, stat.S_IREAD)
+
+            self.assertEqual(clear_opencode_cache(cache), [cache])
+            self.assertFalse(cache.exists())
+
+    def test_retries_when_rmdir_reports_not_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            nested = cache / "bin" / "ripgrep"
+            nested.mkdir(parents=True)
+            (nested / "rg.exe").write_text("x", encoding="utf-8")
+            real_rmdir = Path.rmdir
+            hits = {"bin": 0}
+
+            def flaky(self: Path) -> None:
+                if self.name == "bin" and hits["bin"] == 0:
+                    hits["bin"] += 1
+                    raise OSError(145, "The directory is not empty", str(self))
+                return real_rmdir(self)
+
+            with (
+                mock.patch.object(Path, "rmdir", flaky),
+                mock.patch("common.opencode_install.time.sleep"),
+            ):
+                self.assertEqual(clear_opencode_cache(cache), [cache])
+            self.assertFalse(cache.exists())
+
+    def test_clears_data_dir_and_auth_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "cache"
+            data = root / "data"
+            config = root / "config"
+            cache.mkdir()
+            (cache / "bin").mkdir()
+            (cache / "bin" / "stale").write_text("x", encoding="utf-8")
+            data.mkdir()
+            (data / "auth.json").write_text("{}", encoding="utf-8")
+            (data / "session.json").write_text("{}", encoding="utf-8")
+            config.mkdir()
+            auth = config / "auth.json"
+            auth.write_text("{}", encoding="utf-8")
+            (config / "opencode.json").write_text("{}", encoding="utf-8")
+
+            with (
+                mock.patch(
+                    "common.opencode_install.opencode_runtime_cache_targets",
+                    return_value=[cache, data, auth],
+                ),
+                mock.patch("common.opencode_install._stop_opencode_processes") as stop,
+            ):
+                cleared = clear_opencode_cache()
+
+            stop.assert_called_once()
+            self.assertEqual(cleared, [cache, data, auth])
+            self.assertFalse(cache.exists())
+            self.assertFalse(data.exists())
+            self.assertFalse(auth.exists())
+            self.assertTrue((config / "opencode.json").exists())
+
+    def test_explicit_dir_does_not_stop_processes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            cache.mkdir()
+            with mock.patch("common.opencode_install._stop_opencode_processes") as stop:
+                clear_opencode_cache(cache)
+            stop.assert_not_called()
+
+    def test_stops_opencode_exe_before_full_clear(self) -> None:
+        completed = subprocess.CompletedProcess(["taskkill"], 0, "", "")
+        with (
+            mock.patch("common.opencode_install.os.name", "nt"),
+            mock.patch("common.opencode_install.subprocess.run", return_value=completed) as run,
+            mock.patch("common.opencode_install.opencode_runtime_cache_targets", return_value=[]),
+            mock.patch("common.opencode_install.time.sleep"),
+        ):
+            self.assertEqual(clear_opencode_cache(), [])
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ["taskkill", "/IM", "opencode.exe", "/T", "/F"])
+
+    def test_auth_json_paths_include_config_and_share(self) -> None:
+        from common.opencode_install import opencode_auth_json_paths
+
+        paths = [path.as_posix() for path in opencode_auth_json_paths()]
+        self.assertTrue(any(item.endswith(".config/opencode/auth.json") for item in paths))
+        self.assertTrue(any(item.endswith(".local/share/opencode/auth.json") for item in paths))
 
 
 class PlaywrightTests(unittest.TestCase):
@@ -535,6 +633,8 @@ class RunBuildTests(unittest.TestCase):
                 mock.patch("holyfw_assets.agents_md_path", return_value=agents_template),
                 mock.patch("common.opencode_install.opencode_config_dir", return_value=oc),
                 mock.patch("common.opencode_install.opencode_cache_dir", return_value=cache),
+                mock.patch("common.opencode_install.opencode_runtime_cache_targets", return_value=[cache]),
+                mock.patch("common.opencode_install._stop_opencode_processes"),
                 mock.patch("common.opencode_install.ensure_playwright"),
             ):
                 code = run_build("hr")

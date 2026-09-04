@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="commander config",
         description=(
             "Set the LLM provider API key (required) and optionally the provider/model, "
-            "then push the selection to soldiers"
+            "then push workspace llm.json and the API key to soldiers"
         ),
     )
     add_llm_config_arguments(parser)
@@ -37,6 +37,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(format_local_config_line(catalog, name, model, record.env), flush=True)
+    try:
+        llm_json_text = catalog.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not llm_json_text.strip():
+        print(f"error: {catalog} is empty", file=sys.stderr)
+        return 1
 
     from commander.dispatch import send_llm_config
     from commander.runtime_config import (
@@ -66,7 +74,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{role}: fail {exc}", flush=True)
             failed += 1
             continue
-        resp = send_llm_config(host, port, name, args.api_key.strip(), model, timeout=timeout)
+        resp = send_llm_config(
+            host,
+            port,
+            name,
+            args.api_key.strip(),
+            model,
+            timeout=timeout,
+            llm_json=llm_json_text,
+        )
         ok = bool(resp.get("ok"))
         status = str(resp.get("status") or ("ok" if ok else "fail"))
         extra = resp.get("error")

@@ -145,6 +145,20 @@ def resolve_config_selection(
     return name, record, resolved_model, persist
 
 
+def overwrite_workspace_llm_json(content: str, path: Path | None = None) -> Path:
+    """Replace workspace llm.json with the given text. Does not parse or validate first."""
+    from common import is_install_tree
+
+    dest = path if path is not None else workspace_llm_json_path()
+    if is_install_tree(dest):
+        raise ValueError(f"Refusing to write packaged llm.json: {dest}")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("llm.json content is empty")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="utf-8")
+    return dest
+
+
 def save_enabled_selection(name: str, models: str, path: Path | None = None) -> ProviderRecord:
     """Flip enable and update models in the workspace llm.json. Does not write api_key."""
     from common import is_install_tree

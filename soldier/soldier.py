@@ -59,9 +59,8 @@ from common.task_markdown import (
 )
 from common.llm_catalog import (
     enabled_provider,
-    lookup_provider,
     opencode_model_spec,
-    save_enabled_selection,
+    overwrite_workspace_llm_json,
 )
 from common.user_env import set_user_env
 from common.opencode_install import bind_opencode_provider_api_key_env
@@ -960,37 +959,34 @@ def runtime_opencode_model_spec() -> str:
     return opencode_model_spec(name, record)
 
 
+def _payload_llm_json_text(raw: object) -> str:
+    if isinstance(raw, str) and raw.strip():
+        return raw
+    if isinstance(raw, dict) and raw:
+        return json.dumps(raw, ensure_ascii=False, indent=2) + "\n"
+    raise ValueError("Missing or invalid llm_json")
+
+
 def apply_llm_config(payload: dict) -> dict[str, object]:
-    provider = payload.get("provider")
     api_key = payload.get("api_key")
-    model = payload.get("model")
-    if not isinstance(provider, str) or not provider.strip():
-        raise ValueError("Missing or invalid provider")
     if not isinstance(api_key, str) or not api_key.strip():
         raise ValueError("Missing or invalid api_key")
-    record = lookup_provider(provider.strip())
-    resolved_model = model.strip() if isinstance(model, str) and model.strip() else record.models
+    dest = overwrite_workspace_llm_json(_payload_llm_json_text(payload.get("llm_json")))
+    name, record = enabled_provider(dest)
     set_user_env(record.env, api_key.strip())
-    bind_opencode_provider_api_key_env(provider.strip(), record.env)
-    json_written = False
-    try:
-        save_enabled_selection(provider.strip(), resolved_model)
-        json_written = True
-    except (FileNotFoundError, ValueError, OSError) as exc:
-        logging.warning("Could not update workspace llm.json: %s", exc)
+    bind_opencode_provider_api_key_env(name, record.env)
     logging.info(
-        "LLM config applied for provider %s model %s json_written=%s",
-        provider.strip(),
-        resolved_model,
-        json_written,
+        "LLM config applied for provider %s model %s json_written=True",
+        name,
+        record.models,
     )
     return {
         "ok": True,
         "status": "configured",
-        "provider": provider.strip(),
+        "provider": name,
         "env": record.env,
-        "model": resolved_model,
-        "json_written": json_written,
+        "model": record.models,
+        "json_written": True,
     }
 
 

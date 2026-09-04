@@ -183,12 +183,16 @@ def send_llm_config(
     model: str,
     *,
     timeout: float,
+    llm_json: str,
 ) -> dict[str, Any]:
+    if not isinstance(llm_json, str) or not llm_json.strip():
+        raise ValueError("llm_json is empty")
     payload = {
         "type": "llm_config",
         "provider": provider,
         "api_key": api_key,
         "model": model,
+        "llm_json": llm_json,
     }
     return send_soldier_payload(
         soldier_host,

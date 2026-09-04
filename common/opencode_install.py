@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -56,6 +59,39 @@ def opencode_agents_md_path() -> Path:
 
 def opencode_cache_dir() -> Path:
     return Path.home() / ".cache" / "opencode"
+
+
+def opencode_data_dir() -> Path:
+    return Path.home() / ".local" / "share" / "opencode"
+
+
+def opencode_auth_json_paths() -> tuple[Path, ...]:
+    """Persisted provider keys; these override environment variables at runtime."""
+    return (
+        opencode_config_dir() / "auth.json",
+        opencode_data_dir() / "auth.json",
+    )
+
+
+def opencode_runtime_cache_targets() -> list[Path]:
+    """Files and trees that change the next `opencode run` if left stale."""
+    targets: list[Path] = [opencode_cache_dir(), opencode_data_dir()]
+    local_app = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_app:
+        targets.append(Path(local_app) / "opencode")
+    targets.extend(opencode_auth_json_paths())
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in targets:
+        try:
+            key = str(path.resolve())
+        except OSError:
+            key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
 
 
 def _strip_jsonc_comments(text: str) -> str:
@@ -144,7 +180,7 @@ def copy_skills(pack_root: Path, dest_root: Path) -> list[str]:
                         preserved[name] = path.read_bytes()
                     except OSError:
                         pass
-            shutil.rmtree(dest)
+            _remove_path(dest)
         shutil.copytree(src, dest, ignore=ignore)
         for name, data in preserved.items():
             try:
@@ -287,12 +323,162 @@ def install_agents_md(role: str, template_path: Path, dest_path: Path | None = N
     return dest
 
 
-def clear_opencode_cache(cache_dir: Path | None = None) -> bool:
-    target = cache_dir if cache_dir is not None else opencode_cache_dir()
-    if not target.is_dir():
+_REMOVE_RETRY_DELAYS = (0.05, 0.15, 0.4, 1.0, 2.0)
+
+
+def _chmod_writable(path: Path) -> None:
+    try:
+        os.chmod(path, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
+    except OSError:
+        pass
+
+
+def _exists(path: Path) -> bool:
+    try:
+        return path.exists() or path.is_symlink()
+    except OSError:
         return False
-    shutil.rmtree(target)
+
+
+def _unlink_retry(path: Path) -> None:
+    last_exc: OSError | None = None
+    for delay in (0.0, *_REMOVE_RETRY_DELAYS):
+        if delay:
+            time.sleep(delay)
+        try:
+            _chmod_writable(path)
+            path.unlink(missing_ok=True)
+            if not _exists(path):
+                return
+        except OSError as exc:
+            last_exc = exc
+            if not _exists(path):
+                return
+    if last_exc is not None:
+        raise last_exc
+    raise OSError(f"Failed to delete file: {path}")
+
+
+def _rmdir_retry(path: Path) -> None:
+    last_exc: OSError | None = None
+    for delay in (0.0, *_REMOVE_RETRY_DELAYS):
+        if delay:
+            time.sleep(delay)
+        try:
+            _chmod_writable(path)
+            path.rmdir()
+            if not _exists(path):
+                return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_exc = exc
+            if not _exists(path):
+                return
+    if last_exc is not None:
+        raise last_exc
+    raise OSError(f"Failed to delete directory: {path}")
+
+
+def _remove_tree(path: Path) -> None:
+    try:
+        is_dir = path.is_dir() and not path.is_symlink()
+    except OSError:
+        is_dir = False
+    if is_dir:
+        try:
+            children = list(path.iterdir())
+        except OSError:
+            children = []
+        for child in children:
+            _remove_tree(child)
+        _rmdir_retry(path)
+        return
+    _unlink_retry(path)
+
+
+def _cmd_rmdir(path: Path) -> None:
+    if os.name != "nt":
+        return
+    try:
+        subprocess.run(
+            ["cmd", "/c", "rmdir", "/s", "/q", str(path)],
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+
+
+def _remove_path(path: Path) -> bool:
+    """Delete a file or directory tree. Return True if it existed."""
+    if not _exists(path):
+        return False
+    try:
+        _remove_tree(path)
+    except OSError:
+        if os.name == "nt" and _exists(path):
+            _cmd_rmdir(path)
+        if _exists(path):
+            try:
+                _remove_tree(path)
+            except OSError as exc:
+                raise OSError(
+                    f"Failed to delete {path}: {exc}. "
+                    "Stop leftover opencode processes and retry."
+                ) from exc
+    if _exists(path):
+        raise OSError(
+            f"Failed to delete {path}: the directory is not empty or in use. "
+            "Stop leftover opencode processes and retry."
+        )
     return True
+
+
+def _stop_opencode_processes() -> bool:
+    """Release locks on ~/.cache/opencode/bin held by a leftover opencode.exe."""
+    if os.name != "nt":
+        return False
+    try:
+        completed = subprocess.run(
+            ["taskkill", "/IM", "opencode.exe", "/T", "/F"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if int(getattr(completed, "returncode", 1) or 0) != 0:
+        return False
+    time.sleep(0.2)
+    print("Stopped leftover opencode.exe processes.", flush=True)
+    return True
+
+
+def clear_opencode_cache(cache_dir: Path | None = None) -> list[Path]:
+    """Delete OpenCode runtime cache so the next `opencode run` cannot reuse it.
+
+    With no argument this removes the cache tree, the data/session tree, any
+    Windows ``%LOCALAPPDATA%\\opencode`` tree, and persisted ``auth.json`` files.
+    A leftover ``opencode.exe`` is stopped first so ``bin`` is not locked.
+    Passing ``cache_dir`` only deletes that path (used by tests).
+    """
+    if cache_dir is not None:
+        targets = [cache_dir]
+        stop_processes = False
+    else:
+        targets = opencode_runtime_cache_targets()
+        stop_processes = True
+    if stop_processes:
+        _stop_opencode_processes()
+    cleared: list[Path] = []
+    for target in targets:
+        if _remove_path(target):
+            print(f"Cleared OpenCode cache: {target}", flush=True)
+            cleared.append(target)
+    return cleared
 
 
 def _npx_executable() -> str | None:
@@ -349,11 +535,10 @@ def install_role(
         installed = copy_skills(pack_root, opencode_skill_dir())
         legacy = opencode_legacy_skill_dir()
         if legacy.is_dir():
-            shutil.rmtree(legacy)
+            _remove_path(legacy)
         write_host_opencode_configs(opencode_config_path(), keys=ROLE_OPENCODE_MERGE_KEYS)
         install_agents_md(role_key, agents_md_path())
-        if clear_opencode_cache():
-            print(f"Cleared OpenCode cache: {opencode_cache_dir()}", flush=True)
+        clear_opencode_cache()
         ensure_playwright(command_name=command_name)
     except (ValueError, FileNotFoundError, RuntimeError, OSError, json.JSONDecodeError) as exc:
         print(f"{command_name} failed: {exc}", file=sys.stderr, flush=True)
@@ -377,8 +562,7 @@ def install_commander_opencode(
         if not source.is_file():
             raise FileNotFoundError(f"Commander OpenCode config not found: {source}")
         write_host_opencode_configs(source, keys=COMMANDER_OPENCODE_MERGE_KEYS)
-        if clear_opencode_cache():
-            print(f"Cleared OpenCode cache: {opencode_cache_dir()}", flush=True)
+        clear_opencode_cache()
     except (ValueError, FileNotFoundError, RuntimeError, OSError, json.JSONDecodeError) as exc:
         print(f"{command_name} failed: {exc}", file=sys.stderr, flush=True)
         return 1

@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import json
-import shutil
 import sys
 from pathlib import Path
 
 from common.opencode_install import (
+    _remove_path,
     clear_opencode_cache,
     copy_skills,
     install_agents_md,
     opencode_agents_md_path,
-    opencode_cache_dir,
     opencode_json_path,
     opencode_legacy_skill_dir,
     opencode_skill_dir,
@@ -37,11 +36,10 @@ def run_build(*, run_test: bool = False) -> int:
         installed = copy_skills(ATTACKER_SKILLS_DIR, opencode_skill_dir())
         legacy = opencode_legacy_skill_dir()
         if legacy.is_dir():
-            shutil.rmtree(legacy)
+            _remove_path(legacy)
         write_host_opencode_configs(ATTACKER_OPENCODE_JSON, keys=ATTACKER_OPENCODE_KEYS)
         install_agents_md("attacker", ATTACKER_AGENTS_MD)
-        if clear_opencode_cache():
-            print(f"Cleared OpenCode cache: {opencode_cache_dir()}", flush=True)
+        clear_opencode_cache()
     except (ValueError, FileNotFoundError, RuntimeError, OSError, json.JSONDecodeError) as exc:
         print(f"attacker build failed: {exc}", file=sys.stderr, flush=True)
         return 1
