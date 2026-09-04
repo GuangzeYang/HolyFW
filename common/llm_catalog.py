@@ -1,4 +1,4 @@
-"""Load the root llm.json catalog: one enabled provider with fixed model and env name."""
+"""Load the root llm.json catalog: one enabled provider with a model and env name."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 LLM_JSON_NAME = "llm.json"
-SUPPORTED_PROVIDERS = frozenset({"deepseek", "zhipu"})
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PROVIDER_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,10 +80,10 @@ def load_llm_catalog(path: Path | None = None) -> dict[str, ProviderRecord]:
         key = str(name).strip()
         if not key:
             raise ValueError(f"{source} has an empty provider name")
-        if key not in SUPPORTED_PROVIDERS:
-            allowed = ", ".join(sorted(SUPPORTED_PROVIDERS))
+        if not _PROVIDER_NAME.match(key):
             raise ValueError(
-                f"{source} provider {key!r} is not supported; expected one of: {allowed}"
+                f"{source} provider {key!r} is not a valid name "
+                "(use letters, digits, dot, underscore, or hyphen)"
             )
         record = _parse_provider(key, body, source=source)
         catalog[key] = record
@@ -100,7 +100,7 @@ def enabled_provider(path: Path | None = None) -> tuple[str, ProviderRecord]:
     catalog = load_llm_catalog(path)
     for name, record in catalog.items():
         if record.enable:
-            return require_supported_provider(name), record
+            return name, record
     raise ValueError("llm.json must have exactly one provider with enable=true")
 
 
@@ -110,17 +110,10 @@ def format_enabled_llm_log(path: Path | None = None) -> str:
     return f"LLM provider={name} model={record.models} base_url={record.base_url}"
 
 
-def require_supported_provider(name: str) -> str:
-    """Return a supported provider name or raise. Does not execute anything else."""
-    key = (name or "").strip()
-    if key not in SUPPORTED_PROVIDERS:
-        allowed = ", ".join(sorted(SUPPORTED_PROVIDERS))
-        raise ValueError(f"Unsupported LLM provider {key!r}; expected one of: {allowed}")
-    return key
-
-
 def lookup_provider(name: str, path: Path | None = None) -> ProviderRecord:
-    key = require_supported_provider(name)
+    key = (name or "").strip()
+    if not key:
+        raise ValueError("provider name is empty")
     catalog = load_llm_catalog(path)
     record = catalog.get(key)
     if record is None:
@@ -146,7 +139,6 @@ def resolve_config_selection(
         name = record.name
     else:
         name, record = enabled_provider(path)
-    require_supported_provider(name)
     resolved_model = (model or "").strip() or record.models
     if not resolved_model:
         raise ValueError("model is empty")
@@ -162,7 +154,7 @@ def save_enabled_selection(name: str, models: str, path: Path | None = None) -> 
         raise ValueError(f"Refusing to write packaged llm.json: {source}")
     if not source.is_file():
         raise FileNotFoundError(f"Cannot write {source}; need a workspace llm.json")
-    key = require_supported_provider(name)
+    key = (name or "").strip()
     model = (models or "").strip()
     if not key or not model:
         raise ValueError("provider name and model are required")

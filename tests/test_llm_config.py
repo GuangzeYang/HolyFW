@@ -103,7 +103,7 @@ class LlmCatalogTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 lookup_provider("openai", path)
 
-    def test_rejects_unsupported_provider_name(self) -> None:
+    def test_accepts_any_catalog_provider_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "llm.json"
             path.write_text(
@@ -121,19 +121,44 @@ class LlmCatalogTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with self.assertRaises(ValueError) as ctx:
-                load_llm_catalog(path)
-            self.assertIn("not supported", str(ctx.exception))
+            catalog = load_llm_catalog(path)
+            self.assertEqual(catalog["openai"].models, "gpt-4o")
+            self.assertEqual(opencode_model_spec("openai", catalog["openai"]), "openai/gpt-4o")
+            saved = save_enabled_selection("openai", "gpt-4.1", path=path)
+            self.assertEqual(saved.models, "gpt-4.1")
+            self.assertTrue(saved.enable)
             _write_catalog(path)
             with self.assertRaises(ValueError) as ctx:
                 lookup_provider("openai", path)
-            self.assertIn("Unsupported", str(ctx.exception))
+            self.assertIn("Unknown", str(ctx.exception))
             with self.assertRaises(ValueError) as ctx:
                 resolve_config_selection("openai", None, path=path)
-            self.assertIn("Unsupported", str(ctx.exception))
+            self.assertIn("Unknown", str(ctx.exception))
             with self.assertRaises(ValueError) as ctx:
                 save_enabled_selection("openai", "gpt-4o", path=path)
-            self.assertIn("Unsupported", str(ctx.exception))
+            self.assertIn("Unknown", str(ctx.exception))
+
+    def test_rejects_invalid_provider_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "llm.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "provider": {
+                            "1openai": {
+                                "base_url": "https://api.openai.com/v1",
+                                "models": "gpt-4o",
+                                "env": "OPENAI_API_KEY",
+                                "enable": True,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                load_llm_catalog(path)
+            self.assertIn("not a valid name", str(ctx.exception))
 
     def test_resolve_and_save_enabled_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -203,16 +228,19 @@ class CommanderConfigTests(unittest.TestCase):
         text = build_parser().format_help()
         self.assertIn("--api-key", text)
         self.assertIn("--llm-provider", text)
-        self.assertIn("deepseek", text)
-        self.assertIn("zhipu", text)
+        self.assertIn("llm.json", text)
         self.assertIn("--model", text)
 
-    def test_config_rejects_unsupported_provider(self) -> None:
+    def test_config_rejects_unknown_provider(self) -> None:
         from commander.config_control import main as config_main
 
-        with self.assertRaises(SystemExit) as ctx:
-            config_main(["--llm-provider", "openai", "--api-key", "sk-test"])
-        self.assertNotEqual(ctx.exception.code, 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "llm.json"
+            _write_catalog(path)
+            with mock.patch("common.llm_catalog.workspace_llm_json_path", return_value=path):
+                with mock.patch("common.llm_catalog.llm_json_path", return_value=path):
+                    code = config_main(["--llm-provider", "openai", "--api-key", "sk-test"])
+        self.assertEqual(code, 1)
 
     def test_config_requires_api_key(self) -> None:
         from commander.config_control import main as config_main
@@ -422,7 +450,7 @@ class AttackerConfigTests(unittest.TestCase):
 
         attacker_help = build_parser().format_help()
         commander_help = commander_parser().format_help()
-        for flag in ("--api-key", "--llm-provider", "--model", "deepseek", "zhipu"):
+        for flag in ("--api-key", "--llm-provider", "--model", "llm.json"):
             self.assertIn(flag, attacker_help)
             self.assertIn(flag, commander_help)
 
@@ -506,14 +534,20 @@ class SoldierLlmConfigTests(unittest.TestCase):
         self.assertTrue(ack["json_written"])
         self.assertNotIn("api_key", ack)
 
-    def test_apply_llm_config_rejects_unsupported_provider(self) -> None:
-        with mock.patch("soldier.soldier.set_user_env") as set_env:
+    def test_apply_llm_config_rejects_unknown_provider(self) -> None:
+        with (
+            mock.patch(
+                "soldier.soldier.lookup_provider",
+                side_effect=ValueError("Unknown LLM provider 'openai'; expected one of: deepseek, zhipu"),
+            ),
+            mock.patch("soldier.soldier.set_user_env") as set_env,
+        ):
             with self.assertRaises(ValueError) as ctx:
                 soldier.apply_llm_config(
                     {"type": "llm_config", "provider": "openai", "api_key": "sk", "model": "gpt-4o"}
                 )
         set_env.assert_not_called()
-        self.assertIn("Unsupported", str(ctx.exception))
+        self.assertIn("Unknown", str(ctx.exception))
 
     def test_apply_llm_config_flips_enable_in_workspace_json(self) -> None:
         payload = {
@@ -562,18 +596,20 @@ class SoldierLlmConfigTests(unittest.TestCase):
             argv = soldier.build_opencode_argv("hi")
         self.assertEqual(argv[argv.index("--model") + 1], "zhipu/GLM-4.7-Flash")
 
-    def test_build_opencode_argv_rejects_unsupported_provider(self) -> None:
+    def test_build_opencode_argv_uses_catalog_provider_name(self) -> None:
+        record = ProviderRecord(
+            name="openai",
+            base_url="https://api.openai.com/v1",
+            models="gpt-4o",
+            env="OPENAI_API_KEY",
+            enable=True,
+        )
         with (
             mock.patch("soldier.soldier.resolve_opencode_executable", return_value="opencode"),
-            mock.patch(
-                "soldier.soldier.enabled_provider",
-                side_effect=ValueError("Unsupported LLM provider 'openai'; expected one of: deepseek, zhipu"),
-            ),
+            mock.patch("soldier.soldier.enabled_provider", return_value=("openai", record)),
         ):
-            with self.assertRaises(ValueError) as ctx:
-                soldier.build_opencode_argv("hi")
-        self.assertIn("Unsupported", str(ctx.exception))
-        self.assertIn("deepseek", str(ctx.exception))
+            argv = soldier.build_opencode_argv("hi")
+        self.assertEqual(argv[argv.index("--model") + 1], "openai/gpt-4o")
 
     def test_handle_dispatch_applies_llm_config_without_opencode(self) -> None:
         conn = FakeDispatchConnection()

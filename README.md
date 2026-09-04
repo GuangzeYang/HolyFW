@@ -203,7 +203,7 @@ Before running the project, review at least these configuration files:
 
 #### `llm.json`
 
-Root-level LLM catalog. Each key under `provider` must be one of the supported vendors (`deepseek`, `zhipu`). Any other name in `llm.json`, `--llm-provider`, or a stored selection is rejected and does not run. Exactly one provider must have `"enable": true`. The API key is never stored here.
+Root-level LLM catalog. There is no hardcoded vendor set: each key under `provider` is a vendor id passed to OpenCode as `--model {provider}/{models}`. Add another vendor by adding an object with `base_url`, `models`, `env`, and `enable`. Exactly one provider must have `"enable": true`. The API key is never stored here. After adding a vendor, also add a matching `provider` block to the bundled OpenCode config (`role_profiles/opencode.json` and `attacker/opencode.json`) and rerun `soldier build` / `attacker build`.
 
 Commander generation POSTs to the `enable: true` entry's `base_url` (OpenAI-compatible `/chat/completions`) using that entry's `models`. Soldier only passes `--model {provider}/{model}` to `opencode run`; OpenCode switches the vendor endpoint from that spec (see [OpenCode CLI](https://opencode.ai/docs/zh-cn/cli/#run-1)). `--api-key` is required; `--llm-provider` and `--model` are optional and default to the current `enable: true` entry:
 
@@ -223,7 +223,7 @@ This is the main `commander` configuration file. It controls listening, scanning
 - Scan interval: `60` seconds
 - Task generation POSTs to the `llm.json` `enable: true` entry (`base_url` and `models`). Timeout and token limits still come from `generator` in `config.json` (`request_timeout_seconds`, `max_tokens`). `generator.api_base_url` / `generator.model` are leftover fields and are not used for the HTTP request.
 
-The API key is read from the user-level environment variable named by `llm.json` (`DEEPSEEK_API_KEY` or `ZHIPU_API_KEY`). It is not stored in `commander/config.json` or `llm.json`. `commander build` writes `{env:...}` placeholders into `~/.config/opencode/opencode.json`. See `commander config` and the generator section below.
+The API key is read from the user-level environment variable named by `llm.json` (`env` on the enabled provider). It is not stored in `commander/config.json` or `llm.json`. `commander build` writes `{env:...}` placeholders into `~/.config/opencode/opencode.json`. See `commander config` and the generator section below.
 
 #### `commander/commander.ini`
 

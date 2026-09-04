@@ -6,7 +6,6 @@ import argparse
 from pathlib import Path
 
 from common.llm_catalog import (
-    SUPPORTED_PROVIDERS,
     ProviderRecord,
     resolve_config_selection,
     save_enabled_selection,
@@ -24,8 +23,7 @@ def add_llm_config_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--llm-provider",
         default=None,
-        choices=sorted(SUPPORTED_PROVIDERS),
-        help="provider name (only deepseek or zhipu; default: the enable=true entry)",
+        help="provider name from llm.json (default: the enable=true entry)",
     )
     parser.add_argument(
         "--model",
