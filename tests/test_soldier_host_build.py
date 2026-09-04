@@ -23,7 +23,7 @@ from soldier.host_build import (
     skill_directories,
     write_host_opencode_configs,
 )
-from common.opencode_install import COMMANDER_OPENCODE_MERGE_KEYS, write_opencode_config
+from common.opencode_install import COMMANDER_OPENCODE_MERGE_KEYS, bind_opencode_provider_api_key_env, write_opencode_config
 
 
 ALLOW_PERMISSION = {
@@ -163,7 +163,7 @@ class WriteOpencodeConfigTests(unittest.TestCase):
             self.assertNotIn("keep-me", written)
             self.assertEqual(written["playwright"]["command"], ["npx", "new"])
             self.assertIn("excel", written)
-            self.assertEqual(saved["provider"], DEEPSEEK_PROVIDER)
+            self.assertNotIn("provider", saved)
             self.assertEqual(saved["$schema"], "https://opencode.ai/config.json")
             self.assertNotIn("keep-me", saved["mcp"])
 
@@ -197,7 +197,7 @@ class WriteOpencodeConfigTests(unittest.TestCase):
             self.assertEqual(saved["permission"], ALLOW_PERMISSION)
             self.assertNotIn("keep-me", saved["mcp"])
             self.assertIn("playwright", saved["mcp"])
-            self.assertEqual(saved["provider"], DEEPSEEK_PROVIDER)
+            self.assertNotIn("provider", saved)
 
     def test_host_write_deletes_jsonc_and_ignores_empty_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -222,11 +222,108 @@ class WriteOpencodeConfigTests(unittest.TestCase):
             self.assertFalse((root / "opencode.jsonc").exists())
             self.assertEqual(saved_json["permission"], ALLOW_PERMISSION)
             self.assertEqual(saved_json["mcp"]["playwright"]["command"], ["npx"])
-            self.assertEqual(saved_json["provider"], DEEPSEEK_PROVIDER)
+            self.assertNotIn("provider", saved_json)
             self.assertNotIn("keep-me", saved_json.get("mcp", {}))
 
+    def test_role_keys_drop_existing_custom_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundled = root / "bundled.json"
+            bundled.write_text(
+                json.dumps(
+                    {
+                        "permission": ALLOW_PERMISSION,
+                        "mcp": {"playwright": {"type": "local", "command": ["npx"]}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "opencode.json").write_text(
+                json.dumps(
+                    {
+                        "provider": {
+                            "zhipu": {
+                                "npm": "@ai-sdk/openai-compatible",
+                                "options": {
+                                    "baseURL": "https://open.bigmodel.cn/api/paas/v4",
+                                    "apiKey": "{env:ZHIPU_API_KEY}",
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
 
-class ProviderWriteTests(unittest.TestCase):
+            saved = write_host_opencode_configs(bundled, root)
+            written = json.loads((root / "opencode.json").read_text(encoding="utf-8"))
+
+            self.assertNotIn("provider", saved)
+            self.assertNotIn("provider", written)
+            self.assertEqual(written["permission"], ALLOW_PERMISSION)
+            self.assertEqual(written["mcp"]["playwright"]["command"], ["npx"])
+
+
+class BindProviderEnvTests(unittest.TestCase):
+    def test_updates_env_name_preserves_mcp_strips_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "opencode.json"
+            dest.write_text(
+                json.dumps(
+                    {
+                        "permission": ALLOW_PERMISSION,
+                        "mcp": {"playwright": {"type": "local", "command": ["npx"]}},
+                        "provider": {
+                            "deepseek": {
+                                "options": {"apiKey": "{env:DEEPSEEK_API_KEY}"},
+                            },
+                            "zhipuai": {
+                                "npm": "@ai-sdk/openai-compatible",
+                                "options": {
+                                    "baseURL": "https://open.bigmodel.cn/api/paas/v4",
+                                    "apiKey": "{env:OLD_KEY}",
+                                },
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            jsonc = Path(tmp) / "opencode.jsonc"
+            jsonc.write_text("{}", encoding="utf-8")
+
+            saved = bind_opencode_provider_api_key_env("zhipuai", "ZHIPU_API_KEY", dest_path=dest)
+            written = json.loads(dest.read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                saved["provider"]["zhipuai"]["options"]["apiKey"],
+                "{env:ZHIPU_API_KEY}",
+            )
+            self.assertNotIn("baseURL", written["provider"]["zhipuai"]["options"])
+            self.assertNotIn("npm", written["provider"]["zhipuai"])
+            self.assertEqual(
+                written["provider"]["deepseek"]["options"]["apiKey"],
+                "{env:DEEPSEEK_API_KEY}",
+            )
+            self.assertEqual(written["mcp"]["playwright"]["command"], ["npx"])
+            self.assertEqual(written["permission"], ALLOW_PERMISSION)
+            self.assertNotIn("sk-", dest.read_text(encoding="utf-8"))
+            self.assertFalse(jsonc.exists())
+
+    def test_creates_provider_block_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "opencode.json"
+            dest.write_text(
+                json.dumps({"permission": ALLOW_PERMISSION, "mcp": {"playwright": {}}}),
+                encoding="utf-8",
+            )
+            bind_opencode_provider_api_key_env("deepseek", "DEEPSEEK_API_KEY", dest_path=dest)
+            written = json.loads(dest.read_text(encoding="utf-8"))
+            self.assertEqual(
+                written["provider"]["deepseek"]["options"]["apiKey"],
+                "{env:DEEPSEEK_API_KEY}",
+            )
+            self.assertIn("mcp", written)
     def test_provider_write_keeps_only_bundled_providers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bundled = Path(tmp) / "bundled.json"
@@ -305,7 +402,7 @@ class CommanderBuildTests(unittest.TestCase):
             (cache / "stale.bin").write_text("x", encoding="utf-8")
 
             with (
-                mock.patch("holyfw_assets.opencode_config_path", return_value=bundled),
+                mock.patch("commander.host_build.COMMANDER_OPENCODE_JSON", bundled),
                 mock.patch("common.opencode_install.opencode_config_dir", return_value=oc),
                 mock.patch("common.opencode_install.opencode_cache_dir", return_value=cache),
                 mock.patch("common.opencode_install.ensure_playwright") as playwright,
@@ -452,7 +549,7 @@ class RunBuildTests(unittest.TestCase):
             saved = json.loads((oc / "opencode.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["mcp"]["playwright"]["command"], ["npx"])
             self.assertEqual(saved["permission"], ALLOW_PERMISSION)
-            self.assertEqual(saved["provider"], DEEPSEEK_PROVIDER)
+            self.assertNotIn("provider", saved)
             self.assertFalse((oc / "opencode.jsonc").exists())
             self.assertNotIn("stale", saved["mcp"])
             agents_text = (oc / "AGENTS.md").read_text(encoding="utf-8")

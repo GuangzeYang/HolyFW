@@ -6,22 +6,5 @@
     "external_directory": {
       "*": "allow"
     }
-  },
-  "provider": {
-    "deepseek": {
-      "options": {
-        "apiKey": "{env:DEEPSEEK_API_KEY}"
-      }
-    },
-    "zhipu": {
-      "npm": "@ai-sdk/openai-compatible",
-      "options": {
-        "baseURL": "https://open.bigmodel.cn/api/paas/v4",
-        "apiKey": "{env:ZHIPU_API_KEY}"
-      },
-      "models": {
-        "GLM-4.7-Flash": { "name": "GLM-4.7-Flash" }
-      }
-    }
   }
 }

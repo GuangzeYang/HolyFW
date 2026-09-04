@@ -27,6 +27,7 @@ sysmon-collect = "sysmon_collector.collector:main"
 artifacts = [
   "commander/config.json",
   "commander/commander.ini",
+  "commander/opencode.json",
   "commander/prompt_resources/**",
   "soldier/soldier.ini",
   "attacker/config.json",

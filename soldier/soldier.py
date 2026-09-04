@@ -64,6 +64,7 @@ from common.llm_catalog import (
     save_enabled_selection,
 )
 from common.user_env import set_user_env
+from common.opencode_install import bind_opencode_provider_api_key_env
 
 DEFAULT_PORT = 38471
 DEFAULT_LISTEN_PORT = 38472
@@ -970,6 +971,7 @@ def apply_llm_config(payload: dict) -> dict[str, object]:
     record = lookup_provider(provider.strip())
     resolved_model = model.strip() if isinstance(model, str) and model.strip() else record.models
     set_user_env(record.env, api_key.strip())
+    bind_opencode_provider_api_key_env(provider.strip(), record.env)
     json_written = False
     try:
         save_enabled_selection(provider.strip(), resolved_model)

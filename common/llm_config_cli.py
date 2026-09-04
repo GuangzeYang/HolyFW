@@ -12,6 +12,7 @@ from common.llm_catalog import (
     workspace_llm_json_path,
 )
 from common.user_env import set_user_env
+from common.opencode_install import bind_opencode_provider_api_key_env
 
 
 def add_llm_config_arguments(parser: argparse.ArgumentParser) -> None:
@@ -49,6 +50,7 @@ def apply_local_llm_config(
     name, record, resolved_model, _persist = resolve_config_selection(llm_provider, model)
     record = save_enabled_selection(name, resolved_model)
     set_user_env(record.env, key)
+    bind_opencode_provider_api_key_env(name, record.env)
     return name, record, resolved_model, workspace_llm_json_path()
 
 

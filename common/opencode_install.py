@@ -23,7 +23,9 @@ SOLDIER_SKILL_PACKS: dict[str, str] = {
 }
 
 _TRAILING_COMMA = re.compile(r",(\s*[}\]])")
-ROLE_OPENCODE_MERGE_KEYS = ("permission", "mcp", "provider")
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PROVIDER_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
+ROLE_OPENCODE_MERGE_KEYS = ("permission", "mcp")
 COMMANDER_OPENCODE_MERGE_KEYS = ("provider",)
 _OPENCODE_SCHEMA = "https://opencode.ai/config.json"
 
@@ -215,14 +217,63 @@ merge_opencode_config = write_opencode_config
 merge_host_opencode_configs = write_host_opencode_configs
 
 
+def bind_opencode_provider_api_key_env(
+    provider: str,
+    env_name: str,
+    dest_path: Path | None = None,
+) -> dict[str, Any]:
+    """Point provider.<name>.options.apiKey at {env:ENV} in host opencode.json.
+
+    Preserves permission, mcp, and other providers. Never writes the secret.
+    Drops leftover baseURL/npm on that provider so OpenCode uses its built-in endpoint.
+    """
+    name = (provider or "").strip()
+    env = (env_name or "").strip()
+    if not name or not _PROVIDER_NAME.match(name):
+        raise ValueError(f"OpenCode provider name is invalid: {provider!r}")
+    if not env or not _ENV_NAME.match(env):
+        raise ValueError(f"OpenCode API-key env name is invalid: {env_name!r}")
+    dest = dest_path if dest_path is not None else opencode_json_path()
+    payload: dict[str, Any] = {"$schema": _OPENCODE_SCHEMA}
+    if dest.is_file():
+        try:
+            loaded = load_jsonc(dest.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{dest} is not valid JSON: {exc}") from exc
+        if isinstance(loaded, dict):
+            payload = loaded
+            if not payload.get("$schema"):
+                payload["$schema"] = _OPENCODE_SCHEMA
+        elif loaded is not None:
+            raise ValueError(f"{dest} must be a JSON object")
+    providers = payload.get("provider")
+    if not isinstance(providers, dict):
+        providers = {}
+    body = providers.get(name)
+    if not isinstance(body, dict):
+        body = {}
+    options = body.get("options")
+    if not isinstance(options, dict):
+        options = {}
+    options["apiKey"] = f"{{env:{env}}}"
+    options.pop("baseURL", None)
+    body["options"] = options
+    body.pop("npm", None)
+    providers[name] = body
+    payload["provider"] = providers
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.name == "opencode.json":
+        _unlink_if_exists(dest.parent / "opencode.jsonc")
+    dest.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
 def merge_mcp_config(bundled_path: Path, dest_path: Path) -> dict[str, Any]:
     bundled = load_jsonc(bundled_path.read_text(encoding="utf-8"))
     keys: list[str] = []
     if isinstance(bundled, dict) and "permission" in bundled:
         keys.append("permission")
     keys.append("mcp")
-    if isinstance(bundled, dict) and isinstance(bundled.get("provider"), dict) and bundled["provider"]:
-        keys.append("provider")
     saved = write_opencode_config(bundled_path, dest_path, keys=keys)
     mcp = saved.get("mcp")
     return mcp if isinstance(mcp, dict) else {}
@@ -314,14 +365,18 @@ def install_role(
     return 0
 
 
-def install_commander_opencode(*, command_name: str = "commander build") -> int:
+def install_commander_opencode(
+    *,
+    command_name: str = "commander build",
+    bundled_path: Path | None = None,
+) -> int:
     try:
-        from holyfw_assets import opencode_config_path
-
-        write_host_opencode_configs(
-            opencode_config_path(),
-            keys=COMMANDER_OPENCODE_MERGE_KEYS,
-        )
+        source = bundled_path
+        if source is None:
+            source = Path(__file__).resolve().parent.parent / "commander" / "opencode.json"
+        if not source.is_file():
+            raise FileNotFoundError(f"Commander OpenCode config not found: {source}")
+        write_host_opencode_configs(source, keys=COMMANDER_OPENCODE_MERGE_KEYS)
         if clear_opencode_cache():
             print(f"Cleared OpenCode cache: {opencode_cache_dir()}", flush=True)
     except (ValueError, FileNotFoundError, RuntimeError, OSError, json.JSONDecodeError) as exc:

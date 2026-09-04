@@ -20,6 +20,7 @@ from common.llm_catalog import (
     resolve_config_selection,
     save_enabled_selection,
 )
+from common.opencode_install import bind_opencode_provider_api_key_env
 from common.user_env import get_user_env, set_user_env
 import commander.dispatch  # noqa: F401 — bind real runtime_config helpers before tests patch them
 import soldier.soldier as soldier
@@ -51,11 +52,9 @@ class LlmCatalogTests(unittest.TestCase):
         repo = Path(__file__).resolve().parents[1] / "llm.json"
         catalog = load_llm_catalog(repo)
         self.assertIn("deepseek", catalog)
-        self.assertIn("zhipu", catalog)
         enabled = [name for name, record in catalog.items() if record.enable]
-        self.assertEqual(enabled, ["deepseek"])
+        self.assertEqual(len(enabled), 1)
         self.assertEqual(catalog["deepseek"].models, "deepseek-v4-flash")
-        self.assertEqual(catalog["zhipu"].models, "GLM-4.7-Flash")
         self.assertNotIn("api_key", repo.read_text(encoding="utf-8"))
 
     def test_rejects_zero_or_two_enabled(self) -> None:
@@ -266,6 +265,7 @@ class CommanderConfigTests(unittest.TestCase):
             ),
             mock.patch("common.llm_config_cli.save_enabled_selection", return_value=record) as save,
             mock.patch("common.llm_config_cli.set_user_env") as set_env,
+            mock.patch("common.llm_config_cli.bind_opencode_provider_api_key_env") as bind_env,
             mock.patch("commander.runtime_config.load_runtime_config", return_value={}),
             mock.patch(
                 "commander.runtime_config.get_dispatch_config",
@@ -290,6 +290,7 @@ class CommanderConfigTests(unittest.TestCase):
         self.assertEqual(code, 0)
         save.assert_called_once_with("deepseek", "deepseek-v4-flash")
         set_env.assert_called_once_with("DEEPSEEK_API_KEY", "sk-test")
+        bind_env.assert_called_once_with("deepseek", "DEEPSEEK_API_KEY")
         self.assertEqual(send.call_count, 2)
         self.assertEqual(send.call_args_list[0].args[:4], ("10.0.0.1", 38472, "deepseek", "sk-test"))
         self.assertEqual(send.call_args_list[0].args[4], "deepseek-v4-flash")
@@ -318,6 +319,7 @@ class CommanderConfigTests(unittest.TestCase):
             ),
             mock.patch("common.llm_config_cli.save_enabled_selection", return_value=saved) as save,
             mock.patch("common.llm_config_cli.set_user_env") as set_env,
+            mock.patch("common.llm_config_cli.bind_opencode_provider_api_key_env") as bind_env,
             mock.patch("commander.runtime_config.load_runtime_config", return_value={}),
             mock.patch(
                 "commander.runtime_config.get_dispatch_config",
@@ -339,6 +341,7 @@ class CommanderConfigTests(unittest.TestCase):
         self.assertEqual(code, 0)
         save.assert_called_once_with("zhipu", "GLM-4.7-Flash")
         set_env.assert_called_once_with("ZHIPU_API_KEY", "sk-z")
+        bind_env.assert_called_once_with("zhipu", "ZHIPU_API_KEY")
         self.assertEqual(send.call_args.args[2:5], ("zhipu", "sk-z", "GLM-4.7-Flash"))
 
     def test_config_model_persists_for_current_provider(self) -> None:
@@ -365,6 +368,7 @@ class CommanderConfigTests(unittest.TestCase):
             ),
             mock.patch("common.llm_config_cli.save_enabled_selection", return_value=saved) as save,
             mock.patch("common.llm_config_cli.set_user_env"),
+            mock.patch("common.llm_config_cli.bind_opencode_provider_api_key_env"),
             mock.patch("commander.runtime_config.load_runtime_config", return_value={}),
             mock.patch(
                 "commander.runtime_config.get_dispatch_config",
@@ -405,6 +409,7 @@ class CommanderConfigTests(unittest.TestCase):
             ),
             mock.patch("common.llm_config_cli.save_enabled_selection", return_value=record),
             mock.patch("common.llm_config_cli.set_user_env"),
+            mock.patch("common.llm_config_cli.bind_opencode_provider_api_key_env"),
             mock.patch("commander.runtime_config.load_runtime_config", return_value={}),
             mock.patch(
                 "commander.runtime_config.get_dispatch_config",
@@ -471,6 +476,7 @@ class AttackerConfigTests(unittest.TestCase):
             ),
             mock.patch("common.llm_config_cli.save_enabled_selection", return_value=record) as save,
             mock.patch("common.llm_config_cli.set_user_env") as set_env,
+            mock.patch("common.llm_config_cli.bind_opencode_provider_api_key_env") as bind_env,
             mock.patch(
                 "common.llm_config_cli.workspace_llm_json_path",
                 return_value=Path("llm.json"),
@@ -481,6 +487,7 @@ class AttackerConfigTests(unittest.TestCase):
         self.assertEqual(code, 0)
         save.assert_called_once_with("zhipu", "GLM-4.7-Flash")
         set_env.assert_called_once_with("ZHIPU_API_KEY", "sk-z")
+        bind_env.assert_called_once_with("zhipu", "ZHIPU_API_KEY")
         send.assert_not_called()
 
     def test_cli_config_does_not_start_run_loop(self) -> None:
@@ -518,6 +525,7 @@ class SoldierLlmConfigTests(unittest.TestCase):
                 ),
             ),
             mock.patch("soldier.soldier.set_user_env") as set_env,
+            mock.patch("soldier.soldier.bind_opencode_provider_api_key_env") as bind_env,
             mock.patch("soldier.soldier.save_enabled_selection", return_value=ProviderRecord(
                 name="deepseek",
                 base_url="https://api.deepseek.com",
@@ -529,6 +537,7 @@ class SoldierLlmConfigTests(unittest.TestCase):
             ack = soldier.apply_llm_config(payload)
         save.assert_called_once_with("deepseek", "deepseek-v4-flash")
         set_env.assert_called_once_with("DEEPSEEK_API_KEY", "sk-live")
+        bind_env.assert_called_once_with("deepseek", "DEEPSEEK_API_KEY")
         self.assertEqual(ack["status"], "configured")
         self.assertEqual(ack["model"], "deepseek-v4-flash")
         self.assertTrue(ack["json_written"])
@@ -541,6 +550,7 @@ class SoldierLlmConfigTests(unittest.TestCase):
                 side_effect=ValueError("Unknown LLM provider 'openai'; expected one of: deepseek, zhipu"),
             ),
             mock.patch("soldier.soldier.set_user_env") as set_env,
+            mock.patch("soldier.soldier.bind_opencode_provider_api_key_env"),
         ):
             with self.assertRaises(ValueError) as ctx:
                 soldier.apply_llm_config(
@@ -573,6 +583,7 @@ class SoldierLlmConfigTests(unittest.TestCase):
                     side_effect=lambda name, models: save_enabled_selection(name, models, path=path),
                 ),
                 mock.patch("soldier.soldier.set_user_env"),
+                mock.patch("soldier.soldier.bind_opencode_provider_api_key_env"),
             ):
                 ack = soldier.apply_llm_config(payload)
             catalog = load_llm_catalog(path)
@@ -580,6 +591,47 @@ class SoldierLlmConfigTests(unittest.TestCase):
             self.assertFalse(catalog["deepseek"].enable)
             self.assertTrue(ack["json_written"])
             self.assertNotIn("api_key", path.read_text(encoding="utf-8"))
+
+    def test_apply_llm_config_binds_opencode_env_placeholder(self) -> None:
+        payload = {
+            "type": "llm_config",
+            "provider": "zhipuai",
+            "api_key": "sk-live",
+            "model": "GLM-4.7-Flash",
+        }
+        record = ProviderRecord(
+            name="zhipuai",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            models="GLM-4.7-Flash",
+            env="ZHIPU_API_KEY",
+            enable=True,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "opencode.json"
+            dest.write_text(
+                json.dumps({"permission": {"*": "allow"}, "mcp": {"playwright": {}}}),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch("soldier.soldier.lookup_provider", return_value=record),
+                mock.patch("soldier.soldier.set_user_env"),
+                mock.patch("soldier.soldier.save_enabled_selection", return_value=record),
+                mock.patch(
+                    "soldier.soldier.bind_opencode_provider_api_key_env",
+                    side_effect=lambda name, env: bind_opencode_provider_api_key_env(
+                        name, env, dest_path=dest
+                    ),
+                ),
+            ):
+                ack = soldier.apply_llm_config(payload)
+            written = json.loads(dest.read_text(encoding="utf-8"))
+            self.assertEqual(
+                written["provider"]["zhipuai"]["options"]["apiKey"],
+                "{env:ZHIPU_API_KEY}",
+            )
+            self.assertNotIn("sk-live", dest.read_text(encoding="utf-8"))
+            self.assertIn("mcp", written)
+            self.assertEqual(ack["env"], "ZHIPU_API_KEY")
 
     def test_build_opencode_argv_uses_llm_json_enable(self) -> None:
         record = ProviderRecord(

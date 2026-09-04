@@ -23,7 +23,7 @@ ATTACKER_PACKAGE_DIR = Path(__file__).resolve().parent
 ATTACKER_SKILLS_DIR = ATTACKER_PACKAGE_DIR / "skills"
 ATTACKER_AGENTS_MD = ATTACKER_PACKAGE_DIR / "AGENTS.md"
 ATTACKER_OPENCODE_JSON = ATTACKER_PACKAGE_DIR / "opencode.json"
-ATTACKER_OPENCODE_KEYS = ("permission", "provider")
+ATTACKER_OPENCODE_KEYS = ("permission",)
 
 
 def run_build(*, run_test: bool = False) -> int:

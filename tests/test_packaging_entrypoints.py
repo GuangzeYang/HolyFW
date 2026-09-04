@@ -41,6 +41,7 @@ class PyprojectEntrypointTests(unittest.TestCase):
             text,
         )
         self.assertIn('"commander/prompt_resources/**"', text)
+        self.assertIn("commander/opencode.json", text)
 
 
 class CommanderCliRouteTests(unittest.TestCase):
@@ -219,7 +220,7 @@ class AttackerCliRouteTests(unittest.TestCase):
         self.assertEqual(copy.call_args.args[0].name, "skills")
         write_cfg.assert_called_once()
         self.assertEqual(write_cfg.call_args.args[0].name, "opencode.json")
-        self.assertEqual(write_cfg.call_args.kwargs["keys"], ("permission", "provider"))
+        self.assertEqual(write_cfg.call_args.kwargs["keys"], ("permission",))
         agents.assert_called_once()
         self.assertEqual(agents.call_args.args[0], "attacker")
         self.assertEqual(agents.call_args.args[1].name, "AGENTS.md")
@@ -242,20 +243,16 @@ class BundledAssetTests(unittest.TestCase):
         self.assertEqual(permission.get("*"), "allow")
         self.assertEqual(permission.get("doom_loop"), "allow")
         self.assertEqual(permission.get("external_directory"), {"*": "allow"})
-        provider = payload.get("provider")
-        self.assertIsInstance(provider, dict)
+        self.assertIn("mcp", payload)
+        self.assertNotIn("provider", payload)
+        attacker_payload = json.loads((REPO_ROOT / "attacker" / "opencode.json").read_text(encoding="utf-8"))
+        self.assertNotIn("provider", attacker_payload)
+        commander_payload = json.loads((REPO_ROOT / "commander" / "opencode.json").read_text(encoding="utf-8"))
         self.assertEqual(
-            provider["deepseek"]["options"]["apiKey"],
+            commander_payload["provider"]["deepseek"]["options"]["apiKey"],
             "{env:DEEPSEEK_API_KEY}",
         )
-        self.assertEqual(
-            provider["zhipu"]["options"]["apiKey"],
-            "{env:ZHIPU_API_KEY}",
-        )
-        self.assertEqual(
-            provider["zhipu"]["options"]["baseURL"],
-            "https://open.bigmodel.cn/api/paas/v4",
-        )
+        self.assertNotIn("zhipu", commander_payload.get("provider", {}))
 
     def test_config_relative_path_falls_back_to_bundled_basename(self) -> None:
         from commander.runtime_config import resolve_config_relative_path
