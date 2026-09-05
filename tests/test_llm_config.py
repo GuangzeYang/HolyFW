@@ -14,6 +14,7 @@ from unittest import mock
 from common.llm_catalog import (
     ProviderRecord,
     enabled_provider,
+    is_proxy_provider,
     load_llm_catalog,
     lookup_provider,
     opencode_model_spec,
@@ -80,6 +81,11 @@ class LlmCatalogTests(unittest.TestCase):
         self.assertEqual(len(enabled), 1)
         self.assertEqual(catalog["deepseek"].models, "deepseek-v4-flash")
         self.assertNotIn("api_key", repo.read_text(encoding="utf-8"))
+
+    def test_is_proxy_provider_uses_suffix(self) -> None:
+        self.assertTrue(is_proxy_provider("xlc-proxy"))
+        self.assertFalse(is_proxy_provider("deepseek"))
+        self.assertFalse(is_proxy_provider("my-proxy-extra"))
 
     def test_rejects_zero_or_two_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -315,7 +321,12 @@ class CommanderConfigTests(unittest.TestCase):
         self.assertEqual(code, 0)
         save.assert_called_once_with("deepseek", "deepseek-v4-flash")
         set_env.assert_called_once_with("DEEPSEEK_API_KEY", "sk-test")
-        bind_env.assert_called_once_with("deepseek", "DEEPSEEK_API_KEY")
+        bind_env.assert_called_once_with(
+            "deepseek",
+            "DEEPSEEK_API_KEY",
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4-flash",
+        )
         send.assert_not_called()
         load_runtime.assert_not_called()
 
@@ -361,7 +372,12 @@ class CommanderConfigTests(unittest.TestCase):
         self.assertEqual(code, 0)
         save.assert_called_once_with("deepseek", "deepseek-v4-flash")
         set_env.assert_called_once_with("DEEPSEEK_API_KEY", "sk-test")
-        bind_env.assert_called_once_with("deepseek", "DEEPSEEK_API_KEY")
+        bind_env.assert_called_once_with(
+            "deepseek",
+            "DEEPSEEK_API_KEY",
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4-flash",
+        )
         self.assertEqual(send.call_count, 2)
         self.assertEqual(send.call_args_list[0].args[:4], ("10.0.0.1", 38472, "deepseek", "sk-test"))
         self.assertEqual(send.call_args_list[0].args[4], "deepseek-v4-flash")
@@ -398,7 +414,12 @@ class CommanderConfigTests(unittest.TestCase):
         self.assertEqual(code, 0)
         save.assert_called_once_with("zhipu", "GLM-4.7-Flash")
         set_env.assert_called_once_with("ZHIPU_API_KEY", "sk-z")
-        bind_env.assert_called_once_with("zhipu", "ZHIPU_API_KEY")
+        bind_env.assert_called_once_with(
+            "zhipu",
+            "ZHIPU_API_KEY",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            model="GLM-4.7-Flash",
+        )
         send.assert_not_called()
 
     def test_config_model_persists_for_current_provider(self) -> None:
@@ -542,7 +563,12 @@ class AttackerConfigTests(unittest.TestCase):
         self.assertEqual(code, 0)
         save.assert_called_once_with("zhipu", "GLM-4.7-Flash")
         set_env.assert_called_once_with("ZHIPU_API_KEY", "sk-z")
-        bind_env.assert_called_once_with("zhipu", "ZHIPU_API_KEY")
+        bind_env.assert_called_once_with(
+            "zhipu",
+            "ZHIPU_API_KEY",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            model="GLM-4.7-Flash",
+        )
         send.assert_not_called()
 
     def test_cli_config_does_not_start_run_loop(self) -> None:
@@ -582,7 +608,12 @@ class SoldierLlmConfigTests(unittest.TestCase):
                 ack = soldier.apply_llm_config(payload)
             self.assertEqual(path.read_text(encoding="utf-8"), incoming)
         set_env.assert_called_once_with("DEEPSEEK_API_KEY", "sk-live")
-        bind_env.assert_called_once_with("deepseek", "DEEPSEEK_API_KEY")
+        bind_env.assert_called_once_with(
+            "deepseek",
+            "DEEPSEEK_API_KEY",
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4-flash",
+        )
         self.assertEqual(ack["status"], "configured")
         self.assertEqual(ack["provider"], "deepseek")
         self.assertEqual(ack["model"], "deepseek-v4-flash")
@@ -633,7 +664,12 @@ class SoldierLlmConfigTests(unittest.TestCase):
             self.assertTrue(catalog["openai"].enable)
             self.assertNotIn("api_key", path.read_text(encoding="utf-8"))
         set_env.assert_called_once_with("OPENAI_API_KEY", "sk-live")
-        bind_env.assert_called_once_with("openai", "OPENAI_API_KEY")
+        bind_env.assert_called_once_with(
+            "openai",
+            "OPENAI_API_KEY",
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o",
+        )
         self.assertEqual(ack["provider"], "openai")
         self.assertEqual(ack["model"], "gpt-4o")
         self.assertTrue(ack["json_written"])
@@ -667,8 +703,8 @@ class SoldierLlmConfigTests(unittest.TestCase):
                 mock.patch("soldier.soldier.set_user_env"),
                 mock.patch(
                     "soldier.soldier.bind_opencode_provider_api_key_env",
-                    side_effect=lambda name, env: bind_opencode_provider_api_key_env(
-                        name, env, dest_path=dest
+                    side_effect=lambda name, env, **kwargs: bind_opencode_provider_api_key_env(
+                        name, env, dest_path=dest, **kwargs
                     ),
                 ),
             ):
@@ -678,10 +714,67 @@ class SoldierLlmConfigTests(unittest.TestCase):
                 written["provider"]["zhipuai"]["options"]["apiKey"],
                 "{env:ZHIPU_API_KEY}",
             )
+            self.assertNotIn("baseURL", written["provider"]["zhipuai"]["options"])
+            self.assertNotIn("npm", written["provider"]["zhipuai"])
+            self.assertEqual(set(written["provider"]), {"zhipuai"})
             self.assertNotIn("sk-live", dest.read_text(encoding="utf-8"))
             self.assertIn("mcp", written)
             self.assertEqual(ack["env"], "ZHIPU_API_KEY")
             self.assertEqual(catalog_path.read_text(encoding="utf-8"), incoming)
+
+    def test_apply_llm_config_writes_proxy_base_url(self) -> None:
+        incoming = _llm_json_text(
+            provider="xlc-proxy",
+            models="deepseek-v4-pro",
+            env="XLC_API_KEY",
+            base_url="https://api.xty.app/v1",
+        )
+        payload = {
+            "type": "llm_config",
+            "api_key": "sk-live",
+            "llm_json": incoming,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "opencode.json"
+            catalog_path = Path(tmp) / "llm.json"
+            dest.write_text(
+                json.dumps(
+                    {
+                        "permission": {"*": "allow"},
+                        "mcp": {"playwright": {}},
+                        "provider": {
+                            "deepseek": {"options": {"apiKey": "{env:DEEPSEEK_API_KEY}"}}
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch(
+                    "soldier.soldier.overwrite_workspace_llm_json",
+                    side_effect=lambda content: overwrite_workspace_llm_json(
+                        content, path=catalog_path
+                    ),
+                ),
+                mock.patch("soldier.soldier.set_user_env"),
+                mock.patch(
+                    "soldier.soldier.bind_opencode_provider_api_key_env",
+                    side_effect=lambda name, env, **kwargs: bind_opencode_provider_api_key_env(
+                        name, env, dest_path=dest, **kwargs
+                    ),
+                ),
+            ):
+                ack = soldier.apply_llm_config(payload)
+            written = json.loads(dest.read_text(encoding="utf-8"))
+            body = written["provider"]["xlc-proxy"]
+            self.assertEqual(set(written["provider"]), {"xlc-proxy"})
+            self.assertEqual(body["options"]["baseURL"], "https://api.xty.app/v1")
+            self.assertEqual(body["options"]["apiKey"], "{env:XLC_API_KEY}")
+            self.assertEqual(body["npm"], "@ai-sdk/openai-compatible")
+            self.assertEqual(body["models"]["deepseek-v4-pro"]["name"], "deepseek-v4-pro")
+            self.assertNotIn("sk-live", dest.read_text(encoding="utf-8"))
+            self.assertEqual(ack["provider"], "xlc-proxy")
+            self.assertEqual(ack["model"], "deepseek-v4-pro")
 
     def test_build_opencode_argv_uses_llm_json_enable(self) -> None:
         record = ProviderRecord(

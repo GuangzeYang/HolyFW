@@ -974,7 +974,9 @@ def apply_llm_config(payload: dict) -> dict[str, object]:
     dest = overwrite_workspace_llm_json(_payload_llm_json_text(payload.get("llm_json")))
     name, record = enabled_provider(dest)
     set_user_env(record.env, api_key.strip())
-    bind_opencode_provider_api_key_env(name, record.env)
+    bind_opencode_provider_api_key_env(
+        name, record.env, base_url=record.base_url, model=record.models
+    )
     logging.info(
         "LLM config applied for provider %s model %s json_written=True",
         name,

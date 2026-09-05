@@ -126,6 +126,11 @@ def opencode_model_spec(name: str, record: ProviderRecord) -> str:
     return f"{name}/{record.models}"
 
 
+def is_proxy_provider(name: str) -> bool:
+    """Return True when the catalog key is a custom OpenCode-compatible proxy."""
+    return str(name).endswith("-proxy")
+
+
 def resolve_config_selection(
     provider: str | None = None,
     model: str | None = None,

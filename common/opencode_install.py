@@ -31,6 +31,7 @@ _PROVIDER_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
 ROLE_OPENCODE_MERGE_KEYS = ("permission", "mcp")
 COMMANDER_OPENCODE_MERGE_KEYS = ("provider",)
 _OPENCODE_SCHEMA = "https://opencode.ai/config.json"
+_OPENCODE_COMPATIBLE_NPM = "@ai-sdk/openai-compatible"
 
 
 def opencode_config_dir() -> Path:
@@ -257,12 +258,18 @@ def bind_opencode_provider_api_key_env(
     provider: str,
     env_name: str,
     dest_path: Path | None = None,
+    *,
+    base_url: str | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
-    """Point provider.<name>.options.apiKey at {env:ENV} in host opencode.json.
+    """Replace provider in host opencode.json with the enabled catalog entry.
 
-    Preserves permission, mcp, and other providers. Never writes the secret.
-    Drops leftover baseURL/npm on that provider so OpenCode uses its built-in endpoint.
+    Preserves permission, mcp, and other non-provider keys. Never writes the secret.
+    Names ending in ``-proxy`` get npm, baseURL, and models from this call.
+    Other names get apiKey only so OpenCode uses its built-in endpoint.
     """
+    from common.llm_catalog import is_proxy_provider
+
     name = (provider or "").strip()
     env = (env_name or "").strip()
     if not name or not _PROVIDER_NAME.match(name):
@@ -282,21 +289,24 @@ def bind_opencode_provider_api_key_env(
                 payload["$schema"] = _OPENCODE_SCHEMA
         elif loaded is not None:
             raise ValueError(f"{dest} must be a JSON object")
-    providers = payload.get("provider")
-    if not isinstance(providers, dict):
-        providers = {}
-    body = providers.get(name)
-    if not isinstance(body, dict):
-        body = {}
-    options = body.get("options")
-    if not isinstance(options, dict):
-        options = {}
-    options["apiKey"] = f"{{env:{env}}}"
-    options.pop("baseURL", None)
-    body["options"] = options
-    body.pop("npm", None)
-    providers[name] = body
-    payload["provider"] = providers
+    if is_proxy_provider(name):
+        url = (base_url or "").strip()
+        model_id = (model or "").strip()
+        if not url:
+            raise ValueError(f"OpenCode proxy provider {name!r} requires base_url")
+        if not model_id:
+            raise ValueError(f"OpenCode proxy provider {name!r} requires model")
+        body: dict[str, Any] = {
+            "npm": _OPENCODE_COMPATIBLE_NPM,
+            "options": {
+                "baseURL": url,
+                "apiKey": f"{{env:{env}}}",
+            },
+            "models": {model_id: {"name": model_id}},
+        }
+    else:
+        body = {"options": {"apiKey": f"{{env:{env}}}"}}
+    payload["provider"] = {name: body}
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.name == "opencode.json":
         _unlink_if_exists(dest.parent / "opencode.jsonc")

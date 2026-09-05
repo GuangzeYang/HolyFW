@@ -50,7 +50,9 @@ def apply_local_llm_config(
     name, record, resolved_model, _persist = resolve_config_selection(llm_provider, model)
     record = save_enabled_selection(name, resolved_model)
     set_user_env(record.env, key)
-    bind_opencode_provider_api_key_env(name, record.env)
+    bind_opencode_provider_api_key_env(
+        name, record.env, base_url=record.base_url, model=record.models
+    )
     return name, record, resolved_model, workspace_llm_json_path()
 
 

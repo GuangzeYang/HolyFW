@@ -294,23 +294,88 @@ class BindProviderEnvTests(unittest.TestCase):
             jsonc = Path(tmp) / "opencode.jsonc"
             jsonc.write_text("{}", encoding="utf-8")
 
-            saved = bind_opencode_provider_api_key_env("zhipuai", "ZHIPU_API_KEY", dest_path=dest)
+            saved = bind_opencode_provider_api_key_env(
+                "zhipuai",
+                "ZHIPU_API_KEY",
+                dest_path=dest,
+                base_url="https://open.bigmodel.cn/api/paas/v4",
+                model="GLM-4.7-Flash",
+            )
             written = json.loads(dest.read_text(encoding="utf-8"))
 
             self.assertEqual(
                 saved["provider"]["zhipuai"]["options"]["apiKey"],
                 "{env:ZHIPU_API_KEY}",
             )
+            self.assertEqual(set(written["provider"]), {"zhipuai"})
             self.assertNotIn("baseURL", written["provider"]["zhipuai"]["options"])
             self.assertNotIn("npm", written["provider"]["zhipuai"])
-            self.assertEqual(
-                written["provider"]["deepseek"]["options"]["apiKey"],
-                "{env:DEEPSEEK_API_KEY}",
-            )
             self.assertEqual(written["mcp"]["playwright"]["command"], ["npx"])
             self.assertEqual(written["permission"], ALLOW_PERMISSION)
             self.assertNotIn("sk-", dest.read_text(encoding="utf-8"))
             self.assertFalse(jsonc.exists())
+
+    def test_proxy_provider_writes_base_url_and_replaces_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "opencode.json"
+            dest.write_text(
+                json.dumps(
+                    {
+                        "permission": ALLOW_PERMISSION,
+                        "mcp": {"playwright": {"type": "local", "command": ["npx"]}},
+                        "provider": {
+                            "deepseek": {
+                                "options": {"apiKey": "{env:DEEPSEEK_API_KEY}"},
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            saved = bind_opencode_provider_api_key_env(
+                "xlc-proxy",
+                "XLC_API_KEY",
+                dest_path=dest,
+                base_url="https://api.xty.app/v1",
+                model="deepseek-v4-pro",
+            )
+            written = json.loads(dest.read_text(encoding="utf-8"))
+            body = written["provider"]["xlc-proxy"]
+
+            self.assertEqual(set(written["provider"]), {"xlc-proxy"})
+            self.assertEqual(body["npm"], "@ai-sdk/openai-compatible")
+            self.assertEqual(body["options"]["baseURL"], "https://api.xty.app/v1")
+            self.assertEqual(body["options"]["apiKey"], "{env:XLC_API_KEY}")
+            self.assertEqual(body["models"]["deepseek-v4-pro"]["name"], "deepseek-v4-pro")
+            self.assertEqual(written["mcp"]["playwright"]["command"], ["npx"])
+            self.assertEqual(saved["provider"]["xlc-proxy"]["options"]["baseURL"], body["options"]["baseURL"])
+
+            bind_opencode_provider_api_key_env(
+                "deepseek",
+                "DEEPSEEK_API_KEY",
+                dest_path=dest,
+                base_url="https://api.deepseek.com",
+                model="deepseek-v4-flash",
+            )
+            after = json.loads(dest.read_text(encoding="utf-8"))
+            self.assertEqual(set(after["provider"]), {"deepseek"})
+            self.assertNotIn("baseURL", after["provider"]["deepseek"]["options"])
+            self.assertNotIn("npm", after["provider"]["deepseek"])
+            self.assertNotIn("xlc-proxy", after["provider"])
+            text = dest.read_text(encoding="utf-8")
+            self.assertNotIn("https://api.xty.app/v1", text)
+            self.assertNotIn("baseURL", text)
+
+    def test_proxy_provider_requires_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "opencode.json"
+            dest.write_text(json.dumps({"permission": ALLOW_PERMISSION}), encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                bind_opencode_provider_api_key_env(
+                    "xlc-proxy", "XLC_API_KEY", dest_path=dest
+                )
+            self.assertIn("base_url", str(ctx.exception))
 
     def test_creates_provider_block_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

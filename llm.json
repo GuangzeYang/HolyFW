@@ -4,13 +4,19 @@
       "base_url": "https://api.deepseek.com",
       "models": "deepseek-v4-flash",
       "env": "DEEPSEEK_API_KEY",
-      "enable": true
+      "enable": false
     },
     "zhipuai": {
       "base_url": "https://open.bigmodel.cn/api/paas/v4",
       "models": "GLM-4.7-Flash",
       "env": "ZHIPU_API_KEY",
       "enable": false
+    },
+    "xlc-proxy": {
+      "base_url": "https://api.xty.app/v1",
+      "models": "deepseek-v4-pro",
+      "env": "XLC_API_KEY",
+      "enable": true
     }
   }
 }
