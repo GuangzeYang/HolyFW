@@ -114,6 +114,17 @@ class CommanderCliRouteTests(unittest.TestCase):
         )
         serve.assert_not_called()
 
+    def test_config_subcommand_forwards_sync(self) -> None:
+        with (
+            mock.patch("commander.config_control.main", return_value=0) as config,
+            mock.patch("commander.commander.main") as serve,
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                commander_cli.main(["config", "--api-key", "sk-test", "--sync"])
+        self.assertEqual(ctx.exception.code, 0)
+        config.assert_called_once_with(["--api-key", "sk-test", "--sync"])
+        serve.assert_not_called()
+
     def test_build_subcommand_does_not_start_server(self) -> None:
         with (
             mock.patch("commander.host_build.run_build", return_value=0) as build,

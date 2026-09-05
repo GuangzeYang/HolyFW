@@ -61,7 +61,7 @@ HolyFramework/
 │   ├── commander.py                       # Main entry point: TCP server, scanner thread, and dependency wiring
 │   ├── generate_role_task.py              # Standalone entry point for generating the daily task file
 │   ├── dispatch.py                        # CLI for manually dispatching a single task
-│   ├── config_control.py                  # commander config --api-key: user env + soldier fan-out
+│   ├── config_control.py                  # commander config --api-key: local llm.json/env; --sync fans out
 │   ├── dispatch_client.py                 # Subprocess adapter used by the scanner to invoke dispatch.py
 │   ├── scanner_service.py                 # Main scanning and scheduling workflow
 │   ├── role_file_service.py               # Daily task-file generation, repair, loading, and saving
@@ -105,7 +105,7 @@ HolyFramework/
     ├── test_attacker_runtime.py           # Attacker batch fill, serial execution, and result logs
     ├── test_commander_logging_hook.py     # Commander log-switch hook tests
     ├── test_commander_refactor.py         # Core commander regression tests
-    ├── test_llm_config.py                 # llm.json enable invariant, config fan-out, soldier apply
+    ├── test_llm_config.py                 # llm.json enable invariant, local config, --sync fan-out, soldier apply
     ├── test_common_work_windows.py        # Shared work-window utility tests
     ├── test_role_dependency_provider.py   # Role dependency-provider tests
     ├── test_soldier_runtime.py             # Soldier runtime tests
@@ -204,17 +204,18 @@ Before running the project, review at least these configuration files:
 
 #### `llm.json`
 
-Root-level LLM catalog. There is no hardcoded vendor set: each key under `provider` is a vendor id passed to OpenCode as `--model {provider}/{models}`. Add another vendor by adding an object with `base_url`, `models`, `env`, and `enable`. Exactly one provider must have `"enable": true`. The API key is never stored here. Soldier `build` writes permission and MCP only. When `commander config` pushes `llm_config`, each soldier overwrites its workspace `llm.json` with the commander's file, then writes `provider.<name>.options.apiKey` as `{env:<catalog env>}` into `~/.config/opencode/opencode.json` (no `baseURL`, no secret). `attacker config` does the same on the attacker host.
+Root-level LLM catalog. There is no hardcoded vendor set: each key under `provider` is a vendor id passed to OpenCode as `--model {provider}/{models}`. Add another vendor by adding an object with `base_url`, `models`, `env`, and `enable`. Exactly one provider must have `"enable": true`. The API key is never stored here. Soldier `build` writes permission and MCP only. By default `commander config` only updates this host. With `--sync` it also pushes `llm_config`; each soldier overwrites its workspace `llm.json` with the commander's file, then writes `provider.<name>.options.apiKey` as `{env:<catalog env>}` into `~/.config/opencode/opencode.json` (no `baseURL`, no secret). `attacker config` does the same local apply on the attacker host and never contacts soldiers.
 
-Commander generation POSTs to the `enable: true` entry's `base_url` (OpenAI-compatible `/chat/completions`) using that entry's `models`. Soldier only passes `--model {provider}/{model}` to `opencode run`; OpenCode switches the vendor endpoint from that spec (see [OpenCode CLI](https://opencode.ai/docs/zh-cn/cli/#run-1)). `--api-key` is required; `--llm-provider` and `--model` are optional and default to the current `enable: true` entry:
+Commander generation POSTs to the `enable: true` entry's `base_url` (OpenAI-compatible `/chat/completions`) using that entry's `models`. Soldier only passes `--model {provider}/{model}` to `opencode run`; OpenCode switches the vendor endpoint from that spec (see [OpenCode CLI](https://opencode.ai/docs/zh-cn/cli/#run-1)). `--api-key` is required; `--llm-provider` and `--model` are optional and default to the current `enable: true` entry. `--sync` is a flag (default off); if present, commander also fans the catalog and key out to soldiers:
 
 ```bash
 commander config --api-key <secret>
 commander config --llm-provider zhipu --api-key <secret>
 commander config --llm-provider zhipu --api-key <secret> --model GLM-4.7-Flash
+commander config --llm-provider zhipu --api-key <secret> --sync
 ```
 
-That command updates workspace `llm.json` enable/models (exactly one `enable: true`), writes the selected provider's API-key env var, points OpenCode at that env name in `~/.config/opencode/opencode.json`, and pushes the commander workspace `llm.json` plus the API key to every soldier. Each soldier overwrites its own workspace `llm.json` with that file (no local catalog lookup) and writes the `{env:...}` binding from the overwritten enable entry into its OpenCode config. After `commander config`, restart a long-running `commander` so generation re-reads `llm.json`. After updating soldier code, restart `soldier listen` on every role host; an old listen process treats config as a task and returns `Missing or invalid task_ref`.
+That command updates workspace `llm.json` enable/models (exactly one `enable: true`), writes the selected provider's API-key env var, and points OpenCode at that env name in `~/.config/opencode/opencode.json`. `--sync` additionally pushes the commander workspace `llm.json` plus the API key to every soldier. Each soldier overwrites its own workspace `llm.json` with that file (no local catalog lookup) and writes the `{env:...}` binding from the overwritten enable entry into its OpenCode config. After `commander config`, restart a long-running `commander` so generation re-reads `llm.json`. After updating soldier code, restart `soldier listen` on every role host before `--sync`; an old listen process treats config as a task and returns `Missing or invalid task_ref`.
 
 #### `commander/config.json`
 
@@ -293,11 +294,12 @@ commander build --test
 
 #### Set the LLM API key (and optionally provider/model)
 
-`--api-key` is required. `--llm-provider` and `--model` default to the current `llm.json` enable entry. `commander config` also pushes the commander workspace `llm.json` plus the API key to soldiers (each soldier overwrites its catalog, then binds `{env:...}` in its OpenCode config from the overwritten file). `attacker config` uses the same flags and the same workspace `llm.json`, but does not contact soldiers. The key is never written to JSON. Restart a long-running `commander` or `attacker` after config so it re-reads `llm.json`. Update and restart `soldier listen` on all role hosts first; otherwise old processes return `Missing or invalid task_ref`.
+`--api-key` is required. `--llm-provider` and `--model` default to the current `llm.json` enable entry. By default `commander config` only writes this host's `llm.json`, user env, and OpenCode `{env:...}` binding. Pass `--sync` to also push the commander workspace `llm.json` plus the API key to soldiers (each soldier overwrites its catalog, then binds `{env:...}` in its OpenCode config from the overwritten file). `attacker config` uses the same `--api-key` / `--llm-provider` / `--model` flags and the same workspace `llm.json`, but has no `--sync` and does not contact soldiers. The key is never written to JSON. Restart a long-running `commander` or `attacker` after config so it re-reads `llm.json`. Update and restart `soldier listen` on all role hosts before `--sync`; otherwise old processes return `Missing or invalid task_ref`.
 
 ```bash
 commander config --api-key <secret>
 commander config --llm-provider zhipu --api-key <secret> --model GLM-4.7-Flash
+commander config --llm-provider zhipu --api-key <secret> --sync
 attacker config --api-key <secret>
 attacker config --llm-provider zhipu --api-key <secret> --model GLM-4.7-Flash
 ```
@@ -473,7 +475,7 @@ The API key is not stored in `config.json` or `llm.json`. Set it with:
 commander config --api-key <secret>
 ```
 
-Optional `--llm-provider` and `--model` select a catalog entry and model (only `--api-key` is required). That flips `llm.json` enable/models, writes the selected provider's API-key env var, and pushes the commander workspace `llm.json` plus the API key to soldiers. If the API-key variable is missing or blank, Python client construction fails with an error naming that variable.
+Optional `--llm-provider` and `--model` select a catalog entry and model (only `--api-key` is required). That flips `llm.json` enable/models and writes the selected provider's API-key env var. Pass `--sync` to also push the commander workspace `llm.json` plus the API key to soldiers. If the API-key variable is missing or blank, Python client construction fails with an error naming that variable.
 
 ### paths
 
@@ -617,7 +619,7 @@ Attacker records live under `attacker/logs/`:
 - Both `commander` and `soldier` use bounded thread pools for TCP processing, with a default maximum of 6 concurrent workers.
 - Dispatch binds a task as `waiting` before sending it to `soldier`. If sending fails, the task is rolled back to a retryable state.
 - If `soldier` cannot report to `commander`, the report is added to a local queue and retried up to three times in the background.
-- The generator POSTs to the `llm.json` `enable: true` `base_url` / `models`. Set the key with `commander config --api-key` (optional `--llm-provider` / `--model`), then restart a long-running `commander`. After updating soldier, restart `soldier listen` on every role host so config is not treated as a task. Soldier and attacker `build` still rewrite `~/.config/opencode/opencode.json` without a provider block; the next `config` / `llm_config` writes `{env:...}` for the selected vendor.
+- The generator POSTs to the `llm.json` `enable: true` `base_url` / `models`. Set the key with `commander config --api-key` (optional `--llm-provider` / `--model`). Add `--sync` when soldiers should receive the same catalog and key. Restart a long-running `commander` afterward. After updating soldier, restart `soldier listen` on every role host so `--sync` is not treated as a task. Soldier and attacker `build` still rewrite `~/.config/opencode/opencode.json` without a provider block; the next `config` / `llm_config` writes `{env:...}` for the selected vendor.
 
 ## Development and Regression Testing
 

@@ -20,11 +20,21 @@ If already signed in (Inbox or folder list visible), skip Sign in.
 
 1. Navigate to `https://i1-mail1-c02.ndrtest.local/owa/`. Wait until the logon form (`#username`) or Mail chrome loads.
 2. **Degrade to IP** when any of these happen: connection closed / timeout / DNS failure / HTTP 4xx–5xx / logon form never appears after one wait. Then open `https://172.16.24.12/owa/auth/logon.aspx` (ignore the certificate name mismatch). Do **not** open `https://172.16.24.12/owa/` first — that path returns HTTP 500 before a session exists.
-3. Certificate warning: click **Advanced**, then **Continue** (or equivalent Proceed). Retry the current URL once.
+3. Certificate warning / interstitial: follow **Certificate interstitial**. Do not retry the current URL.
 4. Username: click `#username` (labelled **Domain\user name:**). Fill `ndrtest\hr`. Do not use `#passwordText`.
 5. Password: click `#password`. Fill the password above.
 6. Click `div.signinbutton[role=button]` (visible text **sign in**, `onclick=clkLgn()`). If missing, press Enter in `#password`.
 7. Wait until title contains `Mail - hr@ndrtest.local` and the folder list shows **Inbox**. After IP logon the hash is `/owa/#path=/mail`. If the logon form is still shown, stop.
+
+# Certificate interstitial
+
+Playwright `navigate` / `goto` may return `net::ERR_CERT_COMMON_NAME_INVALID` (or another `ERR_CERT_*`) while the tab is already on `chrome-error://chromewebdata/`. Treat that as **the interstitial is showing**, not as a failed navigation.
+
+1. Snapshot the **current** tab. Do **not** `goto` / navigate the same URL again. Do not `Start-Process` or open system Chrome. Do not `evaluate` or `run_code_unsafe` to dismiss the warning.
+2. Match the page: title **Privacy error（隐私设置错误）**, heading **Your connection is not private（您的连接不是私密连接）**.
+3. Click **Advanced（高级）** (left white button). Do **not** click **Back to safety** / **Return to safe connection（返回安全连接）**.
+4. Snapshot. Click **Proceed to 172.16.24.12 (unsafe)（继续前往 172.16.24.12（不安全））**, or any control whose name contains **Proceed** / **Continue** / **继续前往** and the current host.
+5. Wait until `#username` or Mail chrome is visible. If it is still missing after one more snapshot, stop. Do not loop `goto`.
 
 # Recipient rules (OWA people picker)
 
@@ -213,6 +223,9 @@ Do not close the browser until the verification step for the action succeeded. T
 - Do not click Send on a reply task, or Reply on a view task.
 - Do not continue if Sign in did not reach Mail.
 - Do not open `https://172.16.24.12/owa/` as the first IP URL (HTTP 500). Use `/owa/auth/logon.aspx`.
+- Do not click **Back to safety** / **Return to safe connection（返回安全连接）** on a certificate interstitial.
+- Do not `goto` / navigate the same URL again after `ERR_CERT_*` or `chrome-error://chromewebdata/`.
+- Do not open a second browser (`Start-Process`, system Chrome) to bypass the certificate page.
 - Do not fail because toolbar **Reply** is missing; use **Reply all**.
 - Do not press Escape in compose.
 - Do not type short aliases into To/Cc/Bcc.

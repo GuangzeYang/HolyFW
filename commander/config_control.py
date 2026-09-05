@@ -1,10 +1,14 @@
-"""Set LLM provider/model and the required API key, then fan them out to soldiers."""
+"""Set LLM provider/model and the required API key on this host.
+
+Pass ``--sync`` to also fan the catalog and key out to soldiers.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from common.llm_config_cli import (
     add_llm_config_arguments,
@@ -17,11 +21,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="commander config",
         description=(
-            "Set the LLM provider API key (required) and optionally the provider/model, "
-            "then push workspace llm.json and the API key to soldiers"
+            "Set the LLM provider API key (required) and optionally the provider/model "
+            "on this host. Pass --sync to also push workspace llm.json and the API key "
+            "to soldiers"
         ),
     )
     add_llm_config_arguments(parser)
+    parser.add_argument(
+        "--sync",
+        action="store_true",
+        default=False,
+        help="also push workspace llm.json and the API key to every soldier",
+    )
     return parser
 
 
@@ -37,6 +48,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(format_local_config_line(catalog, name, model, record.env), flush=True)
+    if not args.sync:
+        return 0
+    return _sync_soldiers(catalog, name, args.api_key.strip(), model)
+
+
+def _sync_soldiers(catalog: Path, name: str, api_key: str, model: str) -> int:
     try:
         llm_json_text = catalog.read_text(encoding="utf-8")
     except OSError as exc:
@@ -78,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
             host,
             port,
             name,
-            args.api_key.strip(),
+            api_key,
             model,
             timeout=timeout,
             llm_json=llm_json_text,

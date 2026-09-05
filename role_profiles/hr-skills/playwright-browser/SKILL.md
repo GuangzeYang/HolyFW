@@ -35,7 +35,7 @@ These rules override Human-like pacing, `type`, and `press` on Outlook Web App.
 - After a navigation, scroll once before extracting text.
 - Move near a control, then click with a small offset. Do not click the exact center immediately.
 - Clear a field that already has text before typing a replacement.
-- Close ads, cookie banners, and pop-ups before continuing (Accept / Close / X / Skip). Certificate interstitial: Advanced → Continue.
+- Close ads, cookie banners, and pop-ups before continuing (Accept / Close / X / Skip). Certificate interstitial: snapshot the current tab, click **Advanced（高级）**, then **Continue** / **Proceed to … (unsafe)（继续前往 …（不安全））**. Do not click **Back to safety** / **Return to safe connection（返回安全连接）**. Do not `goto` the same URL again.
 
 # Failures
 
@@ -43,6 +43,7 @@ These rules override Human-like pacing, `type`, and `press` on Outlook Web App.
 - Tool timeout: wait, retry once, then stop.
 - 404/403 after a click: reload once, then Back, then stop if still failed.
 - Control not found: snapshot again, scroll, retry once, then stop. Do not invent a different site.
+- `ERR_CERT_*` / `chrome-error://chromewebdata/` / **Your connection is not private（您的连接不是私密连接）** / **Privacy error（隐私设置错误）**: the interstitial is already showing. Snapshot the current tab, click **Advanced（高级）**, snapshot, click **Proceed to … (unsafe)（继续前往 …（不安全））** (or **Continue** / **继续前往** and the current host). Do not re-`goto` the same URL. Do not click **Back to safety** / **Return to safe connection（返回安全连接）**. Do not open a second browser.
 
 # Search recipe (only when an op is `search`)
 

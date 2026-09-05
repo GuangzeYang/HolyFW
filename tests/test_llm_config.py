@@ -270,6 +270,7 @@ class CommanderConfigTests(unittest.TestCase):
         self.assertIn("--llm-provider", text)
         self.assertIn("llm.json", text)
         self.assertIn("--model", text)
+        self.assertIn("--sync", text)
 
     def test_config_rejects_unknown_provider(self) -> None:
         from commander.config_control import main as config_main
@@ -289,7 +290,36 @@ class CommanderConfigTests(unittest.TestCase):
             config_main([])
         self.assertNotEqual(ctx.exception.code, 0)
 
-    def test_config_sets_enabled_env_and_fans_out(self) -> None:
+    def test_config_sets_enabled_env_without_sync(self) -> None:
+        from commander.config_control import main as config_main
+
+        record = ProviderRecord(
+            name="deepseek",
+            base_url="https://api.deepseek.com",
+            models="deepseek-v4-flash",
+            env="DEEPSEEK_API_KEY",
+            enable=True,
+        )
+        with (
+            mock.patch(
+                "common.llm_config_cli.resolve_config_selection",
+                return_value=("deepseek", record, "deepseek-v4-flash", False),
+            ),
+            mock.patch("common.llm_config_cli.save_enabled_selection", return_value=record) as save,
+            mock.patch("common.llm_config_cli.set_user_env") as set_env,
+            mock.patch("common.llm_config_cli.bind_opencode_provider_api_key_env") as bind_env,
+            mock.patch("commander.dispatch.send_llm_config") as send,
+            mock.patch("commander.runtime_config.load_runtime_config") as load_runtime,
+        ):
+            code = config_main(["--api-key", " sk-test "])
+        self.assertEqual(code, 0)
+        save.assert_called_once_with("deepseek", "deepseek-v4-flash")
+        set_env.assert_called_once_with("DEEPSEEK_API_KEY", "sk-test")
+        bind_env.assert_called_once_with("deepseek", "DEEPSEEK_API_KEY")
+        send.assert_not_called()
+        load_runtime.assert_not_called()
+
+    def test_config_sync_fans_out_to_soldiers(self) -> None:
         from commander.config_control import main as config_main
 
         record = ProviderRecord(
@@ -327,7 +357,7 @@ class CommanderConfigTests(unittest.TestCase):
                 return_value={"ok": True, "status": "configured"},
             ) as send,
         ):
-            code = config_main(["--api-key", " sk-test "])
+            code = config_main(["--api-key", " sk-test ", "--sync"])
         self.assertEqual(code, 0)
         save.assert_called_once_with("deepseek", "deepseek-v4-flash")
         set_env.assert_called_once_with("DEEPSEEK_API_KEY", "sk-test")
@@ -362,30 +392,14 @@ class CommanderConfigTests(unittest.TestCase):
             mock.patch("common.llm_config_cli.save_enabled_selection", return_value=saved) as save,
             mock.patch("common.llm_config_cli.set_user_env") as set_env,
             mock.patch("common.llm_config_cli.bind_opencode_provider_api_key_env") as bind_env,
-            mock.patch("commander.runtime_config.load_runtime_config", return_value={}),
-            mock.patch(
-                "commander.runtime_config.get_dispatch_config",
-                return_value={"soldier_timeout_seconds": 1.0},
-            ),
-            mock.patch(
-                "commander.runtime_config.get_paths_config",
-                return_value={"target_ini_file": "commander.ini"},
-            ),
-            mock.patch("commander.runtime_config.resolve_config_relative_path", return_value=Path("ini")),
-            mock.patch("commander.target_config.load_all_roles", return_value=("hr",)),
-            mock.patch("commander.target_config.load_target_config", return_value=("10.0.0.1", 38472)),
-            mock.patch(
-                "commander.dispatch.send_llm_config",
-                return_value={"ok": True, "status": "configured"},
-            ) as send,
+            mock.patch("commander.dispatch.send_llm_config") as send,
         ):
             code = config_main(["--llm-provider", "zhipu", "--api-key", "sk-z"])
         self.assertEqual(code, 0)
         save.assert_called_once_with("zhipu", "GLM-4.7-Flash")
         set_env.assert_called_once_with("ZHIPU_API_KEY", "sk-z")
         bind_env.assert_called_once_with("zhipu", "ZHIPU_API_KEY")
-        self.assertEqual(send.call_args.args[2:5], ("zhipu", "sk-z", "GLM-4.7-Flash"))
-        self.assertIn('"provider"', send.call_args.kwargs["llm_json"])
+        send.assert_not_called()
 
     def test_config_model_persists_for_current_provider(self) -> None:
         from commander.config_control import main as config_main
@@ -412,26 +426,12 @@ class CommanderConfigTests(unittest.TestCase):
             mock.patch("common.llm_config_cli.save_enabled_selection", return_value=saved) as save,
             mock.patch("common.llm_config_cli.set_user_env"),
             mock.patch("common.llm_config_cli.bind_opencode_provider_api_key_env"),
-            mock.patch("commander.runtime_config.load_runtime_config", return_value={}),
-            mock.patch(
-                "commander.runtime_config.get_dispatch_config",
-                return_value={"soldier_timeout_seconds": 1.0},
-            ),
-            mock.patch(
-                "commander.runtime_config.get_paths_config",
-                return_value={"target_ini_file": "commander.ini"},
-            ),
-            mock.patch("commander.runtime_config.resolve_config_relative_path", return_value=Path("ini")),
-            mock.patch("commander.target_config.load_all_roles", return_value=("hr",)),
-            mock.patch("commander.target_config.load_target_config", return_value=("10.0.0.1", 38472)),
-            mock.patch(
-                "commander.dispatch.send_llm_config",
-                return_value={"ok": True, "status": "configured"},
-            ),
+            mock.patch("commander.dispatch.send_llm_config") as send,
         ):
             code = config_main(["--api-key", "sk-test", "--model", "deepseek-v4-pro"])
         self.assertEqual(code, 0)
         save.assert_called_once_with("deepseek", "deepseek-v4-pro")
+        send.assert_not_called()
 
     def test_config_hints_when_soldier_is_too_old(self) -> None:
         from commander.config_control import main as config_main
@@ -471,7 +471,7 @@ class CommanderConfigTests(unittest.TestCase):
             ),
             mock.patch("builtins.print", side_effect=lambda *a, **k: buf.append(" ".join(str(x) for x in a))),
         ):
-            code = config_main(["--api-key", "sk-test"])
+            code = config_main(["--api-key", "sk-test", "--sync"])
         self.assertEqual(code, 1)
         joined = "\n".join(buf)
         self.assertIn("too old for llm_config", joined)
@@ -511,6 +511,8 @@ class AttackerConfigTests(unittest.TestCase):
         for flag in ("--api-key", "--llm-provider", "--model", "llm.json"):
             self.assertIn(flag, attacker_help)
             self.assertIn(flag, commander_help)
+        self.assertIn("--sync", commander_help)
+        self.assertNotIn("--sync", attacker_help)
 
     def test_config_sets_enabled_env_without_fan_out(self) -> None:
         from attacker.config_control import main as config_main
