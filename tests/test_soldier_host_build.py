@@ -25,7 +25,12 @@ from soldier.host_build import (
     skill_directories,
     write_host_opencode_configs,
 )
-from common.opencode_install import COMMANDER_OPENCODE_MERGE_KEYS, bind_opencode_provider_api_key_env, write_opencode_config
+from common.opencode_install import (
+    COMMANDER_OPENCODE_MERGE_KEYS,
+    bind_opencode_provider_api_key_env,
+    opencode_options_base_url,
+    write_opencode_config,
+)
 
 
 ALLOW_PERMISSION = {
@@ -266,6 +271,28 @@ class WriteOpencodeConfigTests(unittest.TestCase):
             self.assertEqual(written["mcp"]["playwright"]["command"], ["npx"])
 
 
+class OpencodeOptionsBaseUrlTests(unittest.TestCase):
+    def test_strips_trailing_chat_completions(self) -> None:
+        self.assertEqual(
+            opencode_options_base_url("https://svip.xty.app/v1/chat/completions"),
+            "https://svip.xty.app/v1",
+        )
+        self.assertEqual(
+            opencode_options_base_url("https://svip.xty.app/v1/chat/completions/"),
+            "https://svip.xty.app/v1",
+        )
+
+    def test_leaves_api_root_unchanged(self) -> None:
+        self.assertEqual(
+            opencode_options_base_url("https://api.xty.app/v1"),
+            "https://api.xty.app/v1",
+        )
+        self.assertEqual(
+            opencode_options_base_url("https://api.xty.app/v1/"),
+            "https://api.xty.app/v1",
+        )
+
+
 class BindProviderEnvTests(unittest.TestCase):
     def test_updates_env_name_preserves_mcp_strips_base_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -366,6 +393,23 @@ class BindProviderEnvTests(unittest.TestCase):
             text = dest.read_text(encoding="utf-8")
             self.assertNotIn("https://api.xty.app/v1", text)
             self.assertNotIn("baseURL", text)
+
+    def test_proxy_provider_strips_chat_completions_from_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "opencode.json"
+            dest.write_text(json.dumps({"permission": ALLOW_PERMISSION}), encoding="utf-8")
+            bind_opencode_provider_api_key_env(
+                "xlc-proxy",
+                "XLC_API_KEY",
+                dest_path=dest,
+                base_url="https://svip.xty.app/v1/chat/completions",
+                model="deepseek-v4-pro",
+            )
+            written = json.loads(dest.read_text(encoding="utf-8"))
+            self.assertEqual(
+                written["provider"]["xlc-proxy"]["options"]["baseURL"],
+                "https://svip.xty.app/v1",
+            )
 
     def test_proxy_provider_requires_base_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

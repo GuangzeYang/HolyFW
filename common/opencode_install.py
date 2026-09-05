@@ -32,6 +32,17 @@ ROLE_OPENCODE_MERGE_KEYS = ("permission", "mcp")
 COMMANDER_OPENCODE_MERGE_KEYS = ("provider",)
 _OPENCODE_SCHEMA = "https://opencode.ai/config.json"
 _OPENCODE_COMPATIBLE_NPM = "@ai-sdk/openai-compatible"
+_CHAT_COMPLETIONS_SUFFIX = re.compile(r"/chat/completions/?$")
+
+
+def opencode_options_base_url(base_url: str) -> str:
+    """Return OpenCode options.baseURL without a trailing /chat/completions.
+
+    OpenCode's @ai-sdk/openai-compatible provider always appends that path.
+    Catalog entries may already include it for commander, which POSTs the
+    catalog URL as written.
+    """
+    return _CHAT_COMPLETIONS_SUFFIX.sub("", (base_url or "").strip().rstrip("/"))
 
 
 def opencode_config_dir() -> Path:
@@ -266,7 +277,9 @@ def bind_opencode_provider_api_key_env(
 
     Preserves permission, mcp, and other non-provider keys. Never writes the secret.
     Names ending in ``-proxy`` get npm, baseURL, and models from this call.
-    Other names get apiKey only so OpenCode uses its built-in endpoint.
+    A trailing ``/chat/completions`` is stripped from baseURL so OpenCode does
+    not double-append it. Other names get apiKey only so OpenCode uses its
+    built-in endpoint.
     """
     from common.llm_catalog import is_proxy_provider
 
@@ -290,7 +303,7 @@ def bind_opencode_provider_api_key_env(
         elif loaded is not None:
             raise ValueError(f"{dest} must be a JSON object")
     if is_proxy_provider(name):
-        url = (base_url or "").strip()
+        url = opencode_options_base_url(base_url or "")
         model_id = (model or "").strip()
         if not url:
             raise ValueError(f"OpenCode proxy provider {name!r} requires base_url")

@@ -13,7 +13,7 @@
       "enable": false
     },
     "xlc-proxy": {
-      "base_url": "https://api.xty.app/v1",
+      "base_url": "https://svip.xty.app/v1/chat/completions",
       "models": "deepseek-v4-pro",
       "env": "XLC_API_KEY",
       "enable": true

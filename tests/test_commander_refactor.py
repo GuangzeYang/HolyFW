@@ -596,6 +596,37 @@ class DeepSeekClientTests(unittest.TestCase):
         request_obj = mocked.call_args.args[0]
         self.assertEqual(request_obj.full_url, "https://api.xty.app/v1")
 
+    def test_proxy_provider_posts_full_completions_url_without_stripping(self) -> None:
+        from common.llm_catalog import ProviderRecord
+
+        record = ProviderRecord(
+            name="xlc-proxy",
+            base_url="https://svip.xty.app/v1/chat/completions",
+            models="deepseek-v4-pro",
+            env="XLC_API_KEY",
+            enable=True,
+        )
+        config = DeepSeekConfig(
+            api_base_url=record.base_url,
+            api_key="proxy-key",
+            model=record.models,
+            request_timeout_seconds=10,
+            max_tokens=8192,
+            provider_name=record.name,
+        )
+        payload = {
+            "model": "deepseek-v4-pro",
+            "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
+        }
+        with mock.patch.object(
+            deepseek_client.urllib.request,
+            "urlopen",
+            return_value=FakeHTTPResponse(payload),
+        ) as mocked:
+            DeepSeekAgentClient(config).request_completion("hello")
+        request_obj = mocked.call_args.args[0]
+        self.assertEqual(request_obj.full_url, "https://svip.xty.app/v1/chat/completions")
+
     def test_build_deepseek_client_raises_when_env_missing(self) -> None:
         from common.llm_catalog import ProviderRecord
 

@@ -776,6 +776,52 @@ class SoldierLlmConfigTests(unittest.TestCase):
             self.assertEqual(ack["provider"], "xlc-proxy")
             self.assertEqual(ack["model"], "deepseek-v4-pro")
 
+    def test_apply_llm_config_strips_chat_completions_for_opencode(self) -> None:
+        incoming = _llm_json_text(
+            provider="xlc-proxy",
+            models="deepseek-v4-pro",
+            env="XLC_API_KEY",
+            base_url="https://svip.xty.app/v1/chat/completions",
+        )
+        payload = {
+            "type": "llm_config",
+            "api_key": "sk-live",
+            "llm_json": incoming,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "opencode.json"
+            catalog_path = Path(tmp) / "llm.json"
+            dest.write_text(
+                json.dumps({"permission": {"*": "allow"}, "mcp": {"playwright": {}}}),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch(
+                    "soldier.soldier.overwrite_workspace_llm_json",
+                    side_effect=lambda content: overwrite_workspace_llm_json(
+                        content, path=catalog_path
+                    ),
+                ),
+                mock.patch("soldier.soldier.set_user_env"),
+                mock.patch(
+                    "soldier.soldier.bind_opencode_provider_api_key_env",
+                    side_effect=lambda name, env, **kwargs: bind_opencode_provider_api_key_env(
+                        name, env, dest_path=dest, **kwargs
+                    ),
+                ),
+            ):
+                soldier.apply_llm_config(payload)
+            written = json.loads(dest.read_text(encoding="utf-8"))
+            self.assertEqual(
+                written["provider"]["xlc-proxy"]["options"]["baseURL"],
+                "https://svip.xty.app/v1",
+            )
+            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                catalog["provider"]["xlc-proxy"]["base_url"],
+                "https://svip.xty.app/v1/chat/completions",
+            )
+
     def test_build_opencode_argv_uses_llm_json_enable(self) -> None:
         record = ProviderRecord(
             name="zhipu",
