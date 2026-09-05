@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from common.agent_request_abc import AgentRequestABC, AgentRequestError, AgentResponse, AgentTimeoutError
-from common.llm_catalog import enabled_provider, llm_json_path
+from common.llm_catalog import enabled_provider, is_proxy_provider, llm_json_path
 from common.user_env import get_user_env
 
 DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
@@ -61,7 +61,10 @@ class DeepSeekAgentClient(AgentRequestABC):
         messages: list[dict[str, str]] | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> AgentResponse:
-        endpoint = _normalize_endpoint(self.config.api_base_url)
+        endpoint = _normalize_endpoint(
+            self.config.api_base_url,
+            provider_name=self.config.provider_name,
+        )
         chat_messages = messages if messages else [{"role": "user", "content": prompt}]
         payload: dict[str, Any] = {
             "model": self.config.model,
@@ -162,8 +165,12 @@ def build_deepseek_client(generator_config: dict[str, Any]) -> DeepSeekAgentClie
     return DeepSeekAgentClient(config)
 
 
-def _normalize_endpoint(api_base_url: str) -> str:
-    base = api_base_url.rstrip("/")
+def _normalize_endpoint(api_base_url: str, *, provider_name: str = "") -> str:
+    base = (api_base_url or "").strip().rstrip("/")
+    if not base:
+        raise ValueError("LLM API base_url is empty")
+    if is_proxy_provider(provider_name):
+        return base
     if base.endswith("/chat/completions"):
         return base
     return f"{base}/chat/completions"
