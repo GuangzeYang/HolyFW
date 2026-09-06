@@ -28,6 +28,57 @@ from attacker.task_file import (
 )
 
 
+CATALOG_TECHNIQUE_IDS = (
+    "discovery.orientation",
+    "discovery.host-scan",
+    "discovery.port-scan",
+    "discovery.host-identify",
+    "discovery.user-enum-kerbrute",
+    "discovery.user-enum-ldap",
+    "discovery.user-enum-sid",
+    "discovery.share-enum",
+    "discovery.group-enum",
+    "discovery.password-policy",
+    "discovery.trust-enum",
+    "discovery.security-software",
+    "discovery.local-groups",
+    "discovery.bloodhound",
+    "credential.password-spray",
+    "credential.brute-user",
+    "credential.brute-force",
+    "credential.asrep-roast",
+    "credential.kerberoast",
+    "credential.dump-secrets",
+    "credential.dcsync",
+    "credential.gpp-password",
+    "credential.lsass-dump",
+    "lateral.pth-psexec",
+    "lateral.pth-wmiexec",
+    "lateral.pth-smbexec",
+    "lateral.overpass-the-hash",
+    "lateral.exec-wmiexec",
+    "lateral.exec-smbexec",
+    "lateral.exec-psexec",
+    "lateral.exec-dcomexec",
+    "lateral.exec-atexec",
+    "lateral.delegation-enum",
+    "lateral.delegation-s4u",
+    "lateral.pass-the-ticket",
+    "lateral.tool-transfer",
+    "lateral.exec-winrm",
+    "lateral.exec-schtasks",
+    "collection.share-download",
+    "collection.local-file",
+    "collection.archive",
+    "persistence.golden-ticket",
+    "persistence.silver-ticket",
+    "persistence.add-computer",
+    "persistence.rbcd",
+    "persistence.reset-password",
+    "persistence.service",
+)
+
+
 def _now(hour: int, minute: int = 0) -> datetime:
     return datetime(2026, 8, 23, hour, minute, tzinfo=datetime.now().astimezone().tzinfo)
 
@@ -987,6 +1038,18 @@ class GenerationMessageTests(unittest.TestCase):
         self.assertIn("automated planner", system_prompt.lower())
         self.assertIn("ad-attack", prompt_template)
         self.assertIsInstance(state, dict)
+        self.assertIn("| id | requires | does | writes |", prompt_template)
+        self.assertIn("requires", system_prompt)
+        self.assertIn("FORBIDDEN", system_prompt)
+        self.assertIn("Campaign goal", system_prompt)
+        self.assertIn("refresh", system_prompt)
+        self.assertIn("share", system_prompt)
+        self.assertIn("employee", system_prompt)
+        self.assertIn("Ongoing campaign", prompt_template)
+        self.assertIn("collection.share-download", prompt_template)
+        self.assertIn("collection.local-file", prompt_template)
+        for technique_id in CATALOG_TECHNIQUE_IDS:
+            self.assertIn(f"`{technique_id}`", prompt_template)
 
 
 if __name__ == "__main__":

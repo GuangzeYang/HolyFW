@@ -28,63 +28,70 @@ Reference grammar:
 - `<target-ref>`: `host <ip|fqdn|machine_account>`, `domain`, or `subnet <cidr>`.
 - Omit the `using the <field> of <object>` clause for techniques with no source object (`discovery.orientation`, `discovery.host-scan`, `discovery.port-scan`, `discovery.host-identify`, `discovery.group-enum`, `discovery.password-policy`, `discovery.trust-enum`).
 
-The technique id determines which field is consumed (each technique's "Inputs" in SKILL.md says which); the `using` clause names the source object and the `against` clause names the target. The grammar is uniform across all techniques.
+The catalog `requires` column says which state field to consume; the `using` clause names the source object and the `against` clause names the target. The grammar is uniform across all techniques.
 
 One-shot intents (given in the task text, not stored in state): the spray candidate password, a reset password, a file path to download, and a user to impersonate.
 
 ## 3. Technique ids
 
-Each id maps to exactly one command (see SKILL.md).
+Each id maps to exactly one command. Pick a row only when its `requires` fields already exist in `state` (or `requires` is `none`). Prefer rows whose `writes` fill missing knowledge; once the seed is filled, interleave refresh and collection.
 
-| Phase | Technique | id |
-|-------|-----------|----|
-| discovery | orientation | `discovery.orientation` |
-| discovery | host discovery | `discovery.host-scan` |
-| discovery | single-host port scan | `discovery.port-scan` |
-| discovery | host identification (reverse DNS) | `discovery.host-identify` |
-| discovery | username enumeration (kerbrute) | `discovery.user-enum-kerbrute` |
-| discovery | username enumeration (LDAP) | `discovery.user-enum-ldap` |
-| discovery | SID enumeration | `discovery.user-enum-sid` |
-| discovery | network share enumeration | `discovery.share-enum` |
-| discovery | domain group enumeration | `discovery.group-enum` |
-| discovery | password policy discovery | `discovery.password-policy` |
-| discovery | domain trust discovery | `discovery.trust-enum` |
-| discovery | security software discovery | `discovery.security-software` |
-| discovery | local group enumeration | `discovery.local-groups` |
-| discovery | BloodHound domain mapping | `discovery.bloodhound` |
-| credential | password spraying | `credential.password-spray` |
-| credential | single-account brute force | `credential.brute-user` |
-| credential | brute force | `credential.brute-force` |
-| credential | AS-REP roasting | `credential.asrep-roast` |
-| credential | Kerberoasting | `credential.kerberoast` |
-| credential | credential dumping (SAM/LSA) | `credential.dump-secrets` |
-| credential | DCSync | `credential.dcsync` |
-| credential | GPP password (cPassword) | `credential.gpp-password` |
-| credential | LSASS memory dump | `credential.lsass-dump` |
-| lateral | pass-the-hash (PsExec) | `lateral.pth-psexec` |
-| lateral | pass-the-hash (WMI) | `lateral.pth-wmiexec` |
-| lateral | pass-the-hash (SMBExec) | `lateral.pth-smbexec` |
-| lateral | over-pass-the-hash | `lateral.overpass-the-hash` |
-| lateral | remote shell (WMI) | `lateral.exec-wmiexec` |
-| lateral | remote shell (SMBExec) | `lateral.exec-smbexec` |
-| lateral | remote shell (PsExec) | `lateral.exec-psexec` |
-| lateral | remote shell (DCOM) | `lateral.exec-dcomexec` |
-| lateral | remote shell (AtExec) | `lateral.exec-atexec` |
-| lateral | delegation enumeration | `lateral.delegation-enum` |
-| lateral | delegation abuse (S4U) | `lateral.delegation-s4u` |
-| lateral | pass-the-ticket | `lateral.pass-the-ticket` |
-| lateral | lateral tool transfer | `lateral.tool-transfer` |
-| lateral | remote shell (WinRM) | `lateral.exec-winrm` |
-| lateral | remote scheduled task | `lateral.exec-schtasks` |
-| collection | data from network shared drive | `collection.share-download` |
-| collection | local file collection | `collection.local-file` |
-| collection | archive collected data | `collection.archive` |
-| persistence | golden ticket | `persistence.golden-ticket` |
-| persistence | silver ticket | `persistence.silver-ticket` |
-| persistence | create machine account | `persistence.add-computer` |
-| persistence | RBCD delegation | `persistence.rbcd` (RESTRICTED) |
-| persistence | reset account password | `persistence.reset-password` (RESTRICTED) |
-| persistence | windows service persistence | `persistence.service` |
+Legend:
+
+- `none`: no state object (local foothold is enough)
+- `users.password` / `users.ntlm_hash`: at least one `users[]` entry carries that field
+- `hosts` / `hosts.fqdn`: a `hosts[]` entry already has that field
+- `FORBIDDEN`: never generate
+
+| id | requires | does | writes |
+|----|----------|------|--------|
+| `discovery.orientation` | none | read local domain context | domain.name, dc_ip, dc_fqdn, domain_sid, dcs |
+| `discovery.host-scan` | domain.dc_ip | ping-sweep live hosts | hosts[] |
+| `discovery.port-scan` | hosts | scan ports on one host | hosts[].open_ports, services, os, role |
+| `discovery.host-identify` | hosts.ip | reverse-DNS FQDN and $ account | hosts[].fqdn, machine_account |
+| `discovery.user-enum-kerbrute` | domain.name, domain.dc_ip, wordlists.usernames | enum usernames without creds | domain.usernames |
+| `discovery.user-enum-ldap` | users.password, domain.dc_ip | list users via LDAP | domain.usernames, user_count |
+| `discovery.user-enum-sid` | users.password, domain.dc_ip | enum accounts and SIDs | domain.usernames, users[].sid |
+| `discovery.share-enum` | hosts | list SMB shares | hosts[].shares |
+| `discovery.group-enum` | domain.name | enum domain groups | domain.groups, users[].groups |
+| `discovery.password-policy` | none | read lockout/password policy | domain.password_policy |
+| `discovery.trust-enum` | none | enum domain trusts | domain.trusts |
+| `discovery.security-software` | none | list AV/EDR on attack host | domain.security_products |
+| `discovery.local-groups` | none | list local Administrators | campaign.local_admins |
+| `discovery.bloodhound` | domain.name, domain.dc_ip, users.password | collect BloodHound graph | files[] |
+| `credential.password-spray` | domain.name, domain.dc_ip, wordlists.usernames | spray one password | users[] |
+| `credential.brute-user` | domain.usernames, wordlists.passwords, domain.name, domain.dc_ip | brute one account | users[] |
+| `credential.brute-force` | wordlists.combos, domain.name, domain.dc_ip | brute combo list | users[] |
+| `credential.asrep-roast` | wordlists.usernames, domain.name, domain.dc_ip | roast no-preauth TGTs | users[].no_preauth, files[] |
+| `credential.kerberoast` | users.password, domain.dc_ip | roast SPN tickets | domain.spns, users[] |
+| `credential.dump-secrets` | users.password or users.ntlm_hash, hosts | dump SAM/LSA hashes | users[].ntlm_hash |
+| `credential.dcsync` | users.password or users.ntlm_hash | replicate krbtgt and hashes | users[krbtgt], domain.domain_sid |
+| `credential.gpp-password` | domain.name, domain.dc_ip, users.password | decrypt GPP cPassword | users[] |
+| `credential.lsass-dump` | users.password, hosts | dump LSASS memory | files[] |
+| `lateral.pth-psexec` | users.ntlm_hash, hosts | PTH exec via SMB | hosts[].compromised |
+| `lateral.pth-wmiexec` | users.ntlm_hash, hosts | PTH exec via WMI | hosts[].compromised |
+| `lateral.pth-smbexec` | users.ntlm_hash, hosts | PTH exec via SMB pipes | hosts[].compromised |
+| `lateral.overpass-the-hash` | users.ntlm_hash | hash to TGT | tickets.tgt[] |
+| `lateral.exec-wmiexec` | users.password, hosts | remote shell via WMI | hosts[].compromised |
+| `lateral.exec-smbexec` | users.password, hosts | remote shell via SMB | hosts[].compromised |
+| `lateral.exec-psexec` | users.password, hosts | remote shell via PsExec | hosts[].compromised |
+| `lateral.exec-dcomexec` | users.password, hosts | remote shell via DCOM | hosts[].compromised |
+| `lateral.exec-atexec` | users.password, hosts | run scheduled cmd | hosts[].compromised |
+| `lateral.delegation-enum` | users.password, domain.dc_ip | find delegation edges | domain.delegation |
+| `lateral.delegation-s4u` | users.password or users.ntlm_hash, domain.spns | S4U impersonation ticket | tickets.service[] |
+| `lateral.pass-the-ticket` | tickets, hosts.fqdn | reuse Kerberos ticket | hosts[].compromised |
+| `lateral.tool-transfer` | users.password, hosts, campaign.tools | upload tool to share | files[] |
+| `lateral.exec-winrm` | users.password, hosts | remote cmd via WinRM | hosts[].compromised |
+| `lateral.exec-schtasks` | users.password, hosts | remote scheduled task | hosts[].compromised |
+| `collection.share-download` | hosts.shares, users.password | download file from share | files[] |
+| `collection.local-file` | users.password, hosts | collect local files | files[] |
+| `collection.archive` | files | compress staged files | files[] |
+| `persistence.golden-ticket` | users[krbtgt].ntlm_hash, domain.domain_sid | forge TGT | tickets.golden[] |
+| `persistence.silver-ticket` | users.ntlm_hash, domain.domain_sid, domain.spns | forge service ticket | tickets.silver[] |
+| `persistence.add-computer` | domain.name, domain.dc_ip, users.password | create machine account | users[], campaign.machine_account |
+| `persistence.rbcd` | FORBIDDEN | — | — |
+| `persistence.reset-password` | FORBIDDEN | — | — |
+| `persistence.service` | users.password, hosts | install persist service | files[] |
 
 > `persistence.rbcd` and `persistence.reset-password` are **forbidden** (they modify an existing AD account in place). Never generate them. Every other technique id above is available.
 
@@ -102,16 +109,26 @@ One-shot intents that appear in the task text rather than state: a single spray 
 
 ## 5. Cold-start ordering
 
-On a fresh deployment, schedule the first tasks in dependency order so the state file is seeded before any lateral/persistence task is requested:
+On a fresh deployment, seed in this order (writes are in the catalog):
 
-1. `discovery.orientation` — fills `domain.name`, `domain.dc_ip`, `domain.dc_fqdn`, `domain.domain_sid`.
-2. `discovery.host-scan` — fills `hosts`.
-3. `discovery.host-identify` — fills `hosts[].fqdn`, `hosts[].machine_account`.
-4. `discovery.port-scan` / `discovery.share-enum` — fills ports, services, shares.
-5. `discovery.user-enum-kerbrute` (or `discovery.user-enum-ldap`) — fills `domain.usernames`.
-6. `discovery.group-enum` / `discovery.password-policy` / `discovery.trust-enum` — fills groups, policy, trusts.
-7. `credential.password-spray` / `credential.kerberoast` / `credential.gpp-password` — fills `users`, `domain.spns`.
+1. `discovery.orientation`
+2. `discovery.host-scan`
+3. `discovery.host-identify`
+4. `discovery.port-scan` / `discovery.share-enum`
+5. `discovery.user-enum-kerbrute` (or `discovery.user-enum-ldap`)
+6. `discovery.group-enum` / `discovery.password-policy` / `discovery.trust-enum`
+7. `credential.password-spray` / `credential.kerberoast` / `credential.gpp-password`
 8. Only then: lateral movement, collection, and persistence.
+
+## 5b. Ongoing campaign
+
+After the seed, keep rotating toward the campaign goal. Map intents to catalog ids (no new commands):
+
+- Expand privilege: `credential.*` → `lateral.*` (mark `hosts[].compromised`) → allowed `persistence.*`.
+- Refresh facts: `discovery.orientation`, `host-scan`, `host-identify`, `share-enum`, `group-enum`, `password-policy`, `trust-enum`, `user-enum-*`.
+- Domain shares: `discovery.share-enum` → `collection.share-download` → `collection.archive`.
+- DC configuration (`hosts[].role` is `dc`): `password-policy`, `trust-enum`, `bloodhound`, `gpp-password`, plus `share-enum` / `share-download` on that DC.
+- Employee host files (`role` is member or unknown, credentials already in state): `lateral.exec-*` or PTH, then `collection.local-file`.
 
 ## 6. Worked examples (copy-paste commands)
 
@@ -196,6 +213,7 @@ Do:
 - Keep secrets out of the task text; only object names appear.
 - Use the stable technique ids (they double as the capture `--label`).
 - Schedule discovery before credential/lateral/collection/persistence on a cold start.
+- After the seed, keep scheduling toward the campaign goal: expand privilege, refresh known facts, and collect shares / DC config / employee files.
 - Pre-fill `campaign.machine_account` and `campaign.tools` before running the techniques that consume them.
 
 Don't:
