@@ -15,6 +15,7 @@ from attacker.extract_pcap import (
     NetworkConnect,
     PacketRow,
     ProcessCreate,
+    auto_unlogged_scan,
     build_display_filter,
     connection_is_malicious,
     extract_from_sources,
@@ -24,10 +25,12 @@ from attacker.extract_pcap import (
     options_from_args,
     parse_sysmon_xml,
     parse_task_window,
+    parse_technique_id,
     parse_tshark_fields,
     processes_by_guid,
     run_extract,
     select_malicious_connects,
+    technique_pcap_stem,
 )
 
 GUID = "11111111-1111-1111-1111-111111111111"
@@ -276,12 +279,18 @@ class ConfigAndCliTests(unittest.TestCase):
         )
         self.assertEqual(args.cmd, "extract")
         self.assertEqual(str(args.evtx), "sysmon.evtx")
+        dated = parser.parse_args(
+            ["extract", "--date", "2026-09-06", "--evtx", "sysmon.evtx", "--pcap", "mix.pcapng"]
+        )
+        self.assertEqual(dated.date, "2026-09-06")
+        self.assertIsNone(dated.out_dir)
 
     def test_scan_flag_requires_attacker_ip(self) -> None:
         ns = mock.Mock(
             lab_nets=None,
             since="",
             until="",
+            date="",
             task_md=None,
             include_unlogged_scan=True,
             attacker_ip="",
@@ -313,6 +322,7 @@ class ConfigAndCliTests(unittest.TestCase):
                 evtx=xml_path,
                 pcap=pcap,
                 out_dir=out,
+                date="",
                 tshark="tshark",
                 wevtutil="wevtutil",
                 tuples_name="tuples.json",
@@ -331,6 +341,102 @@ class ConfigAndCliTests(unittest.TestCase):
             records = json.loads((out / "tuples.json").read_text(encoding="utf-8"))
             self.assertEqual(records[0]["dest_port"], 445)
             self.assertIn("impacket", records[0]["command_line"])
+
+    def test_technique_id_and_stem(self) -> None:
+        self.assertEqual(
+            parse_technique_id(
+                "Use the ad-attack skill: execute discovery.port-scan against host 172.16.24.11."
+            ),
+            "discovery.port-scan",
+        )
+        self.assertEqual(
+            technique_pcap_stem("ed6d1a8d95fa463c", "discovery.port-scan"),
+            "ed6d1a8d95fa463c_discovery_port-scan",
+        )
+        self.assertTrue(auto_unlogged_scan("discovery.port-scan", "172.16.24.10", False))
+        self.assertFalse(auto_unlogged_scan("credential.brute-user", "172.16.24.10", False))
+
+    def test_batch_writes_per_technique_pcaps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "2026-09-04"
+            logs.mkdir()
+            (logs / "aaa111aaa111aaaa.md").write_text(
+                "---\n"
+                "task_id: aaa111aaa111aaaa\n"
+                "started_at: 2026-09-04T04:00:00+00:00\n"
+                "completed_at: 2026-09-04T04:02:00+00:00\n"
+                "task: Use the ad-attack skill: execute credential.brute-user against domain.\n"
+                "---\n",
+                encoding="utf-8",
+            )
+            (logs / "bbb222bbb222bbbb.md").write_text(
+                "---\n"
+                "task_id: bbb222bbb222bbbb\n"
+                "started_at: 2026-09-04T04:00:00+00:00\n"
+                "completed_at: 2026-09-04T04:02:00+00:00\n"
+                "task: Use the ad-attack skill: execute discovery.port-scan against host 172.16.24.11.\n"
+                "---\n",
+                encoding="utf-8",
+            )
+            (logs / "skip.md").write_text("---\nplanned_time: 10:00\n---\n", encoding="utf-8")
+            xml_path = root / "sysmon.xml"
+            xml_path.write_text(EID1 + EID3, encoding="utf-8")
+            pcap = root / "mix.pcapng"
+            pcap.write_bytes(b"pcap")
+            epoch = _connect().utc.timestamp()
+            field_line = (
+                f"1\t{epoch:.1f}\t172.16.24.10\t172.16.24.1\t49723\t445\t\t\t12\t\t6\t\t\t1\t0\n"
+            )
+
+            def fake_run(args, **_kwargs):
+                cmd = [str(part) for part in args]
+                if "-T" in cmd and "fields" in cmd:
+                    return mock.Mock(returncode=0, stdout=field_line, stderr="")
+                if "-w" in cmd:
+                    dest = Path(cmd[cmd.index("-w") + 1])
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(b"pcap")
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            args = mock.Mock(
+                evtx=xml_path,
+                pcap=pcap,
+                out_dir=None,
+                date="2026-09-04",
+                tshark="tshark",
+                wevtutil="wevtutil",
+                tuples_name="tuples.json",
+                lab_nets=["172.16.24.0/24"],
+                since="",
+                until="",
+                task_md=None,
+                include_unlogged_scan=False,
+                attacker_ip="172.16.24.10",
+                no_require_cmdline=False,
+            )
+            with mock.patch(
+                "attacker.extract_pcap.resolve_day_logs_dir",
+                return_value=logs,
+            ):
+                payload = run_extract(args, config={}, run_fn=fake_run)
+            self.assertTrue(payload["ok"])
+            names = {Path(item["pcap"]).name for item in payload["tasks"]}
+            self.assertEqual(
+                names,
+                {
+                    "aaa111aaa111aaaa_credential_brute-user.pcapng",
+                    "bbb222bbb222bbbb_discovery_port-scan.pcapng",
+                },
+            )
+            scan = next(item for item in payload["tasks"] if item["technique"] == "discovery.port-scan")
+            self.assertIn("icmp", scan["display_filter"])
+            self.assertEqual(len(payload["skipped"]), 1)
+            self.assertIn("no started_at", payload["skipped"][0]["reason"])
+            records = json.loads((logs / "tuples.json").read_text(encoding="utf-8"))
+            self.assertTrue(all("task_id" in row and "technique" in row for row in records))
+            self.assertTrue((logs / "benign.pcapng").is_file())
+            self.assertFalse((logs / "malicious.pcapng").is_file())
 
 
 if __name__ == "__main__":

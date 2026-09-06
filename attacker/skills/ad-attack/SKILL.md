@@ -1,6 +1,6 @@
 ---
 name: ad-attack
-description: Active Directory penetration attack skill for an attacker agent running on a domain-joined Windows host with an initial foothold. Covers the ATT&CK phases of Discovery, Credential Access, Lateral Movement, and Persistence using impacket, kerbrute, and nmap. Every technique id maps to exactly one command. The skill is object-driven: a long-term APT state file (state.json) holds three knowledge partitions (domain, hosts, users) plus runtime tickets/files, and every command parameter is resolved from a referenced object in that file. Each task follows a strict protocol: validate the environment with a pre-flight script, read state, wrap each atomic action with tshark/Sysmon capture, write results back to state, and roll back stale information. Use this skill whenever an attacker task requires domain reconnaissance, credential abuse, lateral movement, ticket attacks, or persistence.
+description: Active Directory penetration attack skill for an attacker agent running on a domain-joined Windows host with an initial foothold. Covers the ATT&CK phases of Discovery, Credential Access, Lateral Movement, and Persistence using impacket, kerbrute, and nmap. Every technique id maps to exactly one command. The skill is object-driven: a long-term APT state file (state.json) holds three knowledge partitions (domain, hosts, users) plus runtime tickets/files, and every command parameter is resolved from a referenced object in that file. Each task follows a strict protocol: validate the environment with a pre-flight script, read state, wrap each atomic action with log capture (live tshark is a no-op; pcaps come from offline extract), write results back to state, and roll back stale information. Use this skill whenever an attacker task requires domain reconnaissance, credential abuse, lateral movement, ticket attacks, or persistence.
 ---
 
 # AD Attack Skill
@@ -14,7 +14,7 @@ The skill is object-driven and stateful:
 - `state.json` is the single source of truth for every command parameter. It holds three knowledge partitions — `domain`, `hosts`, and `users` — plus runtime `tickets`, `files`, `techniques`, and `notes`.
 - `changes.json` is the operator rollback ledger: every technique that mutates the target AD (new user, machine account, password reset, RBCD, DC config) must append one record. HolyFW does not revert the domain; the operator uses this file by hand.
 - Each technique id maps to exactly one command.
-- Every atomic action is bracketed by traffic and log capture so the produced dataset is observable and labelable.
+- Every atomic action is bracketed by log capture. Live tshark is disabled; malicious flows are sliced later with `attacker extract` from a domain SPAN pcap, one `{task_id}_{technique}.pcapng` per task.
 
 ## Directory Layout
 
@@ -28,12 +28,12 @@ attacker/skills/ad-attack/
 │   ├── check_environment.py    # pre-flight validation (+ audit subcategory check)
 │   ├── state.py                # read/update state.json
 │   ├── changes.py              # append/read changes.json
-│   ├── capture_traffic.py      # tshark start/stop
+│   ├── capture_traffic.py      # protocol stub (live tshark disabled; extract writes pcaps)
 │   ├── capture_logs.py         # Sysmon + Security event-log start/stop (one evtx per channel)
 │   └── elevate.py              # run a command elevated via a one-shot scheduled task
 ```
 
-Captures are written to `attacker/logs/YYYY-MM-DD/` when the scheduler sets `HOLYFW_ATTACKER_OUTPUT_DIR`. File names are `{task_id}_{technique-id}.pcapng` and `{task_id}_{technique-id}_{channel}.evtx` (no timestamp suffix). `config.json` `output_dir` is only the fallback for a manual skill run.
+Log captures are written to `attacker/logs/YYYY-MM-DD/` when the scheduler sets `HOLYFW_ATTACKER_OUTPUT_DIR`. File names are `{task_id}_{technique-id}_{channel}.evtx` (no timestamp suffix). Per-task pcaps are **not** written during the skill run — after the day, `attacker extract --date YYYY-MM-DD` slices the domain SPAN into `{task_id}_{technique-id}.pcapng` using each task transcript's time window. `config.json` `output_dir` is only the fallback for a manual skill run.
 
 All script invocations below use `python`; run them from the skill root so relative paths resolve correctly.
 
@@ -158,7 +158,7 @@ The check also guarantees impacket is actually runnable: it reports `python_exec
 > 2. **Operator-preseeded account.** If `campaign.local_admin_account` is set (`{"name": "...", "password": "..."}`), use it directly.
 > 3. **Resolved from state.** Enumerate `net localgroup administrators`, match an account to a `users` object that carries a non-empty `password`.
 > 4. **Recovered from the domain.** For a domain account that is a local administrator (e.g. `NDRTEST\attdemo`), recover its password with `credential.brute-user` / `credential.password-spray` and store it in `users`.
-> 5. **No account available** → do not stop the task: record a `notes` entry, keep running (tshark traffic capture works unprivileged; only the `.evtx` export needs elevation) and mark the `.evtx` export as unavailable, prompting the operator to preseed `campaign.local_admin_account` or run the agent elevated.
+> 5. **No account available** → do not stop the task: record a `notes` entry, keep running (live tshark is disabled; only the `.evtx` export needs elevation) and mark the `.evtx` export as unavailable, prompting the operator to preseed `campaign.local_admin_account` or run the agent elevated.
 >
 > Re-run the failed command elevated with:
 >
@@ -193,7 +193,7 @@ The task references objects by name (e.g. `user svc_backup`, `host 192.168.14.71
 
 For every single atomic attack action (one command = one action):
 
-1. Start traffic capture:
+1. Start traffic capture (protocol stub — does not write a pcap):
 
    ```
    python scripts/capture_traffic.py start --label <technique-id>
@@ -214,13 +214,13 @@ For every single atomic attack action (one command = one action):
 
    If a channel's `wevtutil epl` fails with access denied and `--elevate` is set, `stop` automatically retries that channel elevated via the account resolved by the Local Elevation Protocol.
 
-5. Stop traffic capture and finalize the pcap:
+5. Stop traffic capture (protocol stub — no pcap is finalized):
 
    ```
    python scripts/capture_traffic.py stop
    ```
 
-`<technique-id>` is the stable identifier of the technique (see each technique below). The capture start/stop calls must bracket the action even when the action fails, so the failed attempt is still recorded. `capture_logs.py stop` writes one evtx per configured channel named `{task_id}_{label}_{channel}.evtx` (e.g. `a1b2c3d4e5f67890_pass-the-ticket_Security.evtx`); a channel that fails to export does not block the others.
+`<technique-id>` is the stable identifier of the technique (see each technique below). The capture start/stop calls must bracket the action even when the action fails, so the failed attempt is still recorded. `capture_logs.py stop` writes one evtx per configured channel named `{task_id}_{label}_{channel}.evtx` (e.g. `a1b2c3d4e5f67890_pass-the-ticket_Security.evtx`); a channel that fails to export does not block the others. Malicious pcaps are produced later by `attacker extract`, named `{task_id}_{technique-id}.pcapng`.
 
 ### Step 3 — Update the state file
 

@@ -3,3 +3,4 @@
 *.pcapng
 *.evtx
 *.tmp
+*.ccache

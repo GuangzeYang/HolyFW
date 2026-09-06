@@ -126,6 +126,29 @@ class CopySkillTests(unittest.TestCase):
             )
             self.assertFalse((dest / "stale.txt").exists())
 
+    def test_overwrites_state_when_preserve_runtime_false(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pack = root / "pack"
+            _write_skill(pack, "ad-attack", "new skill\n")
+            (pack / "ad-attack" / "state.json").write_text('{"from":"pack"}', encoding="utf-8")
+            (pack / "ad-attack" / "changes.json").write_text('{"from":"pack"}', encoding="utf-8")
+            (pack / "ad-attack" / "ticket.ccache").write_bytes(b"no")
+            dest = root / "skills" / "ad-attack"
+            dest.mkdir(parents=True)
+            (dest / "SKILL.md").write_text("old\n", encoding="utf-8")
+            (dest / "state.json").write_text('{"from":"live"}', encoding="utf-8")
+            (dest / "changes.json").write_text('{"from":"live-changes"}', encoding="utf-8")
+            (dest / "stale.txt").write_text("gone", encoding="utf-8")
+
+            copy_skills(pack, root / "skills", preserve_runtime=False)
+
+            self.assertEqual((dest / "SKILL.md").read_text(encoding="utf-8"), "new skill\n")
+            self.assertEqual((dest / "state.json").read_text(encoding="utf-8"), '{"from":"pack"}')
+            self.assertEqual((dest / "changes.json").read_text(encoding="utf-8"), '{"from":"pack"}')
+            self.assertFalse((dest / "stale.txt").exists())
+            self.assertFalse((dest / "ticket.ccache").exists())
+
     def test_empty_pack_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             pack = Path(tmp) / "pack"

@@ -373,7 +373,7 @@ def write_frontmatter(
     write("---\n")
     seen: set[str] = set()
     for key in meta_keys:
-        if key in omit or key not in record or record[key] is None:
+        if key not in record or record[key] is None:
             continue
         write(f"{key}: {json.dumps(record[key], ensure_ascii=False)}\n")
         seen.add(key)

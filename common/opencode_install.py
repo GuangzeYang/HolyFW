@@ -176,22 +176,28 @@ def skill_directories(pack_root: Path) -> list[Path]:
     return found
 
 
-def copy_skills(pack_root: Path, dest_root: Path) -> list[str]:
+def copy_skills(
+    pack_root: Path,
+    dest_root: Path,
+    *,
+    preserve_runtime: bool = True,
+) -> list[str]:
     dest_root.mkdir(parents=True, exist_ok=True)
     installed: list[str] = []
-    ignore = shutil.ignore_patterns("__pycache__", "*.pyc", ".gitignore")
+    ignore = shutil.ignore_patterns("__pycache__", "*.pyc", ".gitignore", "*.ccache")
     preserve_names = ("state.json", "changes.json")
     for src in skill_directories(pack_root):
         dest = dest_root / src.name
         preserved: dict[str, bytes] = {}
         if dest.exists():
-            for name in preserve_names:
-                path = dest / name
-                if path.is_file():
-                    try:
-                        preserved[name] = path.read_bytes()
-                    except OSError:
-                        pass
+            if preserve_runtime:
+                for name in preserve_names:
+                    path = dest / name
+                    if path.is_file():
+                        try:
+                            preserved[name] = path.read_bytes()
+                        except OSError:
+                            pass
             _remove_path(dest)
         shutil.copytree(src, dest, ignore=ignore)
         for name, data in preserved.items():

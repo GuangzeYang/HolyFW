@@ -229,6 +229,7 @@ class AttackerCliRouteTests(unittest.TestCase):
             self.assertEqual(run_build(), 0)
         copy.assert_called_once()
         self.assertEqual(copy.call_args.args[0].name, "skills")
+        self.assertEqual(copy.call_args.kwargs.get("preserve_runtime"), False)
         write_cfg.assert_called_once()
         self.assertEqual(write_cfg.call_args.args[0].name, "opencode.json")
         self.assertEqual(write_cfg.call_args.kwargs["keys"], ("permission",))

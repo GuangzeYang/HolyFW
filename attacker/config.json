@@ -30,6 +30,7 @@
     "logs_dir": "logs"
   },
   "extract": {
-    "lab_nets": ["172.16.24.0/24"]
+    "lab_nets": ["172.16.24.0/24"],
+    "attacker_ip": ""
   }
 }

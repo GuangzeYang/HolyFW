@@ -203,6 +203,8 @@ def execute_task(
             "planned_time": item.get("planned_time") or "",
             "date": target_day.isoformat(),
             "started_at": item["started_at"],
+            "completed_at": item["completed_at"],
+            "task": item.get("task") or "",
             "command": format_opencode_command(prompt),
             "stdout": stdout,
             "stderr": stderr,

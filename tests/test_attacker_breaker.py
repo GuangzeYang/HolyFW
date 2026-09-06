@@ -11,7 +11,14 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from attacker.breaker import MODE_ALL, MODE_TASK, reset_attacker
+from attacker.breaker import (
+    BASELINE_CHANGES,
+    BASELINE_STATE,
+    MODE_ALL,
+    MODE_TASK,
+    PACKAGED_SKILL_ROOT,
+    reset_attacker,
+)
 from attacker.task_file import tasks_file_path
 
 
@@ -143,6 +150,57 @@ class ChangesScriptTests(unittest.TestCase):
             self.assertEqual(data["changes"][0]["kind"], "create_machine_account")
             self.assertEqual(data["changes"][0]["target"], "ATTACKER$")
             self.assertTrue(data["changes"][0]["id"])
+
+
+class PackagedSkillBaselineTests(unittest.TestCase):
+    def test_packaged_state_and_changes_match_baseline(self) -> None:
+        state = json.loads((PACKAGED_SKILL_ROOT / "state.json").read_text(encoding="utf-8"))
+        changes = json.loads((PACKAGED_SKILL_ROOT / "changes.json").read_text(encoding="utf-8"))
+        self.assertEqual(state, BASELINE_STATE)
+        self.assertEqual(changes, BASELINE_CHANGES)
+        blob = json.dumps(state)
+        self.assertNotIn("ndrtest", blob)
+        self.assertFalse(list(PACKAGED_SKILL_ROOT.glob("*.ccache")))
+
+    def test_run_build_overwrites_dirty_installed_state(self) -> None:
+        from attacker.host_build import run_build
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest_root = Path(tmp) / "skills"
+            dest = dest_root / "ad-attack"
+            dest.mkdir(parents=True)
+            (dest / "state.json").write_text(
+                json.dumps({"domain": {"name": "ndrtest.local"}, "users": [{"password": "secret"}]}),
+                encoding="utf-8",
+            )
+            (dest / "changes.json").write_text(
+                json.dumps({"changes": [{"summary": "old"}]}),
+                encoding="utf-8",
+            )
+            leftover = dest / "ticket.ccache"
+            leftover.write_bytes(b"stale-ticket")
+
+            with (
+                mock.patch("attacker.host_build.opencode_skill_dir", return_value=dest_root),
+                mock.patch("attacker.host_build.write_host_opencode_configs"),
+                mock.patch("attacker.host_build.install_agents_md"),
+                mock.patch("attacker.host_build.clear_opencode_cache", return_value=False),
+                mock.patch("attacker.host_build.opencode_legacy_skill_dir") as legacy,
+            ):
+                legacy.return_value.is_dir.return_value = False
+                self.assertEqual(run_build(), 0)
+
+            state = json.loads((dest / "state.json").read_text(encoding="utf-8"))
+            changes = json.loads((dest / "changes.json").read_text(encoding="utf-8"))
+            pack_state = json.loads((PACKAGED_SKILL_ROOT / "state.json").read_text(encoding="utf-8"))
+            pack_changes = json.loads((PACKAGED_SKILL_ROOT / "changes.json").read_text(encoding="utf-8"))
+            self.assertEqual(state, pack_state)
+            self.assertEqual(changes, pack_changes)
+            self.assertEqual(state["domain"]["name"], "")
+            self.assertEqual(state["users"], [])
+            self.assertNotIn("ndrtest", json.dumps(state))
+            self.assertFalse(leftover.exists())
+            self.assertFalse(list(dest.glob("*.ccache")))
 
 
 if __name__ == "__main__":

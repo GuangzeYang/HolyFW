@@ -33,7 +33,11 @@ def run_build(*, run_test: bool = False) -> int:
             raise FileNotFoundError(f"Attacker AGENTS.md not found: {ATTACKER_AGENTS_MD}")
         if not ATTACKER_OPENCODE_JSON.is_file():
             raise FileNotFoundError(f"Attacker opencode.json not found: {ATTACKER_OPENCODE_JSON}")
-        installed = copy_skills(ATTACKER_SKILLS_DIR, opencode_skill_dir())
+        installed = copy_skills(
+            ATTACKER_SKILLS_DIR,
+            opencode_skill_dir(),
+            preserve_runtime=False,
+        )
         legacy = opencode_legacy_skill_dir()
         if legacy.is_dir():
             _remove_path(legacy)

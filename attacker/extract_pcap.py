@@ -7,6 +7,7 @@ Load the attacker-only Sysmon config on the attack host by hand::
 Then, offline::
 
     attacker extract --evtx sysmon.evtx --pcap mixed.pcapng --out-dir out
+    attacker extract --date 2026-09-06 --evtx sysmon.evtx --pcap mixed.pcapng
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
@@ -52,6 +53,11 @@ TSHARK_FIELDS = (
     "tcp.flags.ack",
 )
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---", re.DOTALL)
+_TECHNIQUE_RE = re.compile(
+    r"execute\s+([a-z][a-z0-9]*(?:\.[a-z0-9-]+)+)",
+    re.IGNORECASE,
+)
+SCAN_TECHNIQUES = frozenset({"discovery.host-scan", "discovery.port-scan"})
 RunFn = Callable[..., subprocess.CompletedProcess]
 
 
@@ -336,6 +342,53 @@ def lab_nets_from_config(config: dict[str, Any] | None) -> tuple[str, ...]:
     return DEFAULT_LAB_NETS
 
 
+def attacker_ip_from_config(config: dict[str, Any] | None) -> str:
+    block = config.get("extract") if isinstance(config, dict) else None
+    raw = block.get("attacker_ip") if isinstance(block, dict) else None
+    return str(raw or "").strip()
+
+
+def parse_technique_id(text: str) -> str:
+    match = _TECHNIQUE_RE.search(str(text or ""))
+    return match.group(1).lower() if match else ""
+
+
+def parse_frontmatter_fields(text: str) -> dict[str, str]:
+    match = _FRONTMATTER_RE.search(text or "")
+    block = match.group(1) if match else (text or "")
+    fields: dict[str, str] = {}
+    for line in block.splitlines():
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        fields[key.strip().lower()] = value.strip().strip("'\"")
+    return fields
+
+
+def technique_pcap_stem(task_id: str, technique: str) -> str:
+    from attacker.capture_paths import TASK_ID_ENV, capture_file_stem
+
+    return capture_file_stem(technique, env={TASK_ID_ENV: task_id})
+
+
+def list_task_transcripts(day_dir: Path) -> list[Path]:
+    if not day_dir.is_dir():
+        return []
+    return sorted(path for path in day_dir.glob("*.md") if path.is_file())
+
+
+def resolve_day_logs_dir(config: dict[str, Any] | None, day: date) -> Path:
+    from attacker.runtime import resolve_logs_dir, resolve_workspace
+
+    return resolve_logs_dir(config or {}, resolve_workspace()) / day.isoformat()
+
+
+def auto_unlogged_scan(technique: str, attacker_ip: str, explicit: bool) -> bool:
+    if explicit:
+        return True
+    return bool(attacker_ip) and technique in SCAN_TECHNIQUES
+
+
 def processes_by_guid(creates: Sequence[ProcessCreate]) -> dict[str, ProcessCreate]:
     by_guid: dict[str, ProcessCreate] = {}
     for event in creates:
@@ -421,14 +474,7 @@ def parse_task_window(
     slack_seconds: float = TASK_WINDOW_SLACK_SECONDS,
     default_duration_seconds: float = DEFAULT_TASK_DURATION_SECONDS,
 ) -> tuple[datetime, datetime]:
-    match = _FRONTMATTER_RE.search(text or "")
-    block = match.group(1) if match else (text or "")
-    fields: dict[str, str] = {}
-    for line in block.splitlines():
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        fields[key.strip().lower()] = value.strip().strip("'\"")
+    fields = parse_frontmatter_fields(text)
     started = parse_sysmon_utc(fields.get("started_at") or "")
     if started is None:
         raise ValueError("task transcript has no started_at")
@@ -591,26 +637,34 @@ def build_display_filter(
     return " || ".join(f"({part})" if " && " in part else part for part in parts)
 
 
-def selected_to_records(selected: Sequence[SelectedConnect]) -> list[dict[str, Any]]:
+def selected_to_records(
+    selected: Sequence[SelectedConnect],
+    *,
+    task_id: str = "",
+    technique: str = "",
+) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for item in selected:
         connect = item.connect
-        records.append(
-            {
-                "utc_time": connect.utc.isoformat(),
-                "protocol": connect.protocol,
-                "source_ip": connect.source_ip,
-                "source_port": connect.source_port,
-                "dest_ip": connect.dest_ip,
-                "dest_port": connect.dest_port,
-                "process_guid": connect.process_guid,
-                "image": connect.image,
-                "command_line": item.command_line,
-                "initiated": connect.initiated,
-                "tcp_stream": item.tcp_stream,
-                "udp_stream": item.udp_stream,
-            }
-        )
+        row: dict[str, Any] = {
+            "utc_time": connect.utc.isoformat(),
+            "protocol": connect.protocol,
+            "source_ip": connect.source_ip,
+            "source_port": connect.source_port,
+            "dest_ip": connect.dest_ip,
+            "dest_port": connect.dest_port,
+            "process_guid": connect.process_guid,
+            "image": connect.image,
+            "command_line": item.command_line,
+            "initiated": connect.initiated,
+            "tcp_stream": item.tcp_stream,
+            "udp_stream": item.udp_stream,
+        }
+        if task_id:
+            row["task_id"] = task_id
+        if technique:
+            row["technique"] = technique
+        records.append(row)
     return records
 
 
@@ -692,7 +746,17 @@ def add_extract_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser])
     )
     parser.add_argument("--evtx", type=Path, required=True, help="attacker Sysmon .evtx or wevtutil .xml")
     parser.add_argument("--pcap", type=Path, required=True, help="domain SPAN .pcap / .pcapng")
-    parser.add_argument("--out-dir", type=Path, required=True, help="directory for malicious/benign pcapng and tuples JSON")
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="directory for pcapng and tuples JSON (default: attacker/logs/YYYY-MM-DD when --date is set)",
+    )
+    parser.add_argument(
+        "--date",
+        default="",
+        help="YYYY-MM-DD; scan that day's task transcripts and write one pcap per technique",
+    )
     parser.add_argument(
         "--lab-net",
         action="append",
@@ -706,7 +770,7 @@ def add_extract_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser])
         "--task-md",
         type=Path,
         default=None,
-        help="attacker task transcript; uses started_at/completed_at plus slack as the time window",
+        help="single attacker task transcript; writes malicious.pcapng (use --date for per-technique names)",
     )
     parser.add_argument(
         "--no-require-cmdline",
@@ -718,24 +782,41 @@ def add_extract_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser])
         action="store_true",
         help="also keep ICMP/ARP/bare SYN from --attacker-ip in the time window",
     )
-    parser.add_argument("--attacker-ip", default="", help="attacker host IPv4 for --include-unlogged-scan")
+    parser.add_argument(
+        "--attacker-ip",
+        default="",
+        help="attacker host IPv4 for unlogged scan packets (default: config extract.attacker_ip)",
+    )
     parser.add_argument("--tshark", default="tshark", help="tshark executable")
     parser.add_argument("--wevtutil", default="wevtutil", help="wevtutil executable")
     parser.add_argument("--tuples-name", default="tuples.json", help="JSON filename written under --out-dir")
     return parser
 
 
+def resolve_extract_out_dir(
+    args: argparse.Namespace,
+    config: dict[str, Any] | None,
+    day: date | None,
+) -> Path:
+    raw = getattr(args, "out_dir", None)
+    if raw is not None:
+        return Path(raw)
+    if day is not None:
+        return resolve_day_logs_dir(config, day)
+    raise ValueError("--out-dir is required unless --date is set")
+
+
 def options_from_args(args: argparse.Namespace, config: dict[str, Any] | None) -> ExtractOptions:
     since = parse_sysmon_utc(str(getattr(args, "since", "") or ""))
     until = parse_sysmon_utc(str(getattr(args, "until", "") or ""))
     task_md = getattr(args, "task_md", None)
-    if task_md is not None:
+    if task_md is not None and not str(getattr(args, "date", "") or "").strip():
         start, end = parse_task_window(Path(task_md).read_text(encoding="utf-8"))
         since = start if since is None else since
         until = end if until is None else until
     lab = tuple(args.lab_nets) if getattr(args, "lab_nets", None) else lab_nets_from_config(config)
     include_scan = bool(getattr(args, "include_unlogged_scan", False))
-    attacker_ip = str(getattr(args, "attacker_ip", "") or "").strip()
+    attacker_ip = str(getattr(args, "attacker_ip", "") or "").strip() or attacker_ip_from_config(config)
     if include_scan and not attacker_ip:
         raise ValueError("--include-unlogged-scan requires --attacker-ip")
     return ExtractOptions(
@@ -748,32 +829,182 @@ def options_from_args(args: argparse.Namespace, config: dict[str, Any] | None) -
     )
 
 
+def _parse_extract_day(raw: str) -> date | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    return date.fromisoformat(text)
+
+
+def _write_benign_and_tuples(
+    *,
+    pcap: Path,
+    out_dir: Path,
+    display_filter: str,
+    records: list[dict[str, Any]],
+    tuples_name: str,
+    tshark: str,
+    run_fn: RunFn,
+) -> tuple[Path, Path]:
+    benign_path = out_dir / "benign.pcapng"
+    tuples_path = out_dir / (tuples_name or "tuples.json")
+    write_filtered_pcap(pcap, f"not ({display_filter})", benign_path, tshark=tshark, run_fn=run_fn)
+    tuples_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+    return benign_path, tuples_path
+
+
+def run_extract_batch(
+    args: argparse.Namespace,
+    *,
+    day: date,
+    config: dict[str, Any] | None,
+    creates: Sequence[ProcessCreate],
+    connects: Sequence[NetworkConnect],
+    packets: Sequence[PacketRow],
+    run_fn: RunFn,
+) -> dict[str, Any]:
+    out_dir = resolve_extract_out_dir(args, config, day)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    transcripts_dir = resolve_day_logs_dir(config, day)
+    if getattr(args, "out_dir", None) is not None and Path(args.out_dir) != transcripts_dir:
+        scan_dir = Path(args.out_dir)
+        if list_task_transcripts(scan_dir):
+            transcripts_dir = scan_dir
+    base = options_from_args(args, config)
+    attacker_ip = base.attacker_ip
+    explicit_scan = bool(getattr(args, "include_unlogged_scan", False))
+    tshark = str(args.tshark)
+    pcap = Path(args.pcap)
+    all_tcp: list[str] = []
+    all_udp: list[str] = []
+    all_records: list[dict[str, Any]] = []
+    tasks: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    union_scan = False
+    scan_since: float | None = None
+    scan_until: float | None = None
+    for md_path in list_task_transcripts(transcripts_dir):
+        text = md_path.read_text(encoding="utf-8")
+        fields = parse_frontmatter_fields(text)
+        task_id = str(fields.get("task_id") or md_path.stem).strip()
+        technique = parse_technique_id(fields.get("task") or "")
+        try:
+            since, until = parse_task_window(text)
+        except ValueError as exc:
+            skipped.append({"path": str(md_path), "reason": str(exc)})
+            continue
+        if not technique:
+            skipped.append({"path": str(md_path), "reason": "no technique id in task text"})
+            continue
+        include_scan = auto_unlogged_scan(technique, attacker_ip, explicit_scan)
+        if include_scan and not attacker_ip:
+            skipped.append({"path": str(md_path), "reason": "unlogged scan needs --attacker-ip"})
+            continue
+        options = ExtractOptions(
+            lab_nets=base.lab_nets,
+            cmdline_needles=base.cmdline_needles,
+            require_cmdline=base.require_cmdline,
+            initiated_only=base.initiated_only,
+            since=since,
+            until=until,
+            time_slack_seconds=base.time_slack_seconds,
+            include_unlogged_scan=include_scan,
+            attacker_ip=attacker_ip,
+        )
+        matched, display_filter = extract_from_sources(
+            creates=creates, connects=connects, packets=packets, options=options
+        )
+        stem = technique_pcap_stem(task_id, technique)
+        dest = out_dir / f"{stem}.pcapng"
+        write_filtered_pcap(pcap, display_filter, dest, tshark=tshark, run_fn=run_fn)
+        records = selected_to_records(matched, task_id=task_id, technique=technique)
+        all_records.extend(records)
+        all_tcp.extend(item.tcp_stream for item in matched if item.tcp_stream)
+        all_udp.extend(item.udp_stream for item in matched if item.udp_stream)
+        if include_scan:
+            union_scan = True
+            start_ts = since.timestamp()
+            end_ts = until.timestamp()
+            scan_since = start_ts if scan_since is None else min(scan_since, start_ts)
+            scan_until = end_ts if scan_until is None else max(scan_until, end_ts)
+        tasks.append(
+            {
+                "task_id": task_id,
+                "technique": technique,
+                "pcap": str(dest),
+                "connects": len(records),
+                "display_filter": display_filter,
+            }
+        )
+    union_filter = build_display_filter(
+        all_tcp,
+        all_udp,
+        include_unlogged_scan=union_scan,
+        attacker_ip=attacker_ip,
+        scan_since_epoch=scan_since,
+        scan_until_epoch=scan_until,
+    )
+    benign_path, tuples_path = _write_benign_and_tuples(
+        pcap=pcap,
+        out_dir=out_dir,
+        display_filter=union_filter,
+        records=all_records,
+        tuples_name=str(getattr(args, "tuples_name", "tuples.json") or "tuples.json"),
+        tshark=tshark,
+        run_fn=run_fn,
+    )
+    return {
+        "ok": True,
+        "connects": len(all_records),
+        "display_filter": union_filter,
+        "benign": str(benign_path),
+        "tuples": str(tuples_path),
+        "tasks": tasks,
+        "skipped": skipped,
+    }
+
+
 def run_extract(
     args: argparse.Namespace,
     *,
     config: dict[str, Any] | None = None,
     run_fn: RunFn = subprocess.run,
 ) -> dict[str, Any]:
-    options = options_from_args(args, config)
+    day = _parse_extract_day(str(getattr(args, "date", "") or ""))
     creates, connects = load_sysmon_events(
         Path(args.evtx), run_fn=run_fn, wevtutil=str(getattr(args, "wevtutil", "wevtutil"))
     )
     field_text = dump_tshark_fields(Path(args.pcap), tshark=str(args.tshark), run_fn=run_fn)
     packets = parse_tshark_fields(field_text)
+    if day is not None:
+        return run_extract_batch(
+            args,
+            day=day,
+            config=config,
+            creates=creates,
+            connects=connects,
+            packets=packets,
+            run_fn=run_fn,
+        )
+    options = options_from_args(args, config)
     matched, display_filter = extract_from_sources(
         creates=creates, connects=connects, packets=packets, options=options
     )
-    out_dir = Path(args.out_dir)
+    out_dir = resolve_extract_out_dir(args, config, None)
     out_dir.mkdir(parents=True, exist_ok=True)
     malicious_path = out_dir / "malicious.pcapng"
-    benign_path = out_dir / "benign.pcapng"
-    tuples_path = out_dir / str(getattr(args, "tuples_name", "tuples.json") or "tuples.json")
     tshark = str(args.tshark)
     write_filtered_pcap(Path(args.pcap), display_filter, malicious_path, tshark=tshark, run_fn=run_fn)
-    benign_filter = f"not ({display_filter})"
-    write_filtered_pcap(Path(args.pcap), benign_filter, benign_path, tshark=tshark, run_fn=run_fn)
     records = selected_to_records(matched)
-    tuples_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+    benign_path, tuples_path = _write_benign_and_tuples(
+        pcap=Path(args.pcap),
+        out_dir=out_dir,
+        display_filter=display_filter,
+        records=records,
+        tuples_name=str(getattr(args, "tuples_name", "tuples.json") or "tuples.json"),
+        tshark=tshark,
+        run_fn=run_fn,
+    )
     return {
         "ok": True,
         "connects": len(records),

@@ -203,7 +203,11 @@ class ExecutionLogTests(unittest.TestCase):
             self.assertNotIn("## stdout", text)
             self.assertNotIn("## stderr", text)
             yaml_block = text.split("---", 2)[1]
-            for key in ("completed_at", "exit_code", "command"):
+            self.assertIn("completed_at:", yaml_block)
+            self.assertIn(item["completed_at"], yaml_block)
+            self.assertIn("task:", yaml_block)
+            self.assertIn("run discovery", yaml_block)
+            for key in ("exit_code", "command"):
                 self.assertNotIn(f"{key}:", yaml_block)
             self.assertNotIn("\\n", text.split("## Output", 1)[1])
             self.assertFalse(list(logs_dir.glob("*.jsonl")))

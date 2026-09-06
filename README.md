@@ -134,7 +134,7 @@ Each attacker task object has:
 - `started_at`
 - `completed_at`
 
-Per-task OpenCode transcripts and capture files live under `attacker/logs/YYYY-MM-DD/`: `{task_id}.md`, `{task_id}_{technique}.pcapng`, and `{task_id}_{technique}_{channel}.evtx`.
+Per-task OpenCode transcripts and log captures live under `attacker/logs/YYYY-MM-DD/`: `{task_id}.md` and `{task_id}_{technique}_{channel}.evtx`. Live tshark is disabled. After the day, slice the domain SPAN with `attacker extract --date YYYY-MM-DD --evtx <sysmon.evtx> --pcap <span.pcapng>` to write `{task_id}_{technique}.pcapng` per technique.
 
 ### Shared Task File
 
@@ -272,7 +272,7 @@ Roles: `hr`, `accountancy`, `manager`, `programmer`, `victim`.
 
 #### Install OpenCode skills on an attacker host
 
-Copies skills from `attacker/skills/` into `~/.config/opencode/skills/`, writes `~/.config/opencode/opencode.json` from `attacker/opencode.json` (permission only; no MCP and no custom LLM `provider` block), and writes `~/.config/opencode/AGENTS.md` from `attacker/AGENTS.md`. Stops leftover `opencode.exe` and deletes the same OpenCode runtime cache/data/`auth.json` paths as `soldier build`. Does not install Playwright. Run once on the attacker host:
+Copies skills from `attacker/skills/` into `~/.config/opencode/skills/` and overwrites the installed `ad-attack` tree from that template (including empty `state.json` / `changes.json`). Writes `~/.config/opencode/opencode.json` from `attacker/opencode.json` (permission only; no MCP and no custom LLM `provider` block), and writes `~/.config/opencode/AGENTS.md` from `attacker/AGENTS.md`. Stops leftover `opencode.exe` and deletes the same OpenCode runtime cache/data/`auth.json` paths as `soldier build`. Does not install Playwright. Run once on the attacker host:
 
 ```bash
 attacker build
@@ -327,12 +327,12 @@ sysmon-collect
 python -m sysmon_collector
 ```
 
-At local 00:00 the collector exports the previous 24 hours under `soldier/logs/sysmon/` (override with `HOLYFW_SYSMON_LOG_DIR`):
+At local 00:00 the collector exports the **previous calendar day** (00:00–24:00) under `soldier/logs/sysmon/` (override with `HOLYFW_SYSMON_LOG_DIR`). It does **not** export today's still-open day, and `soldier listen` / `attacker` do not start it:
 
-- `sysmon_YYYY-MM-DD.evtx` — Sysmon Operational
-- `security_logon_YYYY-MM-DD.evtx` — Security logon and authentication events (4624/4625/4768/4776 and related IDs)
+- `sysmon_YYYY-MM-DD.evtx` — Sysmon Operational (all events in that day window)
+- `security_logon_YYYY-MM-DD.evtx` — Security **logon/auth subset only** (4624/4625/4768/4769/4776 and related IDs), not the full Security log
 
-If Sysmon is not running when observed, midnight export still continues for both channels.
+If Sysmon is not running when observed, midnight export still continues for both channels. `attacker extract` does not read these paths automatically; pass the Sysmon file as `--evtx`. Security evtx is dataset evidence and is not used to slice pcaps.
 
 #### Start commander
 
@@ -377,7 +377,13 @@ attacker breaker reset --all
 attacker breaker reset --task
 ```
 
-`attacker breaker reset --all` (also the default if you omit `--all` / `--task`) deletes today's `attacker/role_task/tasks_MM-DD.json` and rewrites `state.json` plus `changes.json` to empty baselines in both the packaged skill and `~/.config/opencode/skills/ad-attack/` when those directories exist. It does **not** revert Active Directory; use `changes.json` as the operator checklist. `attacker breaker reset --task` only deletes the day's task file. Pass `--date YYYY-MM-DD` to target another calendar day.
+`attacker build` reinstalls skills from the packaged template, so installed APT `state.json` / `changes.json` match the empty baseline in `attacker/skills/ad-attack/`. `attacker breaker reset --all` (also the default if you omit `--all` / `--task`) deletes today's `attacker/role_task/tasks_MM-DD.json` and rewrites `state.json` plus `changes.json` to empty baselines in both the packaged skill and `~/.config/opencode/skills/ad-attack/` when those directories exist. It does **not** revert Active Directory; use `changes.json` as the operator checklist. `attacker breaker reset --task` only deletes the day's task file. Pass `--date YYYY-MM-DD` to target another calendar day.
+
+After you have that day's domain SPAN pcap and the attacker Sysmon evtx, slice one malicious pcap per technique (names match `{task_id}_{technique}.pcapng`). Time windows come from each `{task_id}.md` `started_at` / `completed_at`. `discovery.host-scan` / `discovery.port-scan` also keep ICMP/ARP/bare SYN when `--attacker-ip` (or `extract.attacker_ip` in `attacker/config.json`) is set:
+
+```bash
+attacker extract --date 2026-09-06 --evtx sysmon.evtx --pcap span.pcapng --attacker-ip 172.16.24.202
+```
 
 ### 4. Common Utility Commands
 
@@ -606,9 +612,14 @@ Operational state (not the per-task transcript) also lives under `soldier/runtim
 Attacker records live under `attacker/logs/`:
 
 - `attacker_YYYY-MM-DD.log` — scheduler log (`time - LEVEL - logger - message`) for fill, wait, execute, and completion
-- `YYYY-MM-DD/<task_id>.md` — Markdown transcript with YAML-like frontmatter and literal stdout/stderr (not JSON-escaped)
-- `YYYY-MM-DD/<task_id>_<technique>.pcapng` and `<task_id>_<technique>_{Sysmon,Security}.evtx` — capture dataset for that task
+- `YYYY-MM-DD/<task_id>.md` — Markdown transcript with YAML-like frontmatter (`started_at`, `completed_at`, `task`) and literal stdout/stderr (not JSON-escaped)
+- `YYYY-MM-DD/<task_id>_<technique>_{Sysmon,Security}.evtx` — per-task log window from `capture_logs.py`
+- `YYYY-MM-DD/<task_id>_<technique>.pcapng` — written later by `attacker extract --date`, not during the live task
 - `attacker/skills/ad-attack/changes.json` (and the installed OpenCode copy) — ledger of target-domain mutations for manual rollback; `attacker breaker reset --all` empties it together with `state.json`
+
+```bash
+attacker extract --date 2026-09-06 --evtx sysmon.evtx --pcap span.pcapng --attacker-ip 172.16.24.202
+```
 
 ## Important Notes
 

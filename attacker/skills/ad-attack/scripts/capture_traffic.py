@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Wrap a single atomic attack action with tshark traffic capture.
+"""Protocol-compatible traffic-capture stub.
 
 Usage:
     python capture_traffic.py start --label <technique-id> [--iface IFACE]
     python capture_traffic.py stop
     python capture_traffic.py status
 
-`start` launches tshark in the background writing a pcapng file named
-`{task_id}_{label}.pcapng` into HOLYFW_ATTACKER_OUTPUT_DIR when set, otherwise
-the configured output directory. `stop` terminates tshark and reports the path
-of the finished capture file. `status` reports whether a capture is currently
-active.
+Live tshark is disabled. Malicious flows are sliced later with
+``attacker extract`` from a domain SPAN pcap. ``start`` / ``stop`` / ``status``
+still succeed so the skill protocol can call them. A leftover tshark from an
+older skill copy is stopped if its PID is still alive.
 """
 
 from __future__ import annotations
@@ -18,9 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import signal
-import subprocess
 import sys
 import time
 from datetime import datetime
@@ -29,15 +26,15 @@ from pathlib import Path
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = SKILL_ROOT / "config.json"
 STATE_FILE_NAME = ".capture_traffic_state.json"
+SKIP_REASON = "live pcap disabled"
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 import winproc  # noqa: E402
 
 try:
-    from attacker.capture_paths import capture_file_stem, dataset_output_dir
+    from attacker.capture_paths import dataset_output_dir
 except ImportError:  # pragma: no cover - skill copy without the attacker package
-    capture_file_stem = None  # type: ignore[assignment]
     dataset_output_dir = None  # type: ignore[assignment]
 
 
@@ -62,57 +59,8 @@ def output_dir() -> Path:
     return path if path.is_absolute() else SKILL_ROOT / path
 
 
-def default_interface() -> str:
-    cfg = load_config()
-    return cfg.get("traffic", {}).get("interface", "Ethernet0")
-
-
-def tshark_path() -> str:
-    cfg = load_config()
-    configured = cfg.get("traffic", {}).get("tshark", "tshark")
-    resolved = shutil.which(configured)
-    return resolved if resolved else configured
-
-
 def state_file() -> Path:
     return output_dir() / STATE_FILE_NAME
-
-
-def _pcap_name(label: str) -> str:
-    if capture_file_stem is not None:
-        return capture_file_stem(label) + ".pcapng"
-    task_id = str(os.environ.get("HOLYFW_ATTACKER_TASK_ID") or "").strip()
-    cleaned = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in label) or "capture"
-    if task_id:
-        safe_id = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in task_id)
-        return f"{safe_id}_{cleaned}.pcapng"
-    return f"{cleaned}.pcapng"
-
-
-def _launch_tshark(tshark: str, iface: str, file_path: Path) -> int:
-    args = [tshark, "-i", iface, "-w", str(file_path), "-q"]
-    if os.name == "nt":
-        flags = (
-            subprocess.CREATE_NEW_PROCESS_GROUP
-            | subprocess.DETACHED_PROCESS
-            | subprocess.CREATE_NO_WINDOW
-        )
-        proc = subprocess.Popen(
-            args,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=flags,
-        )
-    else:
-        proc = subprocess.Popen(
-            args,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    return proc.pid
 
 
 def _stop_process(pid: int) -> None:
@@ -167,47 +115,16 @@ def _reclaim_stale_capture() -> dict | None:
 def cmd_start(args: argparse.Namespace) -> int:
     out_dir = output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
-
     reclaimed = _reclaim_stale_capture()
-
-    iface = args.iface or default_interface()
-    tshark = tshark_path()
-    if not shutil.which(tshark):
-        print(json.dumps({"ok": False, "error": f"tshark not found: {tshark}"}))
-        return 1
-
-    file_path = out_dir / _pcap_name(args.label)
-
-    pid = _launch_tshark(tshark, iface, file_path)
-    time.sleep(0.5)
-    if not winproc.pid_alive(pid):
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": (
-                        f"tshark pid {pid} exited immediately; "
-                        f"check interface '{iface}' and Npcap"
-                    ),
-                    "iface": iface,
-                    "file": str(file_path),
-                }
-            )
-        )
-        return 1
-
     state = {
         "label": args.label,
-        "pid": pid,
-        "file": str(file_path),
-        "iface": iface,
+        "skipped": SKIP_REASON,
         "started_at": datetime.now().isoformat(),
     }
     state_file().write_text(
         json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-
-    result = {"ok": True, "pid": pid, "file": str(file_path), "iface": iface}
+    result = {"ok": True, "skipped": SKIP_REASON, "label": args.label}
     if reclaimed:
         result["reclaimed"] = reclaimed
     print(json.dumps(result))
@@ -216,34 +133,28 @@ def cmd_start(args: argparse.Namespace) -> int:
 
 def cmd_stop(args: argparse.Namespace) -> int:
     sf = state_file()
-    if not sf.exists():
-        print(json.dumps({"ok": False, "error": "no active traffic capture"}))
-        return 1
-
-    try:
-        state = json.loads(sf.read_text(encoding="utf-8"))
-    except ValueError:
-        print(json.dumps({"ok": False, "error": "corrupt capture state file"}))
-        return 1
-
-    pid = state.get("pid")
-    if pid is not None:
-        _stop_process(int(pid))
-
-    started = state.get("started_at")
-    file_path = state.get("file", "")
-    try:
-        sf.unlink()
-    except OSError:
-        pass
-
+    label = ""
+    started = ""
+    if sf.exists():
+        try:
+            state = json.loads(sf.read_text(encoding="utf-8"))
+        except ValueError:
+            state = {}
+        pid = state.get("pid")
+        if pid is not None:
+            _stop_process(int(pid))
+        label = str(state.get("label") or "")
+        started = str(state.get("started_at") or "")
+        try:
+            sf.unlink()
+        except OSError:
+            pass
     print(
         json.dumps(
             {
                 "ok": True,
-                "label": state.get("label"),
-                "file": file_path,
-                "iface": state.get("iface"),
+                "skipped": SKIP_REASON,
+                "label": label,
                 "started_at": started,
                 "stopped_at": datetime.now().isoformat(),
             },
@@ -257,11 +168,15 @@ def cmd_stop(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     sf = state_file()
     if not sf.exists():
-        print(json.dumps({"active": False}))
+        print(json.dumps({"active": False, "skipped": SKIP_REASON}))
         return 0
     print(
         json.dumps(
-            {"active": True, "state": json.loads(sf.read_text(encoding="utf-8"))},
+            {
+                "active": False,
+                "skipped": SKIP_REASON,
+                "state": json.loads(sf.read_text(encoding="utf-8")),
+            },
             indent=2,
         )
     )
@@ -270,20 +185,20 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Start/stop tshark traffic capture around an attack action"
+        description="Protocol stub for traffic capture (live tshark disabled)"
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_start = sub.add_parser("start", help="start traffic capture")
+    p_start = sub.add_parser("start", help="record the technique label (no pcap)")
     p_start.add_argument(
-        "--label", required=True, help="technique id used in the pcap file name"
+        "--label", required=True, help="technique id (kept for protocol compatibility)"
     )
     p_start.add_argument(
-        "--iface", default=None, help="capture interface (default from config.json)"
+        "--iface", default=None, help="ignored; live capture is disabled"
     )
 
-    sub.add_parser("stop", help="stop traffic capture and finalize the pcap")
-    sub.add_parser("status", help="report whether a capture is active")
+    sub.add_parser("stop", help="end the capture stub")
+    sub.add_parser("status", help="report that live capture is disabled")
 
     args = parser.parse_args()
     if args.command == "start":

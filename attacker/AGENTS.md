@@ -34,7 +34,7 @@ You may only end processes **this task created**.
 Allowed:
 
 - Let a command you launched exit on its own.
-- Stop this task's tshark capture with `python scripts/capture_traffic.py stop` (that script kills only the tshark PID it started).
+- Stop this task's traffic-capture stub with `python scripts/capture_traffic.py stop` (live tshark is disabled; the script does not start or kill a capture process).
 
 Forbidden:
 
@@ -42,4 +42,4 @@ Forbidden:
 - `Stop-Process`, `taskkill`, `taskkill /T`, or `Stop-Process -Force` against `python.exe`, `attacker.exe`, the parent `opencode.exe`, or any PID that did not appear in stdout/stderr of a command you launched in **this** task.
 - Killing a process because its name is `python` or because an impacket script appears hung.
 
-If an attack command hangs or fails: stop log and traffic capture with the skill scripts, mark the technique `failed` in `state.json`, and end this task. Do not hunt PIDs. Do not "clean up" the session.
+If an attack command hangs or fails: stop log capture and the traffic-capture stub with the skill scripts, mark the technique `failed` in `state.json`, and end this task. Do not hunt PIDs. Do not "clean up" the session.

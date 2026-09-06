@@ -110,6 +110,20 @@ class CaptureTrafficLockTests(unittest.TestCase):
             self.assertEqual(info["reclaimed"], "stopped_live")
             self.assertFalse(sf.exists())
 
+    def test_start_stop_do_not_write_pcap(self) -> None:
+        mod = _load_script("capture_traffic.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            mod.output_dir = lambda: out
+            start_args = mock.Mock(label="discovery.port-scan", iface=None)
+            self.assertEqual(mod.cmd_start(start_args), 0)
+            self.assertFalse(list(out.glob("*.pcapng")))
+            state = json.loads((out / ".capture_traffic_state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["skipped"], "live pcap disabled")
+            self.assertEqual(mod.cmd_stop(mock.Mock()), 0)
+            self.assertFalse((out / ".capture_traffic_state.json").exists())
+            self.assertFalse(list(out.glob("*.pcapng")))
+
 
 class CaptureLogsElevateTests(unittest.TestCase):
     def test_access_denied_retries_via_elevate(self) -> None:

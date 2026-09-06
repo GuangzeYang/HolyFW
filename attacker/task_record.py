@@ -14,6 +14,8 @@ _META_KEYS = (
     "planned_time",
     "date",
     "started_at",
+    "completed_at",
+    "task",
 )
 
 
