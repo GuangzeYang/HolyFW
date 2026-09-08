@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
+import re
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from common import extract_react_finish_json, repair_json_text
 from common.agent_request_abc import AgentRequestABC, AgentRequestError, AgentTimeoutError
 
+from attacker.extract_pcap import ip_in_nets, lab_nets_from_config, parse_networks
 from attacker.task_file import completed_task_texts, empty_slot_indices
 
 DEFAULT_BATCH_SIZE = 5
 ATTACKER_PACKAGE_DIR = Path(__file__).resolve().parent
+_HOST_TARGET_RE = re.compile(r"\bagainst\s+host\s+(\S+)", re.IGNORECASE)
+_SUBNET_TARGET_RE = re.compile(
+    r"\bagainst\s+subnet\s+(\d{1,3}(?:\.\d{1,3}){3}/\d{1,2})",
+    re.IGNORECASE,
+)
 
 FillClient = AgentRequestABC
 logger = logging.getLogger(__name__)
@@ -114,6 +122,98 @@ def parse_generated_tasks(response_text: str) -> list[str]:
     return [item for item in texts if item]
 
 
+def _strip_target_token(raw: str) -> str:
+    return str(raw or "").strip().strip("\"'.,;:)")
+
+
+def _host_aliases(state: dict[str, Any] | None) -> dict[str, str]:
+    """Map hostname/fqdn/ip (lowercase) to an IPv4/IPv6 string from state."""
+    aliases: dict[str, str] = {}
+    data = state if isinstance(state, dict) else {}
+    domain = data.get("domain") if isinstance(data.get("domain"), dict) else {}
+    dc_ip = str(domain.get("dc_ip") or "").strip()
+    dc_fqdn = str(domain.get("dc_fqdn") or "").strip()
+    if dc_ip:
+        aliases[dc_ip.lower()] = dc_ip
+        if dc_fqdn:
+            aliases[dc_fqdn.lower()] = dc_ip
+    for entry in domain.get("dcs") if isinstance(domain.get("dcs"), list) else []:
+        if not isinstance(entry, dict):
+            continue
+        ip = str(entry.get("ip") or "").strip()
+        if not ip:
+            continue
+        aliases[ip.lower()] = ip
+        for key in ("fqdn", "hostname", "name"):
+            name = str(entry.get(key) or "").strip()
+            if name:
+                aliases[name.lower()] = ip
+    for host in data.get("hosts") if isinstance(data.get("hosts"), list) else []:
+        if not isinstance(host, dict):
+            continue
+        ip = str(host.get("ip") or "").strip()
+        if not ip:
+            continue
+        aliases[ip.lower()] = ip
+        for key in ("fqdn", "hostname", "name", "machine_account"):
+            name = str(host.get(key) or "").strip()
+            if name:
+                aliases[name.lower()] = ip
+    return aliases
+
+
+def _subnet_in_lab(cidr: str, nets: Sequence[Any]) -> bool:
+    try:
+        candidate = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return False
+    for net in nets:
+        if candidate.version != net.version:
+            continue
+        if candidate.subnet_of(net) or candidate == net:
+            return True
+    return False
+
+
+def task_targets_in_lab_nets(
+    text: str,
+    lab_nets: Sequence[str],
+    *,
+    state: dict[str, Any] | None = None,
+) -> bool:
+    """True when every host/subnet clause in the task sits inside ``lab_nets``."""
+    nets = parse_networks(lab_nets)
+    if not nets:
+        return True
+    aliases = _host_aliases(state)
+    for match in _SUBNET_TARGET_RE.finditer(text or ""):
+        if not _subnet_in_lab(match.group(1), nets):
+            return False
+    for match in _HOST_TARGET_RE.finditer(text or ""):
+        token = _strip_target_token(match.group(1))
+        if not token:
+            return False
+        ip = aliases.get(token.lower(), token)
+        if not ip_in_nets(ip, nets):
+            return False
+    return True
+
+
+def filter_tasks_to_lab_nets(
+    texts: Sequence[str],
+    lab_nets: Sequence[str],
+    *,
+    state: dict[str, Any] | None = None,
+) -> list[str]:
+    kept: list[str] = []
+    for text in texts:
+        if task_targets_in_lab_nets(text, lab_nets, state=state):
+            kept.append(text)
+        else:
+            logger.warning("Rejected attacker task outside lab_nets %s: %s", list(lab_nets), text)
+    return kept
+
+
 def build_generation_messages(
     *,
     batch_size: int,
@@ -121,9 +221,12 @@ def build_generation_messages(
     system_prompt: str,
     prompt_template: str,
     state: dict[str, Any],
+    lab_nets: Sequence[str] = (),
 ) -> tuple[str, str]:
+    nets = tuple(str(item) for item in lab_nets if str(item).strip()) or lab_nets_from_config(None)
     payload = {
         "batch_size": int(batch_size),
+        "lab_nets": list(nets),
         "known_completed_tasks": completed_task_texts(tasks),
         "prompt_template": prompt_template,
         "state": state,
@@ -131,7 +234,9 @@ def build_generation_messages(
             "Return a JSON object {\"tasks\": [string, ...]} with exactly "
             f"{int(batch_size)} English ad-attack task strings. "
             "One technique per string. Follow the prompt template grammar. "
-            "Reference only objects that exist in state."
+            "Reference only objects that exist in state. "
+            f"against host <ip> and against subnet <cidr> must lie in lab_nets {list(nets)}. "
+            "Never copy example IPs or subnets from the prompt template."
         ),
     }
     user_text = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -147,7 +252,9 @@ def request_task_batch(
     prompt_template: str,
     state: dict[str, Any],
     max_attempts: int = 5,
+    lab_nets: Sequence[str] = (),
 ) -> list[str]:
+    nets = tuple(str(item) for item in lab_nets if str(item).strip()) or lab_nets_from_config(None)
     last_error = "empty model response"
     attempts = max(1, int(max_attempts))
     provider = getattr(agent_client, "provider_name", None) or "LLM"
@@ -176,6 +283,7 @@ def request_task_batch(
             system_prompt=system_prompt,
             prompt_template=prompt_template,
             state=state,
+            lab_nets=nets,
         )
         messages = [
             {"role": "system", "content": system_text},
@@ -195,14 +303,24 @@ def request_task_batch(
             last_error = str(exc)
             logger.warning("LLM fill attempt %s/%s failed: %s", attempt, attempts, exc)
             continue
-        parsed = parse_generated_tasks(response.response_text)
+        parsed = filter_tasks_to_lab_nets(
+            parse_generated_tasks(response.response_text),
+            nets,
+            state=state,
+        )
         if len(parsed) >= batch_size:
             logger.info("LLM returned %s task string(s)", batch_size)
             return parsed[:batch_size]
-        if parsed:
-            logger.info("LLM returned %s task string(s) (requested %s)", len(parsed), batch_size)
+        if parsed and attempt == attempts:
+            logger.info("LLM returned %s in-lab task string(s) (requested %s)", len(parsed), batch_size)
             return parsed
-        last_error = f"attempt {attempt}: no task strings in model response"
+        if parsed:
+            last_error = (
+                f"attempt {attempt}: {len(parsed)} in-lab task string(s) (requested {batch_size})"
+            )
+            logger.warning("%s; retrying", last_error)
+            continue
+        last_error = f"attempt {attempt}: no in-lab task strings in model response"
         logger.warning("%s", last_error)
     logger.error("Failed to generate %s attacker tasks: %s", batch_size, last_error)
     raise RuntimeError(f"Failed to generate {batch_size} attacker tasks: {last_error}")
@@ -218,6 +336,7 @@ def fill_next_batch(
     state: dict[str, Any] | None = None,
     max_attempts: int = 5,
     request_batch: Callable[..., list[str]] | None = None,
+    lab_nets: Sequence[str] | None = None,
 ) -> list[dict[str, str]]:
     indices = empty_slot_indices(tasks)
     if not indices:
@@ -225,6 +344,7 @@ def fill_next_batch(
     count = min(int(batch_size), len(indices))
     logger.info("Filling %s empty attacker slot(s)", count)
     requester = request_batch or request_task_batch
+    nets = lab_nets if lab_nets is not None else lab_nets_from_config(None)
     contents = requester(
         batch_size=count,
         tasks=tasks,
@@ -233,6 +353,7 @@ def fill_next_batch(
         prompt_template=prompt_template,
         state=state or {},
         max_attempts=max_attempts,
+        lab_nets=nets,
     )
     for index, text in zip(indices[:count], contents):
         tasks[index]["task"] = text

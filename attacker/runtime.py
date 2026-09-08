@@ -24,6 +24,7 @@ from common.schedule_shift import (
 )
 
 from attacker.execute import execute_task
+from attacker.extract_pcap import lab_nets_from_config
 from attacker.generation import DEFAULT_BATCH_SIZE, fill_next_batch, load_generation_resources
 from attacker.logging_setup import reattach_attacker_dated_file_handler
 from attacker.task_file import (
@@ -421,6 +422,7 @@ def run_loop(
                 prompt_template=prompt_template,
                 state=state,
                 max_attempts=int(generator.get("max_attempts") or 5),
+                lab_nets=lab_nets_from_config(loaded),
             )
             save_attacker_tasks(task_path, filled, shift=shift_stamp)
             logger.info("Saved filled task file %s", task_path)
@@ -439,7 +441,6 @@ def run_loop(
                     item,
                     logs_dir=logs_dir,
                     timeout_seconds=timeout_seconds,
-                    now=clock(),
                     day=target_day,
                 )
             save_attacker_tasks(task_path, tasks, shift=shift_stamp)

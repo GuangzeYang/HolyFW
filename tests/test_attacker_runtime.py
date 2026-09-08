@@ -14,7 +14,13 @@ from unittest import mock
 from common.agent_request_abc import AgentResponse
 
 from attacker.execute import execute_task, run_opencode
-from attacker.generation import fill_next_batch, load_generation_resources, parse_generated_tasks
+from attacker.generation import (
+    fill_next_batch,
+    filter_tasks_to_lab_nets,
+    load_generation_resources,
+    parse_generated_tasks,
+    task_targets_in_lab_nets,
+)
 from attacker.capture_paths import capture_file_stem, dataset_output_dir, resolve_attacker_skill_root
 from attacker.runtime import run_loop, step
 from attacker.task_file import (
@@ -262,6 +268,26 @@ class ExecutionLogTests(unittest.TestCase):
                 self.assertNotIn(f"{key}:", yaml_block)
             self.assertNotIn("\\n", text.split("## Output", 1)[1])
             self.assertFalse(list(logs_dir.glob("*.jsonl")))
+
+    def test_execute_task_completed_at_is_not_copied_from_now(self) -> None:
+        item = {
+            "task": "run discovery",
+            "planned_time": "09:15",
+            "started_at": "",
+            "completed_at": "",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            execute_task(
+                item,
+                logs_dir=Path(tmp),
+                timeout_seconds=30,
+                now=_now(9, 16),
+                runner=lambda _task, _timeout: (0, "agent output"),
+                day=datetime(2026, 8, 23).date(),
+            )
+            self.assertTrue(item["started_at"].startswith("2026-08-23T09:16:00"))
+            self.assertNotEqual(item["started_at"], item["completed_at"])
+            self.assertGreater(item["completed_at"], item["started_at"])
 
     def test_execute_task_merges_stderr_then_stdout(self) -> None:
         item = {
@@ -1032,6 +1058,70 @@ class GenerationMessageTests(unittest.TestCase):
         user_payload = json.loads(messages[1]["content"])
         self.assertEqual(user_payload["prompt_template"], "Use the ad-attack skill")
         self.assertEqual(user_payload["state"]["domain"]["name"], "ndrtest.local")
+        self.assertEqual(user_payload["lab_nets"], ["172.16.24.0/24"])
+        self.assertIn("lab_nets", user_payload["output"])
+
+    def test_rejects_host_outside_configured_lab_net(self) -> None:
+        lab = ("172.16.24.0/24",)
+        outside = "Use the ad-attack skill: execute discovery.port-scan against host 192.168.14.71."
+        inside = "Use the ad-attack skill: execute discovery.port-scan against host 172.16.24.11."
+        domain = "Use the ad-attack skill: execute discovery.orientation against domain."
+        self.assertFalse(task_targets_in_lab_nets(outside, lab))
+        self.assertTrue(task_targets_in_lab_nets(inside, lab))
+        self.assertTrue(task_targets_in_lab_nets(domain, lab))
+        self.assertFalse(
+            task_targets_in_lab_nets(
+                "Use the ad-attack skill: execute discovery.host-scan against subnet 192.168.14.0/24.",
+                lab,
+            )
+        )
+        self.assertTrue(
+            task_targets_in_lab_nets(
+                "Use the ad-attack skill: execute discovery.host-scan against subnet 172.16.24.0/24.",
+                lab,
+            )
+        )
+        self.assertEqual(filter_tasks_to_lab_nets([outside, inside, domain], lab), [inside, domain])
+        self.assertTrue(
+            task_targets_in_lab_nets(
+                "Use the ad-attack skill: execute discovery.share-enum against host i1-dc1-c01.ndrtest.local.",
+                lab,
+                state={"domain": {"dc_ip": "172.16.24.11", "dc_fqdn": "i1-dc1-c01.ndrtest.local"}},
+            )
+        )
+
+    def test_fill_retries_when_model_copies_example_lab(self) -> None:
+        tasks = tasks_from_schedule(["09:11"])
+        client = mock.Mock()
+        client.request_completion.side_effect = [
+            AgentResponse(
+                model="test",
+                response_text='{"tasks": ["Use the ad-attack skill: execute discovery.port-scan against host 192.168.14.71."]}',
+                status_code=200,
+                elapsed_seconds=0.1,
+                raw_response_text="{}",
+            ),
+            AgentResponse(
+                model="test",
+                response_text='{"tasks": ["Use the ad-attack skill: execute discovery.port-scan against host 172.16.24.11."]}',
+                status_code=200,
+                elapsed_seconds=0.1,
+                raw_response_text="{}",
+            ),
+        ]
+        fill_next_batch(
+            tasks,
+            batch_size=1,
+            agent_client=client,
+            system_prompt="You are an automated planner",
+            prompt_template="Use the ad-attack skill",
+            state={"domain": {"dc_ip": "172.16.24.11"}},
+            max_attempts=2,
+            lab_nets=["172.16.24.0/24"],
+        )
+        self.assertIn("172.16.24.11", tasks[0]["task"])
+        self.assertNotIn("192.168.14.71", tasks[0]["task"])
+        self.assertEqual(client.request_completion.call_count, 2)
 
     def test_load_generation_resources_from_skill_pack(self) -> None:
         system_prompt, prompt_template, state = load_generation_resources()
@@ -1044,7 +1134,9 @@ class GenerationMessageTests(unittest.TestCase):
         self.assertIn("Campaign goal", system_prompt)
         self.assertIn("refresh", system_prompt)
         self.assertIn("share", system_prompt)
-        self.assertIn("employee", system_prompt)
+        self.assertIn("lab_nets", system_prompt)
+        self.assertIn("172.16.24.0/24", prompt_template)
+        self.assertNotIn("192.168.14.71", prompt_template)
         self.assertIn("Ongoing campaign", prompt_template)
         self.assertIn("collection.share-download", prompt_template)
         self.assertIn("collection.local-file", prompt_template)

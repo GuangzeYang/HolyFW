@@ -18,6 +18,7 @@ Hard rules:
   `Use the ad-attack skill: execute discovery.orientation against domain.`
 - One technique id per string. Do not combine techniques.
 - Reference only objects, hosts, users, and fields that already exist in the supplied `state` JSON.
+- `against host <ip>` and `against subnet <cidr>` must lie in `lab_nets` from the user payload (configured in attacker `extract.lab_nets`). Prefer hosts already listed in `state`. Never copy example IPs or subnets from the prompt template.
 - Do not put passwords, hashes, or the domain SID into the task text. Use object names only.
 - Respect cold-start order in the prompt template: discovery before credential work, credential work before lateral movement, collection, or persistence.
 - Do not emit the same task string twice in the current batch. You MAY reuse a technique id that already appears in `known_completed_tasks` when refreshing knowledge or collecting again. Prefer a different host, share, or user when one exists. Singleton techniques such as `discovery.orientation` may repeat the same string when the purpose is refresh.

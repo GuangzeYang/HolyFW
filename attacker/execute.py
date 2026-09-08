@@ -164,10 +164,13 @@ def execute_task(
     runner: Any | None = None,
     day: date | None = None,
 ) -> dict[str, str]:
-    """Fill started_at/completed_at, run the agent, and write one Markdown transcript."""
+    """Fill started_at/completed_at, run the agent, and write one Markdown transcript.
+
+    ``started_at`` is wall-clock immediately before ``opencode run``.
+    ``completed_at`` is always a fresh wall-clock stamp after the process
+    returns. Optional ``now`` only overrides ``started_at`` (tests).
+    """
     assign_task_id(item)
-    stamp = now if now is not None else datetime.now().astimezone()
-    item["started_at"] = iso_now(stamp)
     target_day = day or date.today()
     output_dir = logs_dir / target_day.isoformat()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -180,13 +183,13 @@ def execute_task(
     prompt = strip_opencode_run_prefix(item["task"])
     env = opencode_run_env(task_id=item["task_id"], output_dir=output_dir)
     run = runner if runner is not None else run_opencode
+    item["started_at"] = iso_now(now)
     if runner is None:
         packed = run(item["task"], timeout_seconds, env=env)
     else:
         packed = run(item["task"], timeout_seconds)
     exit_code, stdout, stderr = unpack_opencode_result(packed)
-    finished = datetime.now().astimezone() if now is None else stamp
-    item["completed_at"] = iso_now(finished)
+    item["completed_at"] = iso_now()
     logger.info(
         "Finished planned_time=%s task_id=%s exit_code=%s started_at=%s completed_at=%s",
         item.get("planned_time"),

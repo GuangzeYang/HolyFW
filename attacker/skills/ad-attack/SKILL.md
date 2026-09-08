@@ -187,7 +187,7 @@ Read the long-term state:
 python scripts/state.py read
 ```
 
-The task references objects by name (e.g. `user svc_backup`, `host 192.168.14.71`). Resolve each reference to its fields in `state.json`. Every command parameter (domain name, DC IP, username, hash, ccache file, SPN, etc.) MUST come from the resolved object. Never invent credentials, hashes, hostnames, or targets. If a referenced object or its required field is missing from the state, first run the Discovery/Credential Access technique that produces it, then proceed.
+The task references objects by name (e.g. `user svc_backup`, `host 172.16.24.11`). Resolve each reference to its fields in `state.json`. Every command parameter (domain name, DC IP, username, hash, ccache file, SPN, etc.) MUST come from the resolved object. Never invent credentials, hashes, hostnames, or targets. If a referenced object or its required field is missing from the state, first run the Discovery/Credential Access technique that produces it, then proceed.
 
 ### Step 2 — Wrap each atomic action with capture
 
@@ -427,20 +427,20 @@ Examples:
 
 ```
 Use the ad-attack skill: execute discovery.orientation against domain.
-Use the ad-attack skill: execute discovery.host-scan against subnet 192.168.14.0/24.
-Use the ad-attack skill: execute discovery.port-scan against host 192.168.14.71.
+Use the ad-attack skill: execute discovery.host-scan against subnet 172.16.24.0/24.
+Use the ad-attack skill: execute discovery.port-scan against host 172.16.24.11.
 Use the ad-attack skill: using the usernames of wordlists, execute discovery.user-enum-kerbrute against domain.
 Use the ad-attack skill: using the password of user alice, execute discovery.user-enum-ldap against domain.
 Use the ad-attack skill: using the usernames of wordlists, execute credential.password-spray against domain.
 Use the ad-attack skill: using the passwords of wordlists, execute credential.brute-user against domain.
 Use the ad-attack skill: using the password of user alice, execute credential.kerberoast against domain.
-Use the ad-attack skill: using the ntlm_hash of user svc_backup, execute lateral.pth-psexec against host 192.168.14.71.
+Use the ad-attack skill: using the ntlm_hash of user svc_backup, execute lateral.pth-psexec against host 172.16.24.11.
 Use the ad-attack skill: using the ntlm_hash of user administrator, execute lateral.overpass-the-hash against domain.
-Use the ad-attack skill: using the password of user alice, execute lateral.exec-wmiexec against host 192.168.14.71.
+Use the ad-attack skill: using the password of user alice, execute lateral.exec-wmiexec against host 172.16.24.11.
 Use the ad-attack skill: using the password of user alice, execute lateral.delegation-enum against domain.
-Use the ad-attack skill: using the password of user svc_sql, execute lateral.delegation-s4u against host 192.168.14.71.
+Use the ad-attack skill: using the password of user svc_sql, execute lateral.delegation-s4u against host 172.16.24.11.
 Use the ad-attack skill: using the ntlm_hash of user krbtgt, execute persistence.golden-ticket against domain.
-Use the ad-attack skill: using the ntlm_hash of user svc_sql, execute persistence.silver-ticket against host 192.168.14.71.
+Use the ad-attack skill: using the ntlm_hash of user svc_sql, execute persistence.silver-ticket against host 172.16.24.11.
 ```
 
 The only parameter that may originate outside `state.json` is a single candidate password for spraying (the user/password wordlist paths themselves come from `wordlists`).
