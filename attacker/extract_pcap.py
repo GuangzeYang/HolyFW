@@ -993,6 +993,7 @@ def run_extract_batch(
         )
         stem = technique_pcap_stem(task_id, technique)
         dest = out_dir / f"{stem}.pcapng"
+        print(f"extracting {dest.name}", flush=True)
         write_filtered_pcap(pcap, display_filter, dest, tshark=tshark, run_fn=run_fn)
         records = selected_to_records(matched, task_id=task_id, technique=technique)
         all_records.extend(records)
