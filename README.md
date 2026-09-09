@@ -344,7 +344,10 @@ Optional arguments:
 
 ```bash
 commander --host 0.0.0.0 --port 38471 --data-dir ./role_task --debug
+commander --wait-next-day
 ```
+
+`--wait-next-day` skips generate and dispatch for the current task day (treats it as already issued) and resumes when the active task date changes. Overdue catch-up still applies on the new day.
 
 Without installing, from the repository root:
 

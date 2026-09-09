@@ -1899,6 +1899,67 @@ class CommanderParserTests(unittest.TestCase):
         self.assertIn("--statistic", result.stdout)
         self.assertIn("--output-dir", result.stdout)
         self.assertIn("--base-time", result.stdout)
+        self.assertIn("--wait-next-day", result.stdout)
+
+    def test_parser_accepts_wait_next_day(self) -> None:
+        from commander.commander import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["--wait-next-day"])
+        self.assertTrue(args.wait_next_day)
+        self.assertFalse(parser.parse_args([]).wait_next_day)
+
+
+class WaitNextDayTests(unittest.TestCase):
+    def test_should_defer_task_day(self) -> None:
+        from commander.commander import should_defer_task_day
+
+        self.assertTrue(should_defer_task_day("2026-09-09", "2026-09-09"))
+        self.assertFalse(should_defer_task_day("2026-09-09", "2026-09-10"))
+        self.assertFalse(should_defer_task_day(None, "2026-09-09"))
+        self.assertFalse(should_defer_task_day("", "2026-09-09"))
+
+    def test_pin_deferred_task_day(self) -> None:
+        from commander.commander import TaskScanner
+
+        scanner = mock.Mock()
+        scanner.wait_next_day = True
+        scanner._active_task_date.return_value = "2026-09-09"
+        TaskScanner.pin_deferred_task_day(scanner)
+        self.assertEqual(scanner._deferred_task_date, "2026-09-09")
+
+        scanner.wait_next_day = False
+        scanner._deferred_task_date = None
+        TaskScanner.pin_deferred_task_day(scanner)
+        self.assertIsNone(scanner._deferred_task_date)
+
+    def test_periodic_hook_skips_scan_while_deferred(self) -> None:
+        from commander.commander import TaskScanner
+
+        scanner = mock.Mock()
+        scanner._deferred_task_date = "2026-09-09"
+        scanner.sync_role_pointers_for_calendar_date.return_value = "2026-09-09"
+        TaskScanner._default_periodic_hook(scanner)
+        scanner.run_role_task_file_scan_pass.assert_not_called()
+
+        scanner.sync_role_pointers_for_calendar_date.return_value = "2026-09-10"
+        TaskScanner._default_periodic_hook(scanner)
+        scanner.run_role_task_file_scan_pass.assert_called_once_with("2026-09-10")
+
+    def test_maybe_ensure_skips_generation_while_deferred(self) -> None:
+        from commander.commander import TaskScanner
+
+        scanner = mock.Mock()
+        scanner._deferred_task_date = "2026-09-09"
+        scanner._active_task_date.return_value = "2026-09-09"
+        scanner.generation_roles = ("hr",)
+        TaskScanner._maybe_ensure_role_file(scanner)
+        scanner._ensure_role_file.assert_not_called()
+
+        scanner._active_task_date.return_value = "2026-09-10"
+        scanner._get_role_task_file.return_value = Path("tasks_09-10.json")
+        TaskScanner._maybe_ensure_role_file(scanner)
+        scanner._ensure_role_file.assert_called_once_with(Path("tasks_09-10.json"))
 
 
 if __name__ == "__main__":

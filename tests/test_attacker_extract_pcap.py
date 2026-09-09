@@ -12,13 +12,16 @@ from unittest import mock
 
 from attacker.extract_pcap import (
     ExtractOptions,
+    ExcludeFlow,
     NetworkConnect,
     PacketRow,
     ProcessCreate,
     auto_unlogged_scan,
     build_display_filter,
     connection_is_malicious,
+    exclude_flows_from_config,
     extract_from_sources,
+    flow_is_excluded,
     image_basename,
     lab_nets_from_config,
     match_streams,
@@ -168,6 +171,44 @@ class FilterTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertIn("impacket", selected[0].command_line)
 
+    def test_drops_avp_to_kaspersky_peer(self) -> None:
+        keep, _ = connection_is_malicious(
+            _connect(image=r"C:\Program Files (x86)\Kaspersky Lab\avp.exe", dest_ip="172.16.24.42"),
+            {},
+            ExtractOptions(require_cmdline=False),
+        )
+        self.assertFalse(keep)
+        self.assertTrue(
+            flow_is_excluded(
+                _connect(image=r"C:\Program Files (x86)\Kaspersky Lab\avp.exe", dest_ip="172.16.24.42"),
+                ExtractOptions().exclude_flows,
+            )
+        )
+
+    def test_keeps_impacket_python_to_kaspersky_peer(self) -> None:
+        keep, cmdline = connection_is_malicious(
+            _connect(dest_ip="172.16.24.42"),
+            processes_by_guid([_create()]),
+            ExtractOptions(),
+        )
+        self.assertTrue(keep)
+        self.assertIn("impacket", cmdline)
+        self.assertFalse(flow_is_excluded(_connect(dest_ip="172.16.24.42"), ExtractOptions().exclude_flows))
+
+    def test_avp_to_other_lab_ip_is_not_exclude_hit(self) -> None:
+        connect = _connect(image=r"C:\Program Files (x86)\Kaspersky Lab\avp.exe", dest_ip="172.16.24.1")
+        self.assertFalse(flow_is_excluded(connect, ExtractOptions().exclude_flows))
+
+    def test_exclude_flows_from_config(self) -> None:
+        self.assertEqual(
+            exclude_flows_from_config({}),
+            (ExcludeFlow(peer_ip="172.16.24.42", image_contains="avp"),),
+        )
+        custom = exclude_flows_from_config(
+            {"extract": {"exclude_flows": [{"peer_ip": "10.0.0.9", "image_contains": "klnagent"}]}}
+        )
+        self.assertEqual(custom, (ExcludeFlow(peer_ip="10.0.0.9", image_contains="klnagent"),))
+
 
 class TaskWindowTests(unittest.TestCase):
     def test_started_and_completed(self) -> None:
@@ -237,6 +278,17 @@ class TsharkFilterTests(unittest.TestCase):
         )
         self.assertIn("ip.src == 172.16.24.10", scan)
         self.assertIn("icmp", scan)
+        self.assertNotIn("ip.addr != 172.16.24.42", scan)
+        dropped = build_display_filter(
+            [],
+            [],
+            include_unlogged_scan=True,
+            attacker_ip="172.16.24.10",
+            scan_since_epoch=1.0,
+            scan_until_epoch=2.0,
+            exclude_peer_ips=["172.16.24.42"],
+        )
+        self.assertIn("ip.addr != 172.16.24.42", dropped)
         self.assertEqual(build_display_filter([], []), "frame.number == 0")
 
     def test_extract_from_sources_builds_filter(self) -> None:
@@ -252,6 +304,21 @@ class TsharkFilterTests(unittest.TestCase):
         )
         self.assertEqual(matched[0].tcp_stream, "12")
         self.assertEqual(filt, "tcp.stream eq 12")
+
+    def test_extract_from_sources_scan_excludes_kaspersky_peer(self) -> None:
+        matched, filt = extract_from_sources(
+            creates=[],
+            connects=[],
+            packets=[],
+            options=ExtractOptions(
+                include_unlogged_scan=True,
+                attacker_ip="172.16.24.10",
+                since=datetime.fromtimestamp(1.0, tz=timezone.utc),
+                until=datetime.fromtimestamp(2.0, tz=timezone.utc),
+            ),
+        )
+        self.assertEqual(matched, [])
+        self.assertIn("ip.addr != 172.16.24.42", filt)
 
 
 class ConfigAndCliTests(unittest.TestCase):

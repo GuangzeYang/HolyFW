@@ -175,6 +175,11 @@ def handle_commander(
         conn.close()
 
 
+def should_defer_task_day(deferred_date: str | None, active_date: str) -> bool:
+    """True when --wait-next-day pinned a day that is still the active task day."""
+    return bool(deferred_date) and deferred_date == active_date
+
+
 class TaskScanner:
     """Scans and dispatches role tasks automatically."""
     
@@ -197,6 +202,7 @@ class TaskScanner:
         generation_roles: tuple[str, ...] | None = None,
         statistic_output_dir: Path | None = None,
         base_time: int = 9,
+        wait_next_day: bool = False,
     ):
         self.repository = repository
         self.data_dir = repository.data_dir
@@ -239,6 +245,8 @@ class TaskScanner:
             max_dispatch_lateness_minutes=self.max_dispatch_lateness_minutes,
             debug=debug,
         )
+        self.wait_next_day = bool(wait_next_day)
+        self._deferred_task_date: str | None = None
     
     def _active_task_date(self) -> str:
         """ISO date of the task file to generate/scan, pinned across midnight wrap."""
@@ -247,6 +255,28 @@ class TaskScanner:
         except ImportError:
             from commander.schedule_shift import resolve_active_task_day
         return resolve_active_task_day(self.repository.load_day)
+
+    def pin_deferred_task_day(self) -> None:
+        """Remember the current active task day so generate/scan skip it."""
+        if not self.wait_next_day:
+            return
+        self._deferred_task_date = self._active_task_date()
+        logging.info(
+            "Waiting for next task day; deferring generate/dispatch for %s",
+            self._deferred_task_date,
+        )
+
+    def _maybe_ensure_role_file(self) -> None:
+        date_str = self._active_task_date()
+        if should_defer_task_day(self._deferred_task_date, date_str):
+            logging.debug("Deferring generation for %s (--wait-next-day)", date_str)
+            return
+        if not self.generation_roles:
+            logging.debug(
+                "Skipping daily generation; no office roles configured (on-demand only)"
+            )
+            return
+        self._ensure_role_file(self._get_role_task_file())
 
     def _get_role_task_file(self) -> Path:
         """Return path to the active unified daily tasks file."""
@@ -321,6 +351,9 @@ class TaskScanner:
     def _default_periodic_hook(self) -> None:
         self.ensure_commander_log_file_for_today()
         date_str = self.sync_role_pointers_for_calendar_date()
+        if should_defer_task_day(self._deferred_task_date, date_str):
+            logging.debug("Deferring scan for %s (--wait-next-day)", date_str)
+            return
         self.run_role_task_file_scan_pass(date_str)
 
     def _invoke_periodic_hook(self) -> None:
@@ -331,6 +364,8 @@ class TaskScanner:
 
     def start(self):
         """Start scanning thread and role-task generation retry thread."""
+        self.pin_deferred_task_day()
+
         def scan_loop():
             logging.info("Task scanner thread started")
             while True:
@@ -345,13 +380,7 @@ class TaskScanner:
             while True:
                 try:
                     self.ensure_commander_log_file_for_today()
-                    role_file = self._get_role_task_file()
-                    if not self.generation_roles:
-                        logging.debug(
-                            "Skipping daily generation; no office roles configured (on-demand only)"
-                        )
-                    else:
-                        self._ensure_role_file(role_file)
+                    self._maybe_ensure_role_file()
                 except Exception as e:
                     logging.error(f"Exception in generation_retry_loop: {e}", exc_info=True)
                 time.sleep(self.generation_retry_interval_seconds)
@@ -386,6 +415,7 @@ def serve(
     debug: bool = False,
     statistic_output_dir: Path | None = None,
     base_time: int = 9,
+    wait_next_day: bool = False,
 ) -> None:
     data_dir = data_dir.resolve()
     repository = DailyTaskRepository(
@@ -413,6 +443,7 @@ def serve(
         generation_roles=generation_roles,
         statistic_output_dir=statistic_output_dir,
         base_time=base_time,
+        wait_next_day=wait_next_day,
     )
     scanner.start()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -473,6 +504,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=_parse_base_time_arg,
         default=None,
         help="Hour (0-23) when the generated 09:00 workday should start. Default from config (9).",
+    )
+    parser.add_argument(
+        "--wait-next-day",
+        action="store_true",
+        help=(
+            "skip generate and dispatch for the current task day; resume when the "
+            "active task date changes"
+        ),
     )
     return parser
 
@@ -556,6 +595,7 @@ def main(argv: list[str] | None = None) -> None:
         debug=args.debug,
         statistic_output_dir=statistic_output_dir,
         base_time=resolved_base_time,
+        wait_next_day=bool(args.wait_next_day),
     )
 
 

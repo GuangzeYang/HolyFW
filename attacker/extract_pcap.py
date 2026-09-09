@@ -82,6 +82,15 @@ class NetworkConnect:
     dest_port: int
 
 
+@dataclass(frozen=True)
+class ExcludeFlow:
+    peer_ip: str
+    image_contains: str
+
+
+DEFAULT_EXCLUDE_FLOWS = (ExcludeFlow(peer_ip="172.16.24.42", image_contains="avp"),)
+
+
 @dataclass
 class ExtractOptions:
     lab_nets: tuple[str, ...] = DEFAULT_LAB_NETS
@@ -93,6 +102,7 @@ class ExtractOptions:
     time_slack_seconds: float = PCAP_TIME_SLACK_SECONDS
     include_unlogged_scan: bool = False
     attacker_ip: str = ""
+    exclude_flows: tuple[ExcludeFlow, ...] = DEFAULT_EXCLUDE_FLOWS
 
 
 @dataclass
@@ -348,6 +358,61 @@ def attacker_ip_from_config(config: dict[str, Any] | None) -> str:
     return str(raw or "").strip()
 
 
+def _parse_exclude_flow(item: Any) -> ExcludeFlow | None:
+    if not isinstance(item, dict):
+        return None
+    peer_ip = str(item.get("peer_ip") or "").strip()
+    needle = str(item.get("image_contains") or "").strip()
+    if not peer_ip or not needle:
+        return None
+    return ExcludeFlow(peer_ip=peer_ip, image_contains=needle)
+
+
+def exclude_flows_from_config(config: dict[str, Any] | None) -> tuple[ExcludeFlow, ...]:
+    block = config.get("extract") if isinstance(config, dict) else None
+    raw = block.get("exclude_flows") if isinstance(block, dict) else None
+    if not isinstance(raw, list) or not raw:
+        return DEFAULT_EXCLUDE_FLOWS
+    flows = tuple(parsed for parsed in (_parse_exclude_flow(item) for item in raw) if parsed is not None)
+    return flows if flows else DEFAULT_EXCLUDE_FLOWS
+
+
+def peer_ips_from_exclude_flows(rules: Sequence[ExcludeFlow]) -> tuple[str, ...]:
+    seen: list[str] = []
+    for rule in rules:
+        peer = str(rule.peer_ip or "").strip()
+        if peer and peer not in seen:
+            seen.append(peer)
+    return tuple(seen)
+
+
+def _image_has_needle(image: str, needle: str) -> bool:
+    text = str(needle or "").strip().lower()
+    if not text:
+        return False
+    return text in image_basename(image)
+
+
+def flow_is_excluded(
+    connect: NetworkConnect,
+    rules: Sequence[ExcludeFlow],
+    *,
+    extra_image: str = "",
+) -> bool:
+    images = [connect.image]
+    if extra_image:
+        images.append(extra_image)
+    for rule in rules:
+        peer = str(rule.peer_ip or "").strip()
+        if not peer:
+            continue
+        if connect.source_ip != peer and connect.dest_ip != peer:
+            continue
+        if any(_image_has_needle(image, rule.image_contains) for image in images):
+            return True
+    return False
+
+
 def parse_technique_id(text: str) -> str:
     match = _TECHNIQUE_RE.search(str(text or ""))
     return match.group(1).lower() if match else ""
@@ -435,6 +500,9 @@ def connection_is_malicious(
         return False, ""
     proc = creates_by_guid.get(normalize_guid(connect.process_guid))
     command_line = proc.command_line if proc is not None else ""
+    extra_image = proc.image if proc is not None else ""
+    if flow_is_excluded(connect, options.exclude_flows, extra_image=extra_image):
+        return False, command_line
     image_ok = image_basename(connect.image) in ATTACK_IMAGES
     create_ok = False
     if proc is not None:
@@ -611,6 +679,7 @@ def build_display_filter(
     attacker_ip: str = "",
     scan_since_epoch: float | None = None,
     scan_until_epoch: float | None = None,
+    exclude_peer_ips: Iterable[str] = (),
 ) -> str:
     parts: list[str] = []
     for stream in sorted({item for item in tcp_streams if item != ""}, key=_stream_sort_key):
@@ -631,6 +700,11 @@ def build_display_filter(
             f"({time_term}) && ip.src == {attacker_ip} && "
             f"(icmp || arp || (tcp.flags.syn == 1 && tcp.flags.ack == 0))"
         )
+        dropped = " && ".join(
+            f"ip.addr != {ip}" for ip in sorted({str(item).strip() for item in exclude_peer_ips if str(item).strip()})
+        )
+        if dropped:
+            scan_term = f"{scan_term} && {dropped}"
         parts.append(scan_term)
     if not parts:
         return "frame.number == 0"
@@ -735,6 +809,7 @@ def extract_from_sources(
         attacker_ip=options.attacker_ip,
         scan_since_epoch=scan_since,
         scan_until_epoch=scan_until,
+        exclude_peer_ips=peer_ips_from_exclude_flows(options.exclude_flows),
     )
     return matched, display_filter
 
@@ -826,6 +901,7 @@ def options_from_args(args: argparse.Namespace, config: dict[str, Any] | None) -
         until=until,
         include_unlogged_scan=include_scan,
         attacker_ip=attacker_ip,
+        exclude_flows=exclude_flows_from_config(config),
     )
 
 
@@ -910,6 +986,7 @@ def run_extract_batch(
             time_slack_seconds=base.time_slack_seconds,
             include_unlogged_scan=include_scan,
             attacker_ip=attacker_ip,
+            exclude_flows=base.exclude_flows,
         )
         matched, display_filter = extract_from_sources(
             creates=creates, connects=connects, packets=packets, options=options
@@ -943,6 +1020,7 @@ def run_extract_batch(
         attacker_ip=attacker_ip,
         scan_since_epoch=scan_since,
         scan_until_epoch=scan_until,
+        exclude_peer_ips=peer_ips_from_exclude_flows(base.exclude_flows),
     )
     benign_path, tuples_path = _write_benign_and_tuples(
         pcap=pcap,

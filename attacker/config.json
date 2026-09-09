@@ -31,6 +31,9 @@
   },
   "extract": {
     "lab_nets": ["172.16.24.0/24"],
-    "attacker_ip": ""
+    "attacker_ip": "",
+    "exclude_flows": [
+      {"peer_ip": "172.16.24.42", "image_contains": "avp"}
+    ]
   }
 }

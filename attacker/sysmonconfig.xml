@@ -1177,93 +1177,9 @@
       <RawAccessRead onmatch="include" />
     </RuleGroup>
     <!-- Event ID 10 == ProcessAccess - Includes -->
+    <!-- Empty include: log no EID 10. Kaspersky avp.exe otherwise fills the default 64MB channel. -->
     <RuleGroup groupRelation="or">
       <ProcessAccess onmatch="include">
-        <CallTrace name="technique_id=T1003,technique_name=Credential Dumping" condition="contains">dbghelp.dll</CallTrace>
-        <CallTrace name="technique_id=T1003,technique_name=Credential Dumping" condition="contains">dbgcore.dll</CallTrace>
-        <TargetImage condition="contains">Desktop</TargetImage>
-        <Rule groupRelation="and">
-          <TargetImage name="technique_id=T1003,technique_name=Credential Dumping" condition="is">C:\Windows\system32\csrss.exe</TargetImage>
-          <GrantedAccess>0x1F1FFF</GrantedAccess>
-        </Rule>
-        <Rule groupRelation="and">
-          <TargetImage name="technique_id=T1003,technique_name=Credential Dumping" condition="is">C:\Windows\system32\wininit.exe</TargetImage>
-          <GrantedAccess>0x1F1FFF</GrantedAccess>
-        </Rule>
-        <Rule groupRelation="and">
-          <TargetImage name="technique_id=T1003,technique_name=Credential Dumping" condition="is">C:\Windows\system32\winlogon.exe</TargetImage>
-          <GrantedAccess>0x1F1FFF</GrantedAccess>
-        </Rule>
-        <Rule groupRelation="and">
-          <TargetImage name="technique_id=T1003,technique_name=Credential Dumping" condition="is">C:\Windows\system32\services.exe</TargetImage>
-          <GrantedAccess>0x1F1FFF</GrantedAccess>
-        </Rule>
-        <GrantedAccess name="technique_id=T1055.012,technique_name=Process Hollowing">0x21410</GrantedAccess>
-        <Rule groupRelation="and">
-          <TargetImage name="technique_id=T1003,technique_name=Credential Dumping" condition="is">C:\Windows\system32\lsass.exe</TargetImage>
-          <GrantedAccess>0x1FFFFF</GrantedAccess>
-        </Rule>
-        <Rule groupRelation="and">
-          <TargetImage name="technique_id=T1003,technique_name=Credential Dumping" condition="is">C:\Windows\system32\lsass.exe</TargetImage>
-          <GrantedAccess>0x1F1FFF</GrantedAccess>
-        </Rule>
-        <Rule groupRelation="and">
-          <TargetImage name="technique_id=T1003,technique_name=Credential Dumping" condition="is">C:\Windows\system32\lsass.exe</TargetImage>
-          <GrantedAccess>0x1010</GrantedAccess>
-        </Rule>
-        <Rule groupRelation="and">
-          <TargetImage name="technique_id=T1003,technique_name=Credential Dumping" condition="is">C:\Windows\system32\lsass.exe</TargetImage>
-          <GrantedAccess>0x143A</GrantedAccess>
-        </Rule>
-        <Rule groupRelation="and">
-          <TargetImage name="technique_id=T1003,technique_name=Credential Dumping" condition="image">lsass.exe</TargetImage>
-          <SourceImage name="technique_id=T1003,technique_name=Credential Dumping" condition="image">wsmprovhost.exe</SourceImage>
-        </Rule>
-        <Rule groupRelation="and" name="technique_id=T1055,technique_name=Process Injection">
-          <SourceImage condition="contains all">C:\Program Files;\Microsoft Office\Root\Office</SourceImage>
-          <CallTrace condition="contains">\Microsoft Shared\VBA</CallTrace>
-        </Rule>
-        <Rule groupRelation="and">
-          <CallTrace name="technique_id=T1055.001,technique_name=Dynamic-link Library Injection" condition="contains all">C:\Windows\SYSTEM32\ntdll.dll;C:\Windows\System32\kernelbase.dll;UNKNOWN</CallTrace>
-          <GrantedAccess name="technique_id=T1055.001,technique_name=Dynamic-link Library Injection" condition="contains any">0x1F0FFF;0x1F1FFF;0x143A;0x1410;0x1010;0x1F2FFF;0x1F3FFF;0x1FFFFF;0x147A;0x1028</GrantedAccess>
-        </Rule>
-        <GrantedAccess name="technique_id=T1055.012,technique_name=Process Hollowing">0x0800</GrantedAccess>
-        <GrantedAccess name="technique_id=T1003,technique_name=Credential Dumping">0x0810</GrantedAccess>
-        <GrantedAccess name="technique_id=T1055,technique_name=Process Injection">0x0820</GrantedAccess>
-        <GrantedAccess name="technique_id=T1055.012,technique_name=Process Hollowing">0x800</GrantedAccess>
-        <GrantedAccess name="technique_id=T1003,technique_name=Credential Dumping">0x810</GrantedAccess>
-        <GrantedAccess name="technique_id=T1055,technique_name=Process Injection">0x820</GrantedAccess>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="begin with">C:\PerfLogs\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="begin with">C:\$Recycle.bin\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="begin with">C:\Intel\Logs\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="begin with">C:\Users\Default\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="begin with">C:\Users\Public\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="begin with">C:\Users\NetworkService\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="begin with">C:\Windows\Fonts\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="begin with">C:\Windows\Debug\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="begin with">C:\Windows\Media\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="begin with">C:\Windows\Help\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="begin with">C:\Windows\addins\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="begin with">C:\Windows\repair\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="begin with">C:\Windows\security\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="begin with">C:\Windows\system32\config\systemprofile\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="contains">VolumeShadowCopy</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="contains">\htdocs\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="contains">\wwwroot\</SourceImage>
-        <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="contains">\Temp\</SourceImage>
-        <Rule groupRelation="and">
-          <SourceImage name="technique_id=T1036,technique_name=Masquerading" condition="contains">\AppData\</SourceImage>
-          <SourceImage condition="not end with">\AppData\Local\Microsoft\Teams\current\Teams.exe</SourceImage>
-        </Rule>
-        <Rule groupRelation="and">
-          <CallTrace name="technique_id=T1059.001,technique_name=PowerShell" condition="contains">System.Management.Automation.ni.dll</CallTrace>
-          <SourceImage condition="is not">C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</SourceImage>
-        </Rule>
-        <Rule groupRelation="and">
-          <CallTrace name="technique_id=T1055,technique_name=Process Injection" condition="not begin with">C:\Windows\SYSTEM32\ntdll.dll</CallTrace>
-          <CallTrace name="technique_id=T1055,technique_name=Process Injection" condition="not begin with">C:\Windows\SYSTEM32\win32u.dll</CallTrace>
-          <CallTrace name="technique_id=T1055,technique_name=Process Injection" condition="not begin with">C:\Windows\SYSTEM32\wow64win.dll</CallTrace>
-        </Rule>
       </ProcessAccess>
     </RuleGroup>
     <!-- Event ID 10 == ProcessAccess - Excludes -->
