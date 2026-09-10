@@ -11,17 +11,21 @@ from typing import Any, Callable
 
 from common import (
     candidate_task_path,
+    enrich_accepted_tasks,
     extract_react_finish_json,
     format_task_generation_constraints,
     format_validation_feedback,
     load_task_file,
     normalize_role_tasks,
+    parse_time_keyed_task_rows,
     role_tasks_are_complete,
     save_json_atomic,
+    sort_tasks_by_time,
     validate_generated_task_file,
+    validate_rows_match_schedule,
 )
 from common.agent_request_abc import AgentRequestABC, AgentRequestError, AgentTimeoutError
-from common.time_model import TimeModelConfig, generate_schedule, zip_tasks_with_schedule
+from common.time_model import TimeModelConfig, generate_schedule
 try:
     from prompt_catalog import assemble_generation_payload, build_react_generation_messages, load_prompt_catalog
     from role_dependency_provider import build_backward_items
@@ -100,14 +104,6 @@ _RETRY_TRAILER = (
     "Do not invent timestamps. "
     "The skills catalog is FORMAT ONLY. Do not copy catalog or example content. Avoid long runs of the same skill."
 )
-
-
-def _count_required_change(role: str, task_count: int, actual: int | None = None) -> str:
-    extra = f" Do not keep {actual} items." if actual is not None else ""
-    return (
-        f"Delete extra items or add missing bodies until the '{role}' list length is {task_count}."
-        f"{extra} Do not copy the 4-item format illustration."
-    )
 
 
 def _build_retry_feedback(reason: str | None) -> str:
@@ -425,63 +421,58 @@ def generate_role_tasks(
                     last_failure_reason = format_validation_feedback(
                         reason=f"Role '{role}' data is not a list",
                         required_change=(
-                            f'Output {{"{role}": [ ... {task_count} objects ... ]}} '
-                            f"with exactly {task_count} items."
-                        ),
-                    )
-                    retry_feedback = _build_retry_feedback(last_failure_reason)
-                    emit_status(last_failure_reason)
-                    continue
-                if len(raw_rows) != task_count:
-                    actual = len(raw_rows)
-                    last_failure_reason = format_validation_feedback(
-                        reason=(
-                            f"Role '{role}' task count {actual} does not match schedule length {task_count}"
-                        ),
-                        required_change=_count_required_change(role, task_count, actual),
-                    )
-                    stats["schema_fail"] += 1
-                    retry_feedback = _build_retry_feedback(last_failure_reason)
-                    emit_status(last_failure_reason)
-                    continue
-
-                try:
-                    zipped = zip_tasks_with_schedule(
-                        [item if isinstance(item, dict) else {} for item in raw_rows],
-                        schedule,
-                    )
-                except ValueError as exc:
-                    stats["schema_fail"] += 1
-                    last_failure_reason = format_validation_feedback(
-                        reason=str(exc),
-                        required_change=(
-                            f"Output {task_count} objects of the form "
-                            "{\"is_load\": false, \"task\": \"...\"} "
-                            f"for role '{role}'. List length must equal schedule length {task_count}."
+                            f'Output {{"{role}": [{{"HH:MM": "<task>"}}, ...]}} '
+                            f"with exactly {task_count} items keyed by schedule times."
                         ),
                     )
                     retry_feedback = _build_retry_feedback(last_failure_reason)
                     emit_status(last_failure_reason)
                     continue
 
-                save_json_atomic(role_candidate_file, {role: zipped})
+                timed_rows, parse_reason = parse_time_keyed_task_rows(raw_rows, role=role)
+                if timed_rows is None:
+                    stats["schema_fail"] += 1
+                    last_failure_reason = parse_reason
+                    retry_feedback = _build_retry_feedback(last_failure_reason)
+                    emit_status(last_failure_reason)
+                    continue
+
+                timed_rows = sort_tasks_by_time(timed_rows)
+                schedule_reason = validate_rows_match_schedule(
+                    timed_rows,
+                    schedule,
+                    role=role,
+                )
+                if schedule_reason:
+                    stats["schema_fail"] += 1
+                    last_failure_reason = schedule_reason
+                    retry_feedback = _build_retry_feedback(last_failure_reason)
+                    emit_status(last_failure_reason)
+                    continue
+
+                dependency_ok, dependency_reason = _validate_cross_role_dependencies(
+                    dependency_order_validator,
+                    persisted_data,
+                    role,
+                    timed_rows,
+                )
+                if not dependency_ok:
+                    stats["quality_fail"] += 1
+                    last_failure_reason = dependency_reason
+                    retry_feedback = _build_retry_feedback(last_failure_reason)
+                    emit_status(
+                        f"Generated candidate failed quality_fail for role '{role}': {dependency_reason}"
+                    )
+                    continue
+
+                enriched = enrich_accepted_tasks(sort_tasks_by_time(timed_rows))
+                save_json_atomic(role_candidate_file, {role: enriched})
                 failure_type, reason, data, _validated_file_size = validate_generated_task_file(
                     role_candidate_file,
                     tasks_per_role=task_count,
                     roles=(role,),
                     preserve_generated_times=True,
                 )
-                if failure_type is None and data is not None:
-                    dependency_ok, dependency_reason = _validate_cross_role_dependencies(
-                        dependency_order_validator,
-                        persisted_data,
-                        role,
-                        data.get(role, []),
-                    )
-                    if not dependency_ok:
-                        failure_type = "quality_fail"
-                        reason = dependency_reason
-
                 if failure_type is not None:
                     stats[failure_type] = stats.get(failure_type, 0) + 1
                     last_failure_reason = f"Role '{role}' validation failed: {reason}"
@@ -490,7 +481,7 @@ def generate_role_tasks(
                     continue
 
                 assert data is not None
-                persisted_data[role] = data.get(role, [])
+                persisted_data[role] = sort_tasks_by_time(data.get(role, []))
                 save_final_file(final_file, persisted_data)
                 completed_roles.add(role)
                 _cleanup_file(role_candidate_file)
@@ -563,6 +554,10 @@ def generate_role_tasks(
             return RoleTaskGenerationResult(False, None, last_failure_reason, stats)
 
         assert data is not None
+        for role_name in normalized_roles:
+            tasks = data.get(role_name)
+            if isinstance(tasks, list):
+                data[role_name] = sort_tasks_by_time(tasks)
         save_final_file(final_file, data)
         emit_status(f"Successfully generated unified tasks: {final_file}")
         return RoleTaskGenerationResult(True, final_file, None, stats)

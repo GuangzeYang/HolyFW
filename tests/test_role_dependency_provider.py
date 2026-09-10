@@ -8,6 +8,7 @@ import unittest
 from commander.role_dependency_provider import (
     build_backward_items,
     build_dependency_context,
+    compact_backward_for_prompt,
     validate_dependency_order,
 )
 
@@ -47,8 +48,9 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
         self.assertIn("strictly later than", reason)
         self.assertIn("Failure reason:", reason)
         self.assertIn("Required change:", reason)
-        self.assertIn("forbidden_slot_indices", reason)
-        self.assertIn("allowed_slot_indices", reason)
+        self.assertIn("later schedule time", reason)
+        self.assertNotIn("forbidden_slot_indices", reason)
+        self.assertNotIn("allowed_slot_indices", reason)
 
     def test_context_uses_english_dependency_facts(self) -> None:
         task_data = {
@@ -243,6 +245,38 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
         self.assertEqual(items[0]["from"], ["hr"])
         self.assertNotIn("forbidden_slot_indices", items[0])
         self.assertNotIn("allowed_slot_indices", items[0])
+
+
+class CompactBackwardForPromptTests(unittest.TestCase):
+    def test_compacts_full_events_to_time_keyed_objects(self) -> None:
+        items = [
+            {
+                "from": ["hr"],
+                "to": ["manager"],
+                "time": "10:01",
+                "task": "send mail",
+                "forbidden_slot_indices": [0],
+                "allowed_slot_indices": [1],
+            }
+        ]
+        self.assertEqual(compact_backward_for_prompt(items), [{"10:01": "send mail"}])
+
+    def test_keeps_already_time_keyed_objects_and_sorts(self) -> None:
+        items = [{"11:03": "later"}, {"09:17": "earlier"}]
+        self.assertEqual(
+            compact_backward_for_prompt(items),
+            [{"09:17": "earlier"}, {"11:03": "later"}],
+        )
+
+    def test_duplicate_times_stay_as_separate_list_items(self) -> None:
+        items = [
+            {"time": "10:01", "task": "from hr"},
+            {"time": "10:01", "task": "from manager"},
+        ]
+        self.assertEqual(
+            compact_backward_for_prompt(items),
+            [{"10:01": "from hr"}, {"10:01": "from manager"}],
+        )
 
 
 if __name__ == "__main__":

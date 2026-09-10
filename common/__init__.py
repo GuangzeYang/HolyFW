@@ -426,6 +426,134 @@ def format_validation_feedback(*, reason: str, required_change: str) -> str:
     return f"Failure reason: {reason_text}\nRequired change: {change_text}"
 
 
+def parse_time_keyed_task_rows(
+    raw_rows: list[Any],
+    *,
+    role: str,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Parse LLM items of the form {\"HH:MM\": \"task\"} into {time, task} rows."""
+    parsed: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_rows):
+        if not isinstance(item, dict):
+            return None, format_validation_feedback(
+                reason=f"Role '{role}' task#{index} is not an object",
+                required_change='Emit {"HH:MM": "<task>"} only. Do not add is_load or other fields.',
+            )
+        if len(item) != 1:
+            return None, format_validation_feedback(
+                reason=f"Role '{role}' task#{index} must have exactly one time key",
+                required_change='Each item must be {"HH:MM": "<task>"} with a single schedule time as the key.',
+            )
+        key, value = next(iter(item.items()))
+        time_text = str(key).strip() if isinstance(key, str) else ""
+        minute = parse_hhmm_to_minute(time_text)
+        if minute is None:
+            return None, format_validation_feedback(
+                reason=f"Role '{role}' task#{index} has invalid time key {key!r}",
+                required_change="Copy HH:MM keys from schedule. Do not invent timestamps.",
+            )
+        if not _in_work_window(minute):
+            return None, format_validation_feedback(
+                reason=f"Role '{role}' task#{index} time {time_text} is out of work window",
+                required_change="Use only schedule times that fall in 09:00-12:00 and 13:00-18:00.",
+            )
+        if not isinstance(value, str) or not value.strip():
+            return None, format_validation_feedback(
+                reason=f"Role '{role}' task#{index} has empty task",
+                required_change=(
+                    f"Fill the {time_text} item with a real skill invocation. "
+                    "Keep one object per schedule time."
+                ),
+            )
+        parsed.append({"time": time_text, "task": value.strip()})
+    return parsed, None
+
+
+def sort_tasks_by_time(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return a new list sorted by parsed HH:MM, invalid times last."""
+
+    def minute_key(row: dict[str, Any]) -> int:
+        minute = parse_hhmm_to_minute(str(row.get("time") or ""))
+        return minute if minute is not None else 10**9
+
+    return sorted(rows, key=minute_key)
+
+
+def validate_rows_match_schedule(
+    rows: list[dict[str, Any]],
+    schedule: list[str],
+    *,
+    role: str,
+) -> str | None:
+    """Return Failure reason + Required change when keys do not match schedule."""
+    expected = list(schedule)
+    task_count = len(expected)
+    actual_times = [str(row.get("time") or "") for row in rows]
+    if len(rows) != task_count:
+        return format_validation_feedback(
+            reason=(
+                f"Role '{role}' task count {len(rows)} does not match schedule length {task_count}"
+            ),
+            required_change=(
+                f"Delete extra items or add missing bodies until the '{role}' list length is {task_count}. "
+                "Use every schedule time exactly once. Do not copy the 4-item format illustration."
+            ),
+        )
+    if len(set(actual_times)) != len(actual_times):
+        return format_validation_feedback(
+            reason=f"Role '{role}' has duplicate time keys",
+            required_change="Use each schedule time exactly once. Sort the array by time.",
+        )
+    extra = sorted(set(actual_times) - set(expected))
+    missing = sorted(set(expected) - set(actual_times))
+    if extra or missing:
+        invented = f" Invented times: {extra}." if extra else ""
+        omitted = f" Missing schedule times: {missing}." if missing else ""
+        return format_validation_feedback(
+            reason=f"Role '{role}' time keys do not match schedule.{invented}{omitted}",
+            required_change=(
+                f"Use only the {task_count} times from schedule as object keys. "
+                "Do not invent timestamps."
+            ),
+        )
+    minutes: list[int] = []
+    for index, time_text in enumerate(actual_times):
+        minute = parse_hhmm_to_minute(time_text)
+        if minute is None:
+            return format_validation_feedback(
+                reason=f"Role '{role}' task#{index} has invalid time format",
+                required_change="Copy HH:MM keys from schedule.",
+            )
+        if minutes and minute <= minutes[-1]:
+            return format_validation_feedback(
+                reason=f"Role '{role}' tasks are not strictly increasing",
+                required_change="Sort the array by time key so each HH:MM is later than the previous.",
+            )
+        minutes.append(minute)
+    return None
+
+
+def enrich_accepted_tasks(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach storage fields after validation. Caller must already have sorted rows."""
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        item = {
+            "time": str(row.get("time") or ""),
+            "is_load": False,
+            "task": str(row.get("task") or ""),
+            "task_id": existing_task_id(row.get("task_id")),
+            "status": "planned",
+            "issued_at": "",
+            "expiry_time": "",
+            "completed_at": "",
+            "report_message": "",
+            "exit_code": None,
+        }
+        assign_task_id(item)
+        enriched.append(item)
+    return enriched
+
+
 def repair_json_text(text: str) -> str:
     """Strip fences and trailing commas that commonly break model JSON."""
     if not text:

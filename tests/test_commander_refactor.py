@@ -903,7 +903,7 @@ class ValidationFeedbackTests(unittest.TestCase):
 
 
 class PromptTests(unittest.TestCase):
-    def test_constraints_require_react_finish_and_no_time_field(self) -> None:
+    def test_constraints_require_react_finish_and_time_keyed_items(self) -> None:
         prompt = format_task_generation_constraints(
             CONSTRAINTS_TEMPLATE,
             roles=("hr",),
@@ -911,13 +911,16 @@ class PromptTests(unittest.TestCase):
         )
         self.assertIn("Action: Finish", prompt)
         self.assertIn("exactly 2 task items", prompt)
-        self.assertIn("exactly 2 indices (0 through 1)", prompt)
-        self.assertIn("This equals len(context.schedule)", prompt)
+        self.assertIn("exactly 2 schedule times (0 through 1)", prompt)
+        self.assertIn("This equals len(schedule)", prompt)
         self.assertIn("your output must contain exactly 2 items, not 4", prompt)
-        self.assertIn("Do not include a time field", prompt)
+        self.assertIn('{"HH:MM":"<English skill invocation>"}', prompt)
+        self.assertIn("strictly increasing", prompt)
+        self.assertIn("schedule time strictly later than T", prompt)
         self.assertIn('"hr": [tasks]', prompt)
-        self.assertIn("forbidden_slot_indices", prompt)
-        self.assertIn("allowed_slot_indices", prompt)
+        self.assertNotIn("Do not include a time field", prompt)
+        self.assertNotIn("forbidden_slot_indices", prompt)
+        self.assertNotIn("allowed_slot_indices", prompt)
         self.assertNotIn("TASK_FILE_READY", prompt)
 
     def test_constraints_use_current_skill_grammar(self) -> None:
@@ -1031,9 +1034,13 @@ class PromptTests(unittest.TestCase):
         )
         self.assertEqual(payload["role"], "hr")
         self.assertEqual(payload["task_count"], 2)
-        self.assertEqual(payload["schedule_length"], 2)
-        self.assertEqual(payload["context"]["schedule"], ["09:07", "10:13"])
-        self.assertEqual(payload["context"]["backward"][0]["from"], ["manager"])
+        self.assertEqual(payload["schedule"], ["09:07", "10:13"])
+        self.assertNotIn("schedule_length", payload)
+        self.assertNotIn("schedule", payload["context"])
+        self.assertNotIn("backward", payload["context"])
+        self.assertEqual(payload["backward"], [{"09:17": "send mail"}])
+        self.assertNotIn("from", payload["backward"][0])
+        self.assertNotIn("is_load", json.dumps(payload))
         self.assertTrue(payload["skills"])
         system, user = build_react_generation_messages(
             constraints_template="SYSTEM_RULES",
@@ -1041,12 +1048,16 @@ class PromptTests(unittest.TestCase):
         )
         self.assertEqual(system, "SYSTEM_RULES")
         self.assertIn('"task_count": 2', user)
-        self.assertIn('"schedule_length": 2', user)
-        self.assertIn('len("hr") == task_count == schedule_length == 2', user)
+        self.assertIn('"schedule":', user)
+        self.assertNotIn('"schedule_length"', user)
+        self.assertIn('len("hr") == task_count == len(schedule) == 2', user)
         self.assertIn("backward", user)
-        self.assertIn("Do not output time fields", user)
-        self.assertIn("forbidden_slot_indices", user)
-        self.assertIn("allowed_slot_indices", user)
+        self.assertIn('"09:17": "send mail"', user)
+        self.assertIn("Do not add is_load", user)
+        self.assertIn("schedule time strictly later", user)
+        self.assertNotIn("Do not output time fields", user)
+        self.assertNotIn("forbidden_slot_indices", user)
+        self.assertNotIn("allowed_slot_indices", user)
         self.assertIn("invocation-format catalog only", user)
         self.assertIn("Do not follow its order", user)
         self.assertIn("Do not copy its content", user)
@@ -1070,14 +1081,14 @@ class PromptTests(unittest.TestCase):
         text = (
             "Thought: keep independent work first.\n"
             "Action: Finish\n"
-            '{"hr":[{"is_load":false,"task":"view inbox"}]}'
+            '{"hr":[{"09:01":"view inbox"}]}'
         )
-        self.assertEqual(extract_react_finish_json(text), {"hr": [{"is_load": False, "task": "view inbox"}]})
+        self.assertEqual(extract_react_finish_json(text), {"hr": [{"09:01": "view inbox"}]})
 
     def test_extract_react_finish_json_strips_fences_and_trailing_comma(self) -> None:
-        text = 'Action: Finish\n```json\n{"hr":[{"is_load":false,"task":"a"},],}\n```'
+        text = 'Action: Finish\n```json\n{"hr":[{"09:01":"a"},],}\n```'
         parsed = extract_react_finish_json(text)
-        self.assertEqual(parsed, {"hr": [{"is_load": False, "task": "a"}]})
+        self.assertEqual(parsed, {"hr": [{"09:01": "a"}]})
 
 
 class RuntimeConfigGeneratorFeasibilityTests(unittest.TestCase):
@@ -1208,8 +1219,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
         time: str = "09:01",
         finish_reason: str | None = None,
     ) -> AgentResponse:
-        del time
-        body = json.dumps({role: [{"is_load": False, "task": task}]}, ensure_ascii=False)
+        body = json.dumps({role: [{time: task}]}, ensure_ascii=False)
         response_text = f"Thought: plan\nAction: Finish\n{body}"
         return AgentResponse(
             model="deepseek-chat",
@@ -1297,8 +1307,9 @@ class RoleTaskGenerationTests(unittest.TestCase):
             final_file = root / "role_task" / "tasks_04-21.json"
             domain_resource_path = root / "domain_resource.md"
             domain_resource_path.write_text("# template\nrole tasks", encoding="utf-8")
+            schedule = ["09:01", "09:17", "10:03"]
             body = json.dumps(
-                {"hr": [{"is_load": False, "task": f"task-{index}"} for index in range(3)]},
+                {"hr": [{time: f"task-{index}"} for index, time in enumerate(schedule)]},
                 ensure_ascii=False,
             )
             client = FakeAgentClient(
@@ -1321,7 +1332,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 roles=("hr",),
                 tasks_per_role=9,
                 max_attempts=1,
-                schedule_builder=lambda _role, _count: ["09:01", "09:17", "10:03"],
+                schedule_builder=lambda _role, _count: schedule,
                 agent_client=client,
                 emit_status=lambda _message: None,
             )
@@ -1329,12 +1340,15 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertTrue(result.success)
             saved = json.loads(final_file.read_text(encoding="utf-8"))
             self.assertEqual(len(saved["hr"]), 3)
+            self.assertEqual([item["time"] for item in saved["hr"]], schedule)
+            self.assertFalse(saved["hr"][0]["is_load"])
             prompt = client.prompts[0]
             self.assertIn("Generate exactly 3 English task bodies", prompt)
             self.assertIn('"task_count": 3', prompt)
-            self.assertIn('"schedule_length": 3', prompt)
+            self.assertIn('"schedule":', prompt)
+            self.assertNotIn('"schedule_length"', prompt)
             self.assertIn("exactly 3 task items", prompt)
-            self.assertIn('len("hr") == task_count == schedule_length == 3', prompt)
+            self.assertIn('len("hr") == task_count == len(schedule) == 3', prompt)
 
     def test_generate_role_tasks_merges_single_role_responses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1393,7 +1407,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
             client = FakeAgentClient(
                 responses=[
                     self._valid_response("hr", "approve onboarding", time="09:01"),
-                    self._valid_response("programmer", "review code", time="09:16"),
+                    self._valid_response("programmer", "review code", time="09:01"),
                 ],
                 on_request=on_request,
             )
@@ -1427,7 +1441,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
             domain_resource_path = root / "domain_resource.md"
             domain_resource_path.write_text("# template\nrole tasks", encoding="utf-8")
             client = FakeAgentClient(
-                responses=[self._valid_response("programmer", "review code", time="09:16")]
+                responses=[self._valid_response("programmer", "review code", time="09:01")]
             )
 
             result = role_task_generation.generate_role_tasks(
@@ -1477,7 +1491,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
                     self._valid_response(
                         "manager",
                         "Use the exchange-use skill to view email from hr@ndrtest.local",
-                        time="10:16",
+                        time="09:01",
                     )
                 ]
             )
@@ -1496,11 +1510,11 @@ class RoleTaskGenerationTests(unittest.TestCase):
                 emit_status=lambda message: None,
             )
             self.assertIn('"backward"', client.prompts[0])
-            self.assertIn('"from"', client.prompts[0])
-            self.assertIn("10:01", client.prompts[0])
+            self.assertIn('"10:01"', client.prompts[0])
             self.assertIn("manager@ndrtest.local", client.prompts[0])
-            self.assertIn('"forbidden_slot_indices"', client.prompts[0])
-            self.assertIn('"allowed_slot_indices"', client.prompts[0])
+            self.assertNotIn('"from"', client.prompts[0])
+            self.assertNotIn('"forbidden_slot_indices"', client.prompts[0])
+            self.assertNotIn('"allowed_slot_indices"', client.prompts[0])
             self.assertEqual(len(client.prompts), 1)
 
     def test_generate_role_tasks_ignores_file_based_dependency_context(self) -> None:
@@ -1526,7 +1540,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
             domain_resource_path = root / "domain_resource.md"
             domain_resource_path.write_text("# template\nrole tasks", encoding="utf-8")
             client = FakeAgentClient(
-                responses=[self._valid_response("manager", "review backlog", time="10:16")]
+                responses=[self._valid_response("manager", "review backlog", time="09:01")]
             )
 
             result = role_task_generation.generate_role_tasks(
@@ -1560,7 +1574,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
             domain_resource_path = root / "domain_resource.md"
             domain_resource_path.write_text("# template\nrole tasks", encoding="utf-8")
             client = FakeAgentClient(
-                responses=[self._valid_response("manager", "review backlog", time="09:16")]
+                responses=[self._valid_response("manager", "review backlog", time="09:01")]
             )
 
             with mock.patch.object(role_task_generation, "_load_dependency_provider", return_value=(None, None)):
@@ -1631,7 +1645,8 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertTrue(result.success)
             self.assertEqual(result.stats["quality_fail"], 1)
             self.assertEqual(len(client.prompts), 2)
-            self.assertIn("forbidden_slot_indices", client.prompts[1])
+            self.assertIn("later schedule time", client.prompts[1])
+            self.assertNotIn("forbidden_slot_indices", client.prompts[1])
             saved = json.loads(final_file.read_text(encoding="utf-8"))
             self.assertEqual(saved["manager"][0]["time"], "09:01")
             self.assertEqual(saved["manager"][0]["task"], "review backlog")
@@ -1678,8 +1693,8 @@ class RoleTaskGenerationTests(unittest.TestCase):
             bad_text = json.dumps(
                 {
                     "hr": [
-                        {"is_load": False, "task": "first"},
-                        {"is_load": False, "task": "second"},
+                        {"09:01": "first"},
+                        {"09:17": "second"},
                     ]
                 },
                 ensure_ascii=False,
@@ -1718,7 +1733,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertIn("Required change:", client.prompts[1])
             self.assertIn("does not match schedule", client.prompts[1])
             self.assertIn("list length is 1", client.prompts[1])
-            self.assertIn("Do not keep 2 items", client.prompts[1])
+            self.assertIn("Use every schedule time exactly once", client.prompts[1])
             self.assertIn("FORMAT ONLY", client.prompts[1])
             self.assertIn("Avoid long runs of the same skill", client.prompts[1])
             self.assertNotIn("Do not walk skills[]", client.prompts[1])
@@ -1731,7 +1746,7 @@ class RoleTaskGenerationTests(unittest.TestCase):
             final_file = root / "role_task" / "tasks_04-21.json"
             domain_resource_path = root / "domain_resource.md"
             domain_resource_path.write_text("# template", encoding="utf-8")
-            empty_text = json.dumps({"hr": [{"is_load": False, "task": ""}]}, ensure_ascii=False)
+            empty_text = json.dumps({"hr": [{"09:01": ""}]}, ensure_ascii=False)
             empty_response = AgentResponse(
                 model="deepseek-chat",
                 response_text=empty_text,
@@ -1759,14 +1774,14 @@ class RoleTaskGenerationTests(unittest.TestCase):
             )
 
             self.assertTrue(result.success)
-            self.assertEqual(result.stats["quality_fail"], 1)
+            self.assertEqual(result.stats["schema_fail"], 1)
             self.assertEqual(len(client.prompts), 2)
             self.assertIn("Failure reason:", client.prompts[1])
             self.assertIn("Required change:", client.prompts[1])
-            self.assertIn("expected 1", client.prompts[1])
-            self.assertIn("list length is 1", client.prompts[1])
+            self.assertIn("has empty task", client.prompts[1])
+            self.assertIn("Fill the 09:01 item", client.prompts[1])
 
-    def test_generate_role_tasks_zips_algorithm_times_and_ignores_model_times(self) -> None:
+    def test_generate_role_tasks_keeps_matching_schedule_time_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             logs_dir = root / "logs"
@@ -1774,12 +1789,12 @@ class RoleTaskGenerationTests(unittest.TestCase):
             domain_resource_path = root / "domain_resource.md"
             domain_resource_path.write_text("# template", encoding="utf-8")
             body = json.dumps(
-                {"hr": [{"time": "12:05", "is_load": False, "task": "do work"}]},
+                {"hr": [{"14:01": "do work"}]},
                 ensure_ascii=False,
             )
             response = AgentResponse(
                 model="deepseek-chat",
-                response_text=f"Thought: ignore lunch\nAction: Finish\n{body}",
+                response_text=f"Thought: afternoon slot\nAction: Finish\n{body}",
                 status_code=200,
                 elapsed_seconds=1.0,
                 raw_response_text=body,
@@ -1806,6 +1821,97 @@ class RoleTaskGenerationTests(unittest.TestCase):
             saved = json.loads(final_file.read_text(encoding="utf-8"))
             self.assertEqual(saved["hr"][0]["time"], "14:01")
             self.assertEqual(saved["hr"][0]["task"], "do work")
+            self.assertFalse(saved["hr"][0]["is_load"])
+            self.assertEqual(saved["hr"][0]["status"], "planned")
+
+    def test_generate_role_tasks_rejects_invented_time_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            final_file = root / "role_task" / "tasks_04-21.json"
+            domain_resource_path = root / "domain_resource.md"
+            domain_resource_path.write_text("# template", encoding="utf-8")
+            body = json.dumps(
+                {"hr": [{"15:00": "do work"}]},
+                ensure_ascii=False,
+            )
+            response = AgentResponse(
+                model="deepseek-chat",
+                response_text=f"Thought: ignore lunch\nAction: Finish\n{body}",
+                status_code=200,
+                elapsed_seconds=1.0,
+                raw_response_text=body,
+                finish_reason="stop",
+            )
+            client = FakeAgentClient(response=response)
+
+            result = role_task_generation.generate_role_tasks(
+                source="generate_role_task",
+                final_file=final_file,
+                logs_dir=logs_dir,
+                domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
+                roles=("hr",),
+                tasks_per_role=1,
+                max_attempts=1,
+                schedule_builder=self._schedule("14:01"),
+                agent_client=client,
+                emit_status=lambda message: None,
+            )
+
+            self.assertFalse(result.success)
+            self.assertEqual(result.stats["schema_fail"], 1)
+            self.assertIn("Invented times", result.failure_reason or "")
+            self.assertIn("Do not invent timestamps", result.failure_reason or "")
+            self.assertFalse(final_file.exists())
+
+    def test_generate_role_tasks_accepts_unsorted_keys_and_persists_increasing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            final_file = root / "role_task" / "tasks_04-21.json"
+            domain_resource_path = root / "domain_resource.md"
+            domain_resource_path.write_text("# template", encoding="utf-8")
+            schedule = ["09:01", "09:17", "10:03"]
+            body = json.dumps(
+                {
+                    "hr": [
+                        {"10:03": "third"},
+                        {"09:01": "first"},
+                        {"09:17": "second"},
+                    ]
+                },
+                ensure_ascii=False,
+            )
+            client = FakeAgentClient(
+                response=AgentResponse(
+                    model="deepseek-chat",
+                    response_text=f"Thought: shuffled\nAction: Finish\n{body}",
+                    status_code=200,
+                    elapsed_seconds=1.0,
+                    raw_response_text=body,
+                    finish_reason="stop",
+                )
+            )
+
+            result = role_task_generation.generate_role_tasks(
+                source="generate_role_task",
+                final_file=final_file,
+                logs_dir=logs_dir,
+                domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
+                roles=("hr",),
+                tasks_per_role=3,
+                max_attempts=1,
+                schedule_builder=lambda _role, _count: schedule,
+                agent_client=client,
+                emit_status=lambda message: None,
+            )
+
+            self.assertTrue(result.success)
+            saved = json.loads(final_file.read_text(encoding="utf-8"))
+            self.assertEqual([item["time"] for item in saved["hr"]], schedule)
+            self.assertEqual([item["task"] for item in saved["hr"]], ["first", "second", "third"])
 
     def test_generate_role_tasks_classifies_parse_fail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

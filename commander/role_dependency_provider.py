@@ -105,6 +105,34 @@ def build_backward_items(
     return items
 
 
+def compact_backward_for_prompt(items: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    """Reduce backward facts to [{time: task}, ...] for the generation LLM."""
+    compacted: list[dict[str, str]] = []
+    for item in items or []:
+        if not isinstance(item, dict) or not item:
+            continue
+        time_text = ""
+        task_text = ""
+        if "time" in item or "task" in item:
+            time_text = str(item.get("time") or "").strip()
+            raw_task = item.get("task")
+            task_text = raw_task.strip() if isinstance(raw_task, str) else ""
+        elif len(item) == 1:
+            key, value = next(iter(item.items()))
+            time_text = str(key).strip()
+            task_text = value.strip() if isinstance(value, str) else ""
+        if not time_text or not task_text:
+            continue
+        compacted.append({time_text: task_text})
+
+    def minute_key(item: dict[str, str]) -> int:
+        minute = parse_hhmm_to_minute(next(iter(item)))
+        return minute if minute is not None else 10**9
+
+    compacted.sort(key=minute_key)
+    return compacted
+
+
 def build_dependency_context(
     task_data: dict[str, Any],
     target_role: str,
@@ -124,7 +152,7 @@ def validate_dependency_order(
     target_role: str,
     candidate_tasks: list[dict[str, Any]],
 ) -> tuple[bool, str | None]:
-    """Reject response tasks whose zipped time is not strictly after the source."""
+    """Reject response tasks whose time is not strictly after the source."""
     events = collect_backward_events(task_data, target_role)
     if not events:
         return True, None
@@ -183,10 +211,9 @@ def _format_dependency_violation(
             f"the dependency source task's start time of {dep_time}."
         ),
         required_change=(
-            "Do not put that item's response_actions in forbidden_slot_indices. "
-            f"Move this '{target_role}' response to an allowed_slot_indices slot that starts "
-            f"strictly later than {dep_time}, or fill that slot with independent work that is not "
-            "a response to that source task."
+            f"Place that reply on a later schedule time than the backward item at {dep_time}. "
+            f"Move this '{target_role}' response to a schedule time strictly later than {dep_time}, "
+            "or fill that slot with independent work that is not a response to that source task."
         ),
     )
 

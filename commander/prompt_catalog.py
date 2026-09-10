@@ -7,6 +7,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+try:
+    from role_dependency_provider import compact_backward_for_prompt
+except ImportError:
+    from commander.role_dependency_provider import compact_backward_for_prompt
+
 DEFAULT_PROMPT_RESOURCES_DIR = Path(__file__).resolve().parent / "prompt_resources"
 
 
@@ -82,7 +87,7 @@ def assemble_generation_payload(
     resources_dir: Path | None = None,
     domain_fallback: str = "",
 ) -> dict[str, Any]:
-    """Build the JSON user payload: domain / role / skills / task_count / schedule_length / context."""
+    """Build json1: task_count, schedule, backward, plus role catalog fields."""
     loaded = catalog if catalog is not None else load_prompt_catalog(resources_dir)
     role_key = role.strip().lower()
     domain = loaded.get("domain") if isinstance(loaded.get("domain"), dict) else {}
@@ -92,9 +97,13 @@ def assemble_generation_payload(
     env = role_info.get("env") if isinstance(role_info, dict) else []
     if not isinstance(env, list):
         env = []
+    schedule_list = list(schedule)
     return {
-        "domain": domain,
+        "task_count": int(task_count),
+        "schedule": schedule_list,
+        "backward": compact_backward_for_prompt(backward),
         "role": role_key,
+        "domain": domain,
         "duties": role_info.get("duties", "") if isinstance(role_info, dict) else "",
         "skill_catalog_contract": {
             "reference": "format",
@@ -111,12 +120,8 @@ def assemble_generation_payload(
             ],
         },
         "skills": _skills_for_role(loaded, role_key),
-        "task_count": int(task_count),
-        "schedule_length": len(schedule),
         "context": {
             "env": env,
-            "schedule": list(schedule),
-            "backward": list(backward or []),
         },
     }
 
@@ -130,26 +135,28 @@ def build_react_generation_messages(
     """Return (system, user) messages for ReAct task generation."""
     role = str(payload.get("role") or "role")
     task_count = int(payload.get("task_count") or 0)
-    schedule_length = int(payload.get("schedule_length") or task_count)
+    schedule = payload.get("schedule") if isinstance(payload.get("schedule"), list) else []
+    schedule_length = len(schedule) if schedule else int(payload.get("schedule_length") or task_count)
     system = constraints_template.strip()
     if not system:
         system = (
             "You generate office-role tasks. Reply in ReAct format. "
             "Thought: short plan. Action: Finish then one JSON object. "
-            "Do not invent timestamps."
+            "Use only schedule times as object keys."
         )
     user_obj = dict(payload)
     user_lines = [
         f"Generate exactly {task_count} English task bodies for role '{role}'.",
         (
-            f'len("{role}") == task_count == schedule_length == {schedule_length}. '
-            "Do not add extra items for backward replies; occupy later allowed slots instead."
+            f'len("{role}") == task_count == len(schedule) == {schedule_length}. '
+            "Each item is {\"HH:MM\": \"<task>\"} using a time copied from schedule. "
+            "The array must be strictly increasing by those time keys. Do not add is_load or other fields."
         ),
         "The skills array is an invocation-format catalog only. Do not follow its order. Do not copy its content.",
         "Avoid long runs of the same skill. A short related pair may sit together.",
-        "Do not output time fields. Commander will attach the schedule times in list order.",
-        "Task i is assigned schedule[i]. For each backward item, do not use that item's response_actions in forbidden_slot_indices.",
-        "A response may use any slot in allowed_slot_indices. If that list is empty, do not emit that response.",
+        "Do not invent timestamps. Do not add extra items for backward replies; "
+        "place a reply on a schedule time strictly later than that backward item's time. "
+        "If no later schedule time exists, skip that response and use independent work.",
         "Return ReAct output only.",
         "",
         json.dumps(user_obj, ensure_ascii=False, indent=2),
