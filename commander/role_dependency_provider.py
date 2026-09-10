@@ -7,9 +7,9 @@ import re
 from typing import Any
 
 try:
-    from common import parse_hhmm_to_minute
+    from common import format_validation_feedback, parse_hhmm_to_minute
 except ImportError:
-    from common import parse_hhmm_to_minute
+    from common import format_validation_feedback, parse_hhmm_to_minute
 
 OFFICE_ROLES = ("hr", "manager", "programmer", "accountancy")
 ROLE_EMAIL_ALIASES = {
@@ -169,19 +169,25 @@ def _format_dependency_violation(
     dep_time: str,
     dep_task_text: str,
 ) -> str:
-    return (
-        "Cross-role dependency order is invalid. Adjust only this role's task content "
-        "so responses occupy later schedule slots; do not change tasks already saved for other roles.\n"
-        f"Dependency source: role '{dep_role}', existing task {dep_index + 1} "
-        f"(array index {dep_index}), starts at {dep_time}.\n"
-        f"Source task summary: {_task_snippet(dep_task_text)}.\n"
-        f"Current candidate: role '{target_role}', candidate task {candidate_index + 1} "
-        f"(array index {candidate_index}), starts at {candidate_time}.\n"
-        f"Candidate task summary: {_task_snippet(candidate_task_text)}.\n"
-        f"Reason: the candidate starts at {candidate_time}, which is earlier than or equal to "
-        f"the dependency source task's start time of {dep_time}; it must start after that related task.\n"
-        f"Required constraint: this '{target_role}' response must start strictly later than {dep_time}, "
-        "or the slot must be filled with independent work that is not a response to that source task."
+    return format_validation_feedback(
+        reason=(
+            "Cross-role dependency order is invalid. Adjust only this role's task content "
+            "so responses occupy later schedule slots; do not change tasks already saved for other roles.\n"
+            f"Dependency source: role '{dep_role}', existing task {dep_index + 1} "
+            f"(array index {dep_index}), starts at {dep_time}.\n"
+            f"Source task summary: {_task_snippet(dep_task_text)}.\n"
+            f"Current candidate: role '{target_role}', candidate task {candidate_index + 1} "
+            f"(array index {candidate_index}), starts at {candidate_time}.\n"
+            f"Candidate task summary: {_task_snippet(candidate_task_text)}.\n"
+            f"The candidate starts at {candidate_time}, which is earlier than or equal to "
+            f"the dependency source task's start time of {dep_time}."
+        ),
+        required_change=(
+            "Do not put that item's response_actions in forbidden_slot_indices. "
+            f"Move this '{target_role}' response to an allowed_slot_indices slot that starts "
+            f"strictly later than {dep_time}, or fill that slot with independent work that is not "
+            "a response to that source task."
+        ),
     )
 
 

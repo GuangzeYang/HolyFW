@@ -13,6 +13,7 @@ from common import (
     candidate_task_path,
     extract_react_finish_json,
     format_task_generation_constraints,
+    format_validation_feedback,
     load_task_file,
     normalize_role_tasks,
     role_tasks_are_complete,
@@ -95,24 +96,36 @@ def _parse_failure_reason(role: str) -> str:
     return f"Model response for role '{role}' did not contain a valid JSON object"
 
 
+_RETRY_TRAILER = (
+    "Do not invent timestamps. "
+    "The skills catalog is FORMAT ONLY. Do not copy catalog or example content. Avoid long runs of the same skill."
+)
+
+
+def _count_required_change(role: str, task_count: int, actual: int | None = None) -> str:
+    extra = f" Do not keep {actual} items." if actual is not None else ""
+    return (
+        f"Delete extra items or add missing bodies until the '{role}' list length is {task_count}."
+        f"{extra} Do not copy the 4-item format illustration."
+    )
+
+
 def _build_retry_feedback(reason: str | None) -> str:
     if not reason:
         return ""
-    lines = [
-        "The previous output failed validation. Regenerate the complete JSON using the failure reason below.",
-        f"Failure reason: {reason}",
-        "Do not invent timestamps. Return exactly task_count items. Put responses in later schedule slots.",
-        "The skills catalog is FORMAT ONLY. Do not copy catalog or example content. Avoid long runs of the same skill.",
-    ]
-    lowered = reason.lower()
-    if "does not match schedule" in lowered or "too few" in lowered or "too many" in lowered:
-        lines.append("The number of task items must equal task_count and the schedule length.")
-    if "cross-role dependency" in lowered or "strictly later" in lowered:
-        lines.append(
-            "Do not put that item's response_actions in forbidden_slot_indices. "
-            "Use any allowed_slot_indices slot, or independent work if that list is empty."
+    body = reason.strip()
+    if "Failure reason:" not in body:
+        body = format_validation_feedback(
+            reason=body,
+            required_change="Regenerate the complete JSON so every hard requirement is satisfied.",
         )
-    return "\n".join(lines)
+    return "\n".join(
+        [
+            "The previous output failed validation. Regenerate the complete JSON using the failure reason below.",
+            body,
+            _RETRY_TRAILER,
+        ]
+    )
 
 
 def _load_dependency_provider() -> tuple[DependencyContextBuilder | None, DependencyOrderValidator | None]:
@@ -368,35 +381,66 @@ def generate_role_tasks(
                 )
                 if not response.response_text.strip():
                     stats["empty_response"] += 1
-                    last_failure_reason = f"Model returned an empty response for role '{role}'"
+                    last_failure_reason = format_validation_feedback(
+                        reason=f"Model returned an empty response for role '{role}'",
+                        required_change=(
+                            "Return ReAct output then one JSON object. "
+                            f"The '{role}' list length must be {task_count}."
+                        ),
+                    )
+                    retry_feedback = _build_retry_feedback(last_failure_reason)
                     emit_status(last_failure_reason)
                     continue
 
                 if response.finish_reason == "length":
                     stats["parse_fail"] += 1
-                    last_failure_reason = _truncation_reason(role, response.finish_reason)
+                    last_failure_reason = format_validation_feedback(
+                        reason=_truncation_reason(role, response.finish_reason),
+                        required_change=(
+                            f"Use shorter task strings. Still emit exactly {task_count} items. "
+                            "Do not wrap JSON in markdown."
+                        ),
+                    )
+                    retry_feedback = _build_retry_feedback(last_failure_reason)
                     emit_status(last_failure_reason)
                     continue
 
                 parsed = extract_react_finish_json(response.response_text)
                 if parsed is None:
                     stats["parse_fail"] += 1
-                    last_failure_reason = _parse_failure_reason(role)
+                    last_failure_reason = format_validation_feedback(
+                        reason=_parse_failure_reason(role),
+                        required_change=(
+                            "After `Action: Finish`, output valid JSON. "
+                            f"Key '{role}' must be a list of {task_count} objects."
+                        ),
+                    )
+                    retry_feedback = _build_retry_feedback(last_failure_reason)
                     emit_status(last_failure_reason)
                     continue
 
                 raw_rows = parsed.get(role)
                 if not isinstance(raw_rows, list):
                     stats["schema_fail"] += 1
-                    last_failure_reason = f"Role '{role}' data is not a list"
+                    last_failure_reason = format_validation_feedback(
+                        reason=f"Role '{role}' data is not a list",
+                        required_change=(
+                            f'Output {{"{role}": [ ... {task_count} objects ... ]}} '
+                            f"with exactly {task_count} items."
+                        ),
+                    )
                     retry_feedback = _build_retry_feedback(last_failure_reason)
                     emit_status(last_failure_reason)
                     continue
                 if len(raw_rows) != task_count:
-                    stats["schema_fail"] += 1
-                    last_failure_reason = (
-                        f"Role '{role}' task count {len(raw_rows)} does not match schedule length {task_count}"
+                    actual = len(raw_rows)
+                    last_failure_reason = format_validation_feedback(
+                        reason=(
+                            f"Role '{role}' task count {actual} does not match schedule length {task_count}"
+                        ),
+                        required_change=_count_required_change(role, task_count, actual),
                     )
+                    stats["schema_fail"] += 1
                     retry_feedback = _build_retry_feedback(last_failure_reason)
                     emit_status(last_failure_reason)
                     continue
@@ -408,7 +452,14 @@ def generate_role_tasks(
                     )
                 except ValueError as exc:
                     stats["schema_fail"] += 1
-                    last_failure_reason = str(exc)
+                    last_failure_reason = format_validation_feedback(
+                        reason=str(exc),
+                        required_change=(
+                            f"Output {task_count} objects of the form "
+                            "{\"is_load\": false, \"task\": \"...\"} "
+                            f"for role '{role}'. List length must equal schedule length {task_count}."
+                        ),
+                    )
                     retry_feedback = _build_retry_feedback(last_failure_reason)
                     emit_status(last_failure_reason)
                     continue

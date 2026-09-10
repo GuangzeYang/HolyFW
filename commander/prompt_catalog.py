@@ -82,7 +82,7 @@ def assemble_generation_payload(
     resources_dir: Path | None = None,
     domain_fallback: str = "",
 ) -> dict[str, Any]:
-    """Build the JSON user payload: domain / role / skills / task_count / context."""
+    """Build the JSON user payload: domain / role / skills / task_count / schedule_length / context."""
     loaded = catalog if catalog is not None else load_prompt_catalog(resources_dir)
     role_key = role.strip().lower()
     domain = loaded.get("domain") if isinstance(loaded.get("domain"), dict) else {}
@@ -112,6 +112,7 @@ def assemble_generation_payload(
         },
         "skills": _skills_for_role(loaded, role_key),
         "task_count": int(task_count),
+        "schedule_length": len(schedule),
         "context": {
             "env": env,
             "schedule": list(schedule),
@@ -129,6 +130,7 @@ def build_react_generation_messages(
     """Return (system, user) messages for ReAct task generation."""
     role = str(payload.get("role") or "role")
     task_count = int(payload.get("task_count") or 0)
+    schedule_length = int(payload.get("schedule_length") or task_count)
     system = constraints_template.strip()
     if not system:
         system = (
@@ -139,6 +141,10 @@ def build_react_generation_messages(
     user_obj = dict(payload)
     user_lines = [
         f"Generate exactly {task_count} English task bodies for role '{role}'.",
+        (
+            f'len("{role}") == task_count == schedule_length == {schedule_length}. '
+            "Do not add extra items for backward replies; occupy later allowed slots instead."
+        ),
         "The skills array is an invocation-format catalog only. Do not follow its order. Do not copy its content.",
         "Avoid long runs of the same skill. A short related pair may sit together.",
         "Do not output time fields. Commander will attach the schedule times in list order.",

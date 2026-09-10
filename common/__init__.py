@@ -296,18 +296,54 @@ def validate_generated_task_file(
     try:
         file_size = file_path.stat().st_size
     except OSError:
-        return "file_missing", f"Candidate task file not found: {file_path}", None, 0
+        return (
+            "file_missing",
+            format_validation_feedback(
+                reason=f"Candidate task file not found: {file_path}",
+                required_change="Regenerate the complete JSON so commander can persist a candidate file.",
+            ),
+            None,
+            0,
+        )
 
     try:
         with open(file_path, encoding="utf-8") as f:
             parsed = json.load(f)
     except json.JSONDecodeError as exc:
-        return "parse_fail", f"{exc.__class__.__name__}: {exc}", None, file_size
+        return (
+            "parse_fail",
+            format_validation_feedback(
+                reason=f"{exc.__class__.__name__}: {exc}",
+                required_change=(
+                    "After `Action: Finish`, output valid JSON with no trailing commas or markdown fences."
+                ),
+            ),
+            None,
+            file_size,
+        )
     except OSError as exc:
-        return "parse_fail", f"{exc.__class__.__name__}: {exc}", None, file_size
+        return (
+            "parse_fail",
+            format_validation_feedback(
+                reason=f"{exc.__class__.__name__}: {exc}",
+                required_change="Write a readable JSON file whose root is a role-to-task-list object.",
+            ),
+            None,
+            file_size,
+        )
 
     if not isinstance(parsed, dict):
-        return "schema_fail", "Generated JSON must be a dictionary", None, file_size
+        return (
+            "schema_fail",
+            format_validation_feedback(
+                reason="Generated JSON must be a dictionary",
+                required_change=(
+                    "Output exactly one JSON object whose root is a dictionary of role name to task list."
+                ),
+            ),
+            None,
+            file_size,
+        )
 
     normalized = normalize_role_tasks(
         parsed,
@@ -373,9 +409,21 @@ def format_task_generation_constraints(
     return template_body.format(
         role_display=role_display,
         target_tasks=tasks_per_role,
+        last_index=max(0, int(tasks_per_role) - 1),
         output_format=output_format,
         output_format_example=output_format,
     ).strip()
+
+
+def format_validation_feedback(*, reason: str, required_change: str) -> str:
+    """Format a validator failure as reason plus the change the next attempt must make."""
+    reason_text = (reason or "").strip()
+    change_text = (required_change or "").strip()
+    if not reason_text:
+        return ""
+    if not change_text:
+        return f"Failure reason: {reason_text}"
+    return f"Failure reason: {reason_text}\nRequired change: {change_text}"
 
 
 def repair_json_text(text: str) -> str:
@@ -780,42 +828,105 @@ def validate_role_tasks(
     }
 
     if not isinstance(data, dict):
-        return False, "Generated JSON must be a dictionary"
+        return False, format_validation_feedback(
+            reason="Generated JSON must be a dictionary",
+            required_change=(
+                "Output exactly one JSON object whose root is a dictionary of role name to task list."
+            ),
+        )
 
     missing = set(role_names) - set(data.keys())
     if missing:
-        return False, f"Missing roles: {sorted(missing)}"
+        return False, format_validation_feedback(
+            reason=f"Missing roles: {sorted(missing)}",
+            required_change=(
+                "The JSON object must include keys "
+                + ", ".join(f'"{name}"' for name in role_names)
+                + " each mapping to a task list."
+            ),
+        )
 
     for role in role_names:
         tasks = data.get(role)
-        if not isinstance(tasks, list):
-            return False, f"Role '{role}' data is not a list"
         expected = _expected_task_count(tasks_per_role, role)
+        if not isinstance(tasks, list):
+            return False, format_validation_feedback(
+                reason=f"Role '{role}' data is not a list",
+                required_change=(
+                    f'Output {{"{role}": [ ... {expected} objects ... ]}} with exactly {expected} items.'
+                ),
+            )
         if len(tasks) != expected:
-            return False, (
-                f"Role '{role}' has {len(tasks)} tasks, expected {expected}"
+            actual = len(tasks)
+            return False, format_validation_feedback(
+                reason=f"Role '{role}' has {actual} tasks, expected {expected}",
+                required_change=(
+                    f"Restore any dropped indices and keep every item's task non-empty. "
+                    f"Delete extras or add missing bodies until the '{role}' list length is {expected}. "
+                    "Do not copy the 4-item format illustration."
+                ),
             )
 
         prev_minute: int | None = None
         for index, task in enumerate(tasks):
             if not isinstance(task, dict):
-                return False, f"Role '{role}' task#{index} is not an object"
+                return False, format_validation_feedback(
+                    reason=f"Role '{role}' task#{index} is not an object",
+                    required_change=(
+                        f"Make item {index} an object {{\"is_load\": false, \"task\": \"...\"}}. "
+                        f"Keep the '{role}' list length {expected}."
+                    ),
+                )
 
             missing_fields = required_task_fields - set(task.keys())
             if missing_fields:
-                return False, f"Role '{role}' task#{index} missing fields: {sorted(missing_fields)}"
+                return False, format_validation_feedback(
+                    reason=f"Role '{role}' task#{index} missing fields: {sorted(missing_fields)}",
+                    required_change=(
+                        "Each stored item needs time, is_load, task, and the commander status fields. "
+                        "Emit {\"is_load\": false, \"task\": \"...\"} for every slot and omit time; "
+                        f"keep the '{role}' list length {expected}."
+                    ),
+                )
 
             desc = task.get("task")
             if not isinstance(desc, str) or not desc.strip():
-                return False, f"Role '{role}' task#{index} has empty task"
+                return False, format_validation_feedback(
+                    reason=f"Role '{role}' task#{index} has empty task",
+                    required_change=(
+                        f"Fill index {index} with a real skill invocation. "
+                        f"Keep the '{role}' list length {expected}."
+                    ),
+                )
 
             minute = parse_hhmm_to_minute(task.get("time"))
             if minute is None:
-                return False, f"Role '{role}' task#{index} has invalid time format"
+                return False, format_validation_feedback(
+                    reason=f"Role '{role}' task#{index} has invalid time format",
+                    required_change=(
+                        "Do not emit a time field. Keep "
+                        f"{expected} non-empty task bodies so commander-assigned times stay aligned "
+                        "with context.schedule."
+                    ),
+                )
             if not _in_work_window(minute):
-                return False, f"Role '{role}' task#{index} time out of work window"
+                return False, format_validation_feedback(
+                    reason=f"Role '{role}' task#{index} time out of work window",
+                    required_change=(
+                        "Do not emit a time field. Keep "
+                        f"{expected} non-empty task bodies so commander-assigned times stay aligned "
+                        "with context.schedule."
+                    ),
+                )
             if prev_minute is not None and minute <= prev_minute:
-                return False, f"Role '{role}' tasks are not strictly increasing"
+                return False, format_validation_feedback(
+                    reason=f"Role '{role}' tasks are not strictly increasing",
+                    required_change=(
+                        "Do not emit a time field. Keep "
+                        f"{expected} non-empty task bodies so commander-assigned times stay aligned "
+                        "with context.schedule."
+                    ),
+                )
             prev_minute = minute
 
     return True, None

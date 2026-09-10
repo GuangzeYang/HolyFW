@@ -35,7 +35,9 @@ from common import (
     extract_json_object,
     extract_react_finish_json,
     format_task_generation_constraints,
+    format_validation_feedback,
     validate_generated_task_file,
+    validate_role_tasks,
 )
 from commander.prompt_catalog import assemble_generation_payload, build_react_generation_messages
 
@@ -736,7 +738,9 @@ class FileContractTests(unittest.TestCase):
                 roles=("hr",),
             )
             self.assertEqual(failure_type, "schema_fail")
-            self.assertEqual(reason, "Generated JSON must be a dictionary")
+            self.assertIn("Generated JSON must be a dictionary", reason or "")
+            self.assertIn("Failure reason:", reason or "")
+            self.assertIn("Required change:", reason or "")
             self.assertIsNone(data)
 
     def test_validate_generated_task_file_rejects_too_many_tasks(self) -> None:
@@ -762,7 +766,10 @@ class FileContractTests(unittest.TestCase):
                 roles=("hr",),
             )
             self.assertEqual(failure_type, "quality_fail")
-            self.assertEqual(reason, "Role 'hr' has 4 tasks, expected 3")
+            self.assertIn("Role 'hr' has 4 tasks, expected 3", reason or "")
+            self.assertIn("Failure reason:", reason or "")
+            self.assertIn("Required change:", reason or "")
+            self.assertIn("list length is 3", reason or "")
             self.assertIsNone(data)
 
     def test_validate_generated_task_file_sorts_preserved_times_before_validation(self) -> None:
@@ -815,8 +822,84 @@ class FileContractTests(unittest.TestCase):
                 preserve_generated_times=True,
             )
             self.assertEqual(failure_type, "quality_fail")
-            self.assertEqual(reason, "Role 'hr' tasks are not strictly increasing")
+            self.assertIn("Role 'hr' tasks are not strictly increasing", reason or "")
+            self.assertIn("Failure reason:", reason or "")
+            self.assertIn("Required change:", reason or "")
             self.assertIsNone(data)
+
+
+def _complete_task(task: str = "do work", *, time: str = "09:01") -> dict[str, object]:
+    return {
+        "time": time,
+        "is_load": False,
+        "task": task,
+        "task_id": "aabbccddeeff0011",
+        "status": "planned",
+        "issued_at": "",
+        "expiry_time": "",
+        "completed_at": "",
+        "report_message": "",
+        "exit_code": None,
+    }
+
+
+class ValidationFeedbackTests(unittest.TestCase):
+    def test_validate_role_tasks_empty_task_includes_reason_and_change(self) -> None:
+        valid, reason = validate_role_tasks(
+            {"hr": [_complete_task("")]},
+            tasks_per_role=1,
+            roles=("hr",),
+        )
+        self.assertFalse(valid)
+        self.assertIn("Failure reason:", reason or "")
+        self.assertIn("Required change:", reason or "")
+        self.assertIn("has empty task", reason or "")
+        self.assertIn("Fill index 0", reason or "")
+        self.assertIn("list length 1", reason or "")
+
+    def test_validate_role_tasks_not_a_list_includes_reason_and_change(self) -> None:
+        valid, reason = validate_role_tasks(
+            {"hr": {"task": "not a list"}},
+            tasks_per_role=2,
+            roles=("hr",),
+        )
+        self.assertFalse(valid)
+        self.assertIn("Failure reason:", reason or "")
+        self.assertIn("Required change:", reason or "")
+        self.assertIn("data is not a list", reason or "")
+        self.assertIn("exactly 2 items", reason or "")
+
+    def test_validate_role_tasks_count_mismatch_includes_reason_and_change(self) -> None:
+        valid, reason = validate_role_tasks(
+            {"hr": [_complete_task("one"), _complete_task("two", time="09:17")]},
+            tasks_per_role=3,
+            roles=("hr",),
+        )
+        self.assertFalse(valid)
+        self.assertIn("Failure reason:", reason or "")
+        self.assertIn("Required change:", reason or "")
+        self.assertIn("has 2 tasks, expected 3", reason or "")
+        self.assertIn("list length is 3", reason or "")
+
+    def test_classify_validation_failure_reads_formatted_schema_markers(self) -> None:
+        self.assertEqual(
+            classify_validation_failure(
+                format_validation_feedback(
+                    reason="Role 'hr' task#0 has empty task",
+                    required_change="Fill index 0",
+                )
+            ),
+            "schema_fail",
+        )
+        self.assertEqual(
+            classify_validation_failure(
+                format_validation_feedback(
+                    reason="Role 'hr' has 4 tasks, expected 3",
+                    required_change="Keep length 3",
+                )
+            ),
+            "quality_fail",
+        )
 
 
 class PromptTests(unittest.TestCase):
@@ -828,6 +911,9 @@ class PromptTests(unittest.TestCase):
         )
         self.assertIn("Action: Finish", prompt)
         self.assertIn("exactly 2 task items", prompt)
+        self.assertIn("exactly 2 indices (0 through 1)", prompt)
+        self.assertIn("This equals len(context.schedule)", prompt)
+        self.assertIn("your output must contain exactly 2 items, not 4", prompt)
         self.assertIn("Do not include a time field", prompt)
         self.assertIn('"hr": [tasks]', prompt)
         self.assertIn("forbidden_slot_indices", prompt)
@@ -945,6 +1031,7 @@ class PromptTests(unittest.TestCase):
         )
         self.assertEqual(payload["role"], "hr")
         self.assertEqual(payload["task_count"], 2)
+        self.assertEqual(payload["schedule_length"], 2)
         self.assertEqual(payload["context"]["schedule"], ["09:07", "10:13"])
         self.assertEqual(payload["context"]["backward"][0]["from"], ["manager"])
         self.assertTrue(payload["skills"])
@@ -954,6 +1041,8 @@ class PromptTests(unittest.TestCase):
         )
         self.assertEqual(system, "SYSTEM_RULES")
         self.assertIn('"task_count": 2', user)
+        self.assertIn('"schedule_length": 2', user)
+        self.assertIn('len("hr") == task_count == schedule_length == 2', user)
         self.assertIn("backward", user)
         self.assertIn("Do not output time fields", user)
         self.assertIn("forbidden_slot_indices", user)
@@ -1243,7 +1332,9 @@ class RoleTaskGenerationTests(unittest.TestCase):
             prompt = client.prompts[0]
             self.assertIn("Generate exactly 3 English task bodies", prompt)
             self.assertIn('"task_count": 3', prompt)
+            self.assertIn('"schedule_length": 3', prompt)
             self.assertIn("exactly 3 task items", prompt)
+            self.assertIn('len("hr") == task_count == schedule_length == 3', prompt)
 
     def test_generate_role_tasks_merges_single_role_responses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1623,11 +1714,57 @@ class RoleTaskGenerationTests(unittest.TestCase):
             self.assertEqual(result.stats["schema_fail"], 1)
             self.assertEqual(len(client.prompts), 2)
             self.assertIn("The previous output failed validation", client.prompts[1])
+            self.assertIn("Failure reason:", client.prompts[1])
+            self.assertIn("Required change:", client.prompts[1])
             self.assertIn("does not match schedule", client.prompts[1])
+            self.assertIn("list length is 1", client.prompts[1])
+            self.assertIn("Do not keep 2 items", client.prompts[1])
             self.assertIn("FORMAT ONLY", client.prompts[1])
             self.assertIn("Avoid long runs of the same skill", client.prompts[1])
             self.assertNotIn("Do not walk skills[]", client.prompts[1])
             self.assertEqual(client.response_formats[1], {"type": "json_object"})
+
+    def test_generate_role_tasks_adds_retry_feedback_after_empty_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            final_file = root / "role_task" / "tasks_04-21.json"
+            domain_resource_path = root / "domain_resource.md"
+            domain_resource_path.write_text("# template", encoding="utf-8")
+            empty_text = json.dumps({"hr": [{"is_load": False, "task": ""}]}, ensure_ascii=False)
+            empty_response = AgentResponse(
+                model="deepseek-chat",
+                response_text=empty_text,
+                status_code=200,
+                elapsed_seconds=1.0,
+                raw_response_text=empty_text,
+                finish_reason="stop",
+            )
+            client = FakeAgentClient(
+                responses=[empty_response, self._valid_response("hr", "approve onboarding")]
+            )
+
+            result = role_task_generation.generate_role_tasks(
+                source="generate_role_task",
+                final_file=final_file,
+                logs_dir=logs_dir,
+                domain_resource_path=domain_resource_path,
+                constraints_resource_path=CONSTRAINTS_PATH,
+                roles=("hr",),
+                tasks_per_role=1,
+                max_attempts=2,
+                schedule_builder=self._schedule("09:01"),
+                agent_client=client,
+                emit_status=lambda message: None,
+            )
+
+            self.assertTrue(result.success)
+            self.assertEqual(result.stats["quality_fail"], 1)
+            self.assertEqual(len(client.prompts), 2)
+            self.assertIn("Failure reason:", client.prompts[1])
+            self.assertIn("Required change:", client.prompts[1])
+            self.assertIn("expected 1", client.prompts[1])
+            self.assertIn("list length is 1", client.prompts[1])
 
     def test_generate_role_tasks_zips_algorithm_times_and_ignores_model_times(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1701,7 +1838,10 @@ class RoleTaskGenerationTests(unittest.TestCase):
 
             self.assertFalse(result.success)
             self.assertEqual(result.stats["parse_fail"], 1)
-            self.assertEqual(result.failure_reason, "Model response for role 'hr' did not contain a valid JSON object")
+            self.assertIn("did not contain a valid JSON object", result.failure_reason or "")
+            self.assertIn("Failure reason:", result.failure_reason or "")
+            self.assertIn("Required change:", result.failure_reason or "")
+            self.assertIn("list of 1 objects", result.failure_reason or "")
             self.assertFalse(final_file.exists())
 
     def test_generate_role_tasks_classifies_truncated_response(self) -> None:
@@ -1741,10 +1881,13 @@ class RoleTaskGenerationTests(unittest.TestCase):
 
             self.assertFalse(result.success)
             self.assertEqual(result.stats["parse_fail"], 1)
-            self.assertEqual(
-                result.failure_reason,
+            self.assertIn(
                 "Model response for role 'hr' was truncated by provider (finish_reason=length)",
+                result.failure_reason or "",
             )
+            self.assertIn("Failure reason:", result.failure_reason or "")
+            self.assertIn("Required change:", result.failure_reason or "")
+            self.assertIn("exactly 1 items", result.failure_reason or "")
             self.assertFalse(final_file.exists())
             self.assertFalse(final_file.with_name("tasks_04-21.candidate.json").exists())
 

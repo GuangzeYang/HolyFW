@@ -45,6 +45,10 @@ class ValidateDependencyOrderMessageTests(unittest.TestCase):
         self.assertIn("09:09", reason)
         self.assertIn("array index 0", reason)
         self.assertIn("strictly later than", reason)
+        self.assertIn("Failure reason:", reason)
+        self.assertIn("Required change:", reason)
+        self.assertIn("forbidden_slot_indices", reason)
+        self.assertIn("allowed_slot_indices", reason)
 
     def test_context_uses_english_dependency_facts(self) -> None:
         task_data = {
