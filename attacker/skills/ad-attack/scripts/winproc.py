@@ -86,22 +86,33 @@ def looks_like_access_denied(returncode: int, text: str) -> bool:
     return False
 
 
-def local_admin_creds(state: dict[str, Any] | None) -> tuple[str, str] | None:
-    """Return (username, password) from campaign.local_admin or is_local_admin users."""
-    data = state if isinstance(state, dict) else {}
-    campaign = data.get("campaign") if isinstance(data.get("campaign"), dict) else {}
-    raw = campaign.get("local_admin") if isinstance(campaign.get("local_admin"), dict) else {}
-    user = str(raw.get("username") or raw.get("user") or "").strip()
+def _campaign_admin_pair(raw: object) -> tuple[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    user = str(
+        raw.get("name") or raw.get("username") or raw.get("user") or ""
+    ).strip()
     password = str(raw.get("password") or "").strip()
     if user and password:
         return user, password
+    return None
+
+
+def local_admin_creds(state: dict[str, Any] | None) -> tuple[str, str] | None:
+    """Return (username, password) from campaign local-admin fields or users."""
+    data = state if isinstance(state, dict) else {}
+    campaign = data.get("campaign") if isinstance(data.get("campaign"), dict) else {}
+    for key in ("local_admin_account", "local_admin"):
+        pair = _campaign_admin_pair(campaign.get(key))
+        if pair:
+            return pair
     users = data.get("users") if isinstance(data.get("users"), list) else []
     for entry in users:
         if not isinstance(entry, dict):
             continue
-        if not entry.get("is_local_admin"):
+        if not (entry.get("is_local_admin_on_attack_host") or entry.get("is_local_admin")):
             continue
-        name = str(entry.get("username") or "").strip()
+        name = str(entry.get("username") or entry.get("upn") or "").strip()
         pw = str(entry.get("password") or "").strip()
         if name and pw:
             return name, pw

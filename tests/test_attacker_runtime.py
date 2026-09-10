@@ -7,11 +7,13 @@ import json
 import logging
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from common.agent_request_abc import AgentResponse
+from common.agent_request_abc import AgentRequestError, AgentResponse
+
+from attacker.logging_setup import write_request_task_md
 
 from attacker.execute import execute_task, run_opencode
 from attacker.generation import (
@@ -1142,6 +1144,190 @@ class GenerationMessageTests(unittest.TestCase):
         self.assertIn("collection.local-file", prompt_template)
         for technique_id in CATALOG_TECHNIQUE_IDS:
             self.assertIn(f"`{technique_id}`", prompt_template)
+
+
+class RequestTaskMdTests(unittest.TestCase):
+    def _client(self, response: AgentResponse | Exception) -> mock.Mock:
+        client = mock.Mock()
+        client.provider_name = "xlc-proxy"
+        client.model = "deepseek-v4-pro"
+        client.api_base_url = "https://svip.xty.app/v1/chat/completions"
+        if isinstance(response, Exception):
+            client.request_completion.side_effect = response
+        else:
+            client.request_completion.return_value = response
+        return client
+
+    def test_write_request_task_md_uses_time_and_batch_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_dir = Path(tmp)
+            clock = datetime(2026, 9, 10, 16, 56, 50, tzinfo=timezone.utc)
+            path = write_request_task_md(
+                logs_dir,
+                day=date(2026, 9, 10),
+                batch=1,
+                attempt=2,
+                provider="xlc-proxy",
+                model="deepseek-v4-pro",
+                base_url="https://svip.xty.app/v1/chat/completions",
+                status_code=200,
+                finish_reason="stop",
+                messages=[
+                    {"role": "system", "content": "planner"},
+                    {"role": "user", "content": "fill five"},
+                ],
+                response_text="task text",
+                raw_response_text='{"tasks":["task text"]}',
+                request_state="finished",
+                now=clock,
+            )
+            self.assertEqual(path.name, "165650_1.md")
+            self.assertEqual(path.parent.name, "request_task_LLM_2026-09-10")
+            content = path.read_text(encoding="utf-8")
+            self.assertIn("batch: 1", content)
+            self.assertIn("attempt: 2", content)
+            self.assertIn("--- REQUEST ---", content)
+            self.assertIn("role: system", content)
+            self.assertIn("planner", content)
+            self.assertIn("fill five", content)
+            self.assertIn("--- RESPONSE_TEXT ---", content)
+            self.assertIn("task text", content)
+            collision = write_request_task_md(
+                logs_dir,
+                day=date(2026, 9, 10),
+                batch=1,
+                attempt=3,
+                request_state="failed",
+                now=clock,
+            )
+            self.assertEqual(collision.name, "165650_1_2.md")
+
+    def test_fill_writes_success_md(self) -> None:
+        tasks = tasks_from_schedule(["09:11"])
+        client = self._client(
+            AgentResponse(
+                model="deepseek-v4-pro",
+                response_text='{"tasks": ["Use the ad-attack skill: execute discovery.orientation against domain."]}',
+                status_code=200,
+                elapsed_seconds=0.1,
+                raw_response_text='{"choices":[{"message":{"content":"ok"}}]}',
+                finish_reason="stop",
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_dir = Path(tmp)
+            fill_next_batch(
+                tasks,
+                batch_size=5,
+                agent_client=client,
+                system_prompt="You are an automated planner",
+                prompt_template="Use the ad-attack skill",
+                state={"domain": {"name": "ndrtest.local"}},
+                max_attempts=1,
+                logs_dir=logs_dir,
+                day=date(2026, 9, 10),
+            )
+            files = list((logs_dir / "request_task_LLM_2026-09-10").glob("*_1.md"))
+            self.assertEqual(len(files), 1)
+            content = files[0].read_text(encoding="utf-8")
+            self.assertIn("request_state: finished", content)
+            self.assertIn("status_code: 200", content)
+            self.assertIn("--- REQUEST ---", content)
+            self.assertIn("automated planner", content)
+            self.assertIn("discovery.orientation", content)
+            self.assertIn("ad-attack skill", tasks[0]["task"])
+
+    def test_fill_writes_http_error_md(self) -> None:
+        tasks = tasks_from_schedule(["09:11"])
+        client = self._client(
+            AgentRequestError(
+                "LLM API (xlc-proxy) returned HTTP 429",
+                status_code=429,
+                response_text='{"error":"Too Many Requests"}',
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_dir = Path(tmp)
+            with self.assertRaises(RuntimeError):
+                fill_next_batch(
+                    tasks,
+                    batch_size=1,
+                    agent_client=client,
+                    system_prompt="You are an automated planner",
+                    prompt_template="Use the ad-attack skill",
+                    state={},
+                    max_attempts=1,
+                    logs_dir=logs_dir,
+                    day=date(2026, 9, 10),
+                )
+            files = list((logs_dir / "request_task_LLM_2026-09-10").glob("*_1.md"))
+            self.assertEqual(len(files), 1)
+            content = files[0].read_text(encoding="utf-8")
+            self.assertIn("request_state: failed", content)
+            self.assertIn("status_code: 429", content)
+            self.assertIn("Too Many Requests", content)
+            self.assertEqual(tasks[0]["task"], "")
+
+    def test_second_fill_uses_batch_two_filename(self) -> None:
+        tasks = tasks_from_schedule(["09:11", "09:22", "10:01", "14:07", "15:20", "16:33"])
+        first = [
+            AgentResponse(
+                model="test",
+                response_text=json.dumps({"tasks": [f"task-{index}" for index in range(5)]}),
+                status_code=200,
+                elapsed_seconds=0.1,
+                raw_response_text="{}",
+            )
+        ]
+        second = [
+            AgentResponse(
+                model="test",
+                response_text='{"tasks": ["task-remainder"]}',
+                status_code=200,
+                elapsed_seconds=0.1,
+                raw_response_text="{}",
+            )
+        ]
+        client = mock.Mock()
+        client.provider_name = "xlc-proxy"
+        client.model = "deepseek-v4-pro"
+        client.api_base_url = "https://example.invalid"
+        client.request_completion.side_effect = first + second
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_dir = Path(tmp)
+            day = date(2026, 9, 10)
+            fill_next_batch(
+                tasks,
+                batch_size=5,
+                agent_client=client,
+                system_prompt="planner",
+                prompt_template="template",
+                state={},
+                max_attempts=1,
+                logs_dir=logs_dir,
+                day=day,
+                slot_batch_size=5,
+            )
+            fill_next_batch(
+                tasks,
+                batch_size=5,
+                agent_client=client,
+                system_prompt="planner",
+                prompt_template="template",
+                state={},
+                max_attempts=1,
+                logs_dir=logs_dir,
+                day=day,
+                slot_batch_size=5,
+            )
+            folder = logs_dir / "request_task_LLM_2026-09-10"
+            batch_one = list(folder.glob("*_1.md"))
+            batch_two = list(folder.glob("*_2.md"))
+            self.assertEqual(len(batch_one), 1)
+            self.assertEqual(len(batch_two), 1)
+            self.assertIn("batch: 1", batch_one[0].read_text(encoding="utf-8"))
+            self.assertIn("batch: 2", batch_two[0].read_text(encoding="utf-8"))
+            self.assertEqual(tasks[5]["task"], "task-remainder")
 
 
 if __name__ == "__main__":

@@ -60,6 +60,26 @@ class WinprocDecodeTests(unittest.TestCase):
             ),
             ("bob", "x"),
         )
+        self.assertEqual(
+            winproc.local_admin_creds(
+                {"campaign": {"local_admin_account": {"name": "NDRTEST\\attdemo", "password": "pw"}}}
+            ),
+            ("NDRTEST\\attdemo", "pw"),
+        )
+        self.assertEqual(
+            winproc.local_admin_creds(
+                {
+                    "users": [
+                        {
+                            "username": "attdemo",
+                            "password": "pw",
+                            "is_local_admin_on_attack_host": True,
+                        }
+                    ]
+                }
+            ),
+            ("attdemo", "pw"),
+        )
         self.assertIsNone(winproc.local_admin_creds({"users": [{"username": "bob"}]}))
 
     def test_access_denied_markers(self) -> None:
@@ -126,36 +146,50 @@ class CaptureTrafficLockTests(unittest.TestCase):
 
 
 class CaptureLogsElevateTests(unittest.TestCase):
-    def test_access_denied_retries_via_elevate(self) -> None:
+    def _prepare_stop(self, mod, tmp: Path) -> None:
+        mod.output_dir = lambda: tmp
+        (tmp / ".capture_logs_state.json").write_text(
+            json.dumps(
+                {
+                    "label": "discovery_port-scan",
+                    "started_at": "2026-09-10T00:00:00.000Z",
+                    "log": "Security",
+                    "channels": ["Security"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_stop_retries_elevate_without_flag(self) -> None:
         mod = _load_script("capture_logs.py")
-        elev_json = json.dumps({"ok": True, "exit_code": 0, "output": ""})
-        with mock.patch.object(
-            mod.winproc,
-            "run",
-            side_effect=[(5, "", "Access is denied."), (0, elev_json, "")],
-        ) as run:
-            with mock.patch.object(
-                mod,
-                "_load_apt_state",
-                return_value={
-                    "campaign": {"local_admin": {"username": "attdemo", "password": "pw"}}
-                },
-            ):
-                err = mod._export_one_channel(
-                    "wevtutil", "Security", Path("out.evtx"), "*"
-                )
-        self.assertIsNone(err)
-        self.assertEqual(run.call_count, 2)
-        elev_argv = run.call_args_list[1][0][0]
-        self.assertTrue(any(str(part).endswith("elevate.py") for part in elev_argv))
-        self.assertIn("attdemo", elev_argv)
+        denied = mock.Mock(returncode=5, stdout="", stderr="Access is denied.")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._prepare_stop(mod, out)
+            with mock.patch.object(mod.subprocess, "run", return_value=denied):
+                with mock.patch.object(
+                    mod, "_elevation_account", return_value=("NDRTEST\\attdemo", "pw")
+                ):
+                    with mock.patch.object(mod, "_run_epl_elevated", return_value=True) as elev:
+                        rc = mod.cmd_stop(mock.Mock())
+            self.assertEqual(rc, 0)
+            elev.assert_called_once()
+            self.assertFalse((out / ".capture_logs_state.json").exists())
 
     def test_access_denied_without_creds_explains_local_admin(self) -> None:
+        import io
+
         mod = _load_script("capture_logs.py")
-        with mock.patch.object(mod.winproc, "run", return_value=(5, "", "拒绝访问。")):
-            with mock.patch.object(mod, "_load_apt_state", return_value={}):
-                err = mod._export_one_channel(
-                    "wevtutil", "Security", Path("out.evtx"), "*"
-                )
-        self.assertIsNotNone(err)
-        self.assertIn("campaign.local_admin", err or "")
+        denied = mock.Mock(returncode=5, stdout="", stderr="拒绝访问。")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._prepare_stop(mod, out)
+            buf = io.StringIO()
+            with mock.patch.object(mod.subprocess, "run", return_value=denied):
+                with mock.patch.object(mod, "_elevation_account", return_value=None):
+                    with mock.patch("sys.stdout", buf):
+                        rc = mod.cmd_stop(mock.Mock())
+            self.assertEqual(rc, 1)
+            payload = json.loads(buf.getvalue())
+            self.assertTrue(payload["errors"])
+            self.assertIn("campaign.local_admin_account", payload["errors"][0])

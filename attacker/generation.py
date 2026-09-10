@@ -6,6 +6,7 @@ import ipaddress
 import json
 import logging
 import re
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -13,6 +14,7 @@ from common import extract_react_finish_json, repair_json_text
 from common.agent_request_abc import AgentRequestABC, AgentRequestError, AgentTimeoutError
 
 from attacker.extract_pcap import ip_in_nets, lab_nets_from_config, parse_networks
+from attacker.logging_setup import write_request_task_md
 from attacker.task_file import completed_task_texts, empty_slot_indices
 
 DEFAULT_BATCH_SIZE = 5
@@ -243,6 +245,47 @@ def build_generation_messages(
     return system_prompt.strip(), user_text
 
 
+def _fill_batch_number(tasks: list[dict[str, str]], slot_batch_size: int) -> int:
+    filled = len(tasks) - len(empty_slot_indices(tasks))
+    return filled // max(1, int(slot_batch_size)) + 1
+
+
+def _write_fill_interaction(
+    *,
+    logs_dir: Path | None,
+    day: date | None,
+    batch: int,
+    attempt: int,
+    agent_client: FillClient,
+    messages: list[dict[str, str]],
+    status_code: int | None = None,
+    finish_reason: str | None = None,
+    response_text: str | bytes | None = None,
+    raw_response_text: str | bytes | None = None,
+    error_text: str | bytes | None = None,
+    request_state: str,
+) -> None:
+    if logs_dir is None:
+        return
+    write_request_task_md(
+        logs_dir,
+        day=day if day is not None else date.today(),
+        batch=batch,
+        attempt=attempt,
+        provider=getattr(agent_client, "provider_name", None),
+        model=getattr(agent_client, "model", None),
+        base_url=getattr(agent_client, "api_base_url", None),
+        status_code=status_code,
+        finish_reason=finish_reason,
+        messages=messages,
+        response_text=response_text,
+        raw_response_text=raw_response_text,
+        error_text=error_text,
+        request_state=request_state,
+        caller="request_task_batch",
+    )
+
+
 def request_task_batch(
     *,
     batch_size: int,
@@ -253,6 +296,10 @@ def request_task_batch(
     state: dict[str, Any],
     max_attempts: int = 5,
     lab_nets: Sequence[str] = (),
+    logs_dir: Path | None = None,
+    day: date | None = None,
+    batch: int | None = None,
+    slot_batch_size: int | None = None,
 ) -> list[str]:
     nets = tuple(str(item) for item in lab_nets if str(item).strip()) or lab_nets_from_config(None)
     last_error = "empty model response"
@@ -260,6 +307,10 @@ def request_task_batch(
     provider = getattr(agent_client, "provider_name", None) or "LLM"
     model = getattr(agent_client, "model", "") or ""
     base_url = getattr(agent_client, "api_base_url", "") or ""
+    batch_no = int(batch) if batch is not None else _fill_batch_number(
+        tasks,
+        slot_batch_size if slot_batch_size is not None else batch_size,
+    )
     logger.info(
         "Requesting %s attacker task string(s) from %s model=%s base_url=%s (max_attempts=%s)",
         batch_size,
@@ -298,11 +349,47 @@ def request_task_batch(
         except AgentTimeoutError as exc:
             last_error = str(exc)
             logger.warning("LLM fill attempt %s/%s timed out: %s", attempt, attempts, exc)
+            _write_fill_interaction(
+                logs_dir=logs_dir,
+                day=day,
+                batch=batch_no,
+                attempt=attempt,
+                agent_client=agent_client,
+                messages=messages,
+                status_code=exc.status_code,
+                error_text=exc.response_text or str(exc),
+                request_state="failed",
+            )
             continue
         except AgentRequestError as exc:
             last_error = str(exc)
             logger.warning("LLM fill attempt %s/%s failed: %s", attempt, attempts, exc)
+            _write_fill_interaction(
+                logs_dir=logs_dir,
+                day=day,
+                batch=batch_no,
+                attempt=attempt,
+                agent_client=agent_client,
+                messages=messages,
+                status_code=exc.status_code,
+                raw_response_text=exc.response_text,
+                error_text=exc.response_text or str(exc),
+                request_state="failed",
+            )
             continue
+        _write_fill_interaction(
+            logs_dir=logs_dir,
+            day=day,
+            batch=batch_no,
+            attempt=attempt,
+            agent_client=agent_client,
+            messages=messages,
+            status_code=response.status_code,
+            finish_reason=response.finish_reason,
+            response_text=response.response_text,
+            raw_response_text=response.raw_response_text,
+            request_state="finished",
+        )
         parsed = filter_tasks_to_lab_nets(
             parse_generated_tasks(response.response_text),
             nets,
@@ -337,6 +424,9 @@ def fill_next_batch(
     max_attempts: int = 5,
     request_batch: Callable[..., list[str]] | None = None,
     lab_nets: Sequence[str] | None = None,
+    logs_dir: Path | None = None,
+    day: date | None = None,
+    slot_batch_size: int | None = None,
 ) -> list[dict[str, str]]:
     indices = empty_slot_indices(tasks)
     if not indices:
@@ -345,6 +435,7 @@ def fill_next_batch(
     logger.info("Filling %s empty attacker slot(s)", count)
     requester = request_batch or request_task_batch
     nets = lab_nets if lab_nets is not None else lab_nets_from_config(None)
+    divisor = slot_batch_size if slot_batch_size is not None else batch_size
     contents = requester(
         batch_size=count,
         tasks=tasks,
@@ -354,6 +445,10 @@ def fill_next_batch(
         state=state or {},
         max_attempts=max_attempts,
         lab_nets=nets,
+        logs_dir=logs_dir,
+        day=day,
+        batch=_fill_batch_number(tasks, divisor),
+        slot_batch_size=divisor,
     )
     for index, text in zip(indices[:count], contents):
         tasks[index]["task"] = text

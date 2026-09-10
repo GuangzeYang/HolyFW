@@ -423,6 +423,9 @@ def run_loop(
                 state=state,
                 max_attempts=int(generator.get("max_attempts") or 5),
                 lab_nets=lab_nets_from_config(loaded),
+                logs_dir=logs_dir,
+                day=target_day,
+                slot_batch_size=batch_size,
             )
             save_attacker_tasks(task_path, filled, shift=shift_stamp)
             logger.info("Saved filled task file %s", task_path)

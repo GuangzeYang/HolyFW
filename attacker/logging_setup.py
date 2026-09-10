@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from typing import Sequence
 
 try:
     import colorlog
@@ -101,4 +102,101 @@ def reattach_attacker_dated_file_handler(
     file_handler.setFormatter(previous_formatter or _plain_formatter())
     file_handler.name = ATTACKER_DATED_FILE_HANDLER_NAME
     target.addHandler(file_handler)
+    return log_file
+
+
+REQUEST_TASK_LLM_DIR_PREFIX = "request_task_LLM"
+
+
+def _normalize_log_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _format_request_messages(messages: Sequence[dict[str, str]] | None) -> str:
+    if not messages:
+        return ""
+    parts: list[str] = []
+    for item in messages:
+        role = str(item.get("role") or "").strip() or "unknown"
+        content = item.get("content") or ""
+        parts.append(f"role: {role}")
+        parts.append(_normalize_log_text(content))
+        parts.append("")
+    return "\n".join(parts).rstrip()
+
+
+def request_task_llm_dir(logs_dir: Path, day: date) -> Path:
+    return logs_dir / f"{REQUEST_TASK_LLM_DIR_PREFIX}_{day.isoformat()}"
+
+
+def _unique_request_md_path(directory: Path, stamp: str, batch: int) -> Path:
+    candidate = directory / f"{stamp}_{batch}.md"
+    if not candidate.exists():
+        return candidate
+    suffix = 2
+    while True:
+        candidate = directory / f"{stamp}_{batch}_{suffix}.md"
+        if not candidate.exists():
+            return candidate
+        suffix += 1
+
+
+def write_request_task_md(
+    logs_dir: Path,
+    *,
+    day: date,
+    batch: int,
+    attempt: int,
+    provider: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    status_code: int | None = None,
+    finish_reason: str | None = None,
+    messages: Sequence[dict[str, str]] | None = None,
+    response_text: str | bytes | None = None,
+    raw_response_text: str | bytes | None = None,
+    error_text: str | bytes | None = None,
+    request_state: str | None = None,
+    caller: str | None = None,
+    now: datetime | None = None,
+) -> Path:
+    """Write one attacker LLM fill interaction as a markdown file.
+
+    Directory is ``request_task_LLM_{YYYY-MM-DD}``. Filename is
+    ``{HHMMSS}_{batch}.md``; a ``_2`` suffix is added on same-second collisions.
+    """
+    resolved_day = day
+    clock = now if now is not None else datetime.now().astimezone()
+    response_logs_dir = request_task_llm_dir(logs_dir, resolved_day)
+    response_logs_dir.mkdir(parents=True, exist_ok=True)
+    stamp = clock.strftime("%H%M%S")
+    log_file = _unique_request_md_path(response_logs_dir, stamp, int(batch))
+
+    lines = [
+        f"timestamp: {clock.isoformat()}",
+        f"batch: {int(batch)}",
+        f"attempt: {attempt}",
+        f"note: interactive",
+        f"caller: {caller or 'request_task_batch'}",
+        f"provider: {provider or ''}",
+        f"model: {model or ''}",
+        f"base_url: {base_url or ''}",
+        f"status_code: {'' if status_code is None else status_code}",
+        f"finish_reason: {finish_reason or ''}",
+        f"request_state: {request_state or ''}",
+        "--- REQUEST ---",
+        _format_request_messages(messages),
+        "--- RAW_RESPONSE ---",
+        _normalize_log_text(raw_response_text),
+        "--- RESPONSE_TEXT ---",
+        _normalize_log_text(response_text),
+        "--- ERROR_TEXT ---",
+        _normalize_log_text(error_text),
+        "",
+    ]
+    log_file.write_text("\n".join(lines), encoding="utf-8")
     return log_file

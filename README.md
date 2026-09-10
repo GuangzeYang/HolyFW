@@ -615,6 +615,7 @@ Operational state (not the per-task transcript) also lives under `soldier/runtim
 Attacker records live under `attacker/logs/`:
 
 - `attacker_YYYY-MM-DD.log` — scheduler log (`time - LEVEL - logger - message`) for fill, wait, execute, and completion
+- `request_task_LLM_YYYY-MM-DD/{HHMMSS}_{batch}.md` — one markdown file per LLM fill request (system/user prompt plus response or error). Same-second collisions append `_2`
 - `YYYY-MM-DD/<task_id>.md` — Markdown transcript with YAML-like frontmatter (`started_at`, `completed_at`, `task`) and literal stdout/stderr (not JSON-escaped)
 - `YYYY-MM-DD/<task_id>_<technique>_{Sysmon,Security}.evtx` — per-task log window from `capture_logs.py`
 - `YYYY-MM-DD/<task_id>_<technique>.pcapng` — written later by `attacker extract --date`, not during the live task

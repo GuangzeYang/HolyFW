@@ -175,7 +175,7 @@ The check also guarantees impacket is actually runnable: it reports `python_exec
 > python scripts/state.py add notes '{"text": "elevated via <account> for <reason>"}'
 > ```
 >
-> For log export specifically, `capture_logs.py stop --elevate` performs the same retry automatically using the resolved account (see the Capture scripts section).
+> For log export specifically, `capture_logs.py stop` always retries `wevtutil epl` elevated on access denied, using the resolved account (see the Capture scripts section). Do not omit the stop call. `--elevate` is accepted but unnecessary.
 
 > **Logon/Kerberos audit events.** `capture_logs.py` also exports the **Security** log (`config.json` `logs.security_log`), which records logon/authentication events: `4624/4625` (logon success/failure), `4634` (logoff), `4672` (special logon), `4648` (explicit credentials), `4776` (NTLM credential validation), and — on a **domain controller** — `4768` (TGT) / `4769` (service ticket). The pre-flight report's `auditing` field checks these audit subcategories (via `auditpol /get /subcategory:<GUID>`); if any are disabled, `ok` stays `true` but a warning explains which `auditpol` subcategory to enable. Note: `4768/4769` are emitted by the KDC, so they appear in a DC's Security log, not on the attack host; the attack host's Security log captures its own network logons (`4624` LogonType 3) from lateral-movement tooling.
 
@@ -209,10 +209,10 @@ For every single atomic attack action (one command = one action):
 4. Stop log capture and export the evtx (one `.evtx` per channel — Sysmon + Security):
 
    ```
-   python scripts/capture_logs.py stop [--elevate]
+   python scripts/capture_logs.py stop
    ```
 
-   If a channel's `wevtutil epl` fails with access denied and `--elevate` is set, `stop` automatically retries that channel elevated via the account resolved by the Local Elevation Protocol.
+   Always run `stop` after `start`, even when the attack command fails. If a channel's `wevtutil epl` fails with access denied, `stop` automatically retries that channel elevated via the account resolved by the Local Elevation Protocol. Do not skip capture brackets because pre-flight reported unreadable log channels.
 
 5. Stop traffic capture (protocol stub — no pcap is finalized):
 
