@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from datetime import date, timedelta
@@ -25,6 +26,7 @@ def _ok_result() -> soldier.CommandResult:
 
 
 def _clear_root_handlers() -> None:
+    soldier.stop_soldier_console_listener()
     root = logging.getLogger()
     for handler in list(root.handlers):
         root.removeHandler(handler)
@@ -83,9 +85,41 @@ class SoldierRuntimeTests(unittest.TestCase):
             if getattr(handler, "name", None) == soldier.SOLDIER_CONSOLE_HANDLER_NAME
         ]
         self.assertEqual(len(console_handlers), 1)
+        self.assertIsInstance(console_handlers[0], logging.handlers.QueueHandler)
         self.assertTrue(
             any(isinstance(item, soldier._ConsoleVisibilityFilter) for item in console_handlers[0].filters)
         )
+        handler_names = [getattr(handler, "name", None) for handler in logging.getLogger().handlers]
+        self.assertEqual(handler_names[0], soldier.SOLDIER_DATED_FILE_HANDLER_NAME)
+
+    def test_blocked_console_does_not_delay_file_log(self) -> None:
+        td = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(td, ignore_errors=True))
+        self.addCleanup(_clear_root_handlers)
+        logs = Path(td)
+        path = soldier.configure_soldier_root_logging(logs)
+
+        listener = soldier._CONSOLE_LOG_LISTENER
+        self.assertIsNotNone(listener)
+        assert listener is not None
+        console = listener.handlers[0]
+        gate = threading.Event()
+        original_emit = console.emit
+
+        def blocking_emit(record: logging.LogRecord) -> None:
+            gate.wait(timeout=5)
+            original_emit(record)
+
+        console.emit = blocking_emit  # type: ignore[method-assign]
+        try:
+            logging.info(
+                "file must not wait for console",
+                extra={"task": "abc123", "to_console": True},
+            )
+            content = path.read_text(encoding="utf-8")
+            self.assertIn("file must not wait for console", content)
+        finally:
+            gate.set()
 
     def test_console_filter_allows_system_and_to_console_task_lines(self) -> None:
         filt = soldier._ConsoleVisibilityFilter()
@@ -204,13 +238,16 @@ class SoldierRuntimeTests(unittest.TestCase):
         ]
         self.assertEqual(len(dated_handlers), 1)
         self.assertEqual(Path(dated_handlers[0].baseFilename).resolve(), expected.resolve())
+        self.assertIs(logging.getLogger().handlers[0], dated_handlers[0])
 
         console_handlers = [
             handler
             for handler in logging.getLogger().handlers
             if not isinstance(handler, logging.FileHandler)
         ]
-        self.assertGreaterEqual(len(console_handlers), 1)
+        self.assertEqual(len(console_handlers), 1)
+        self.assertIsInstance(console_handlers[0], logging.handlers.QueueHandler)
+        self.assertIsNotNone(soldier._CONSOLE_LOG_LISTENER)
 
     def test_successful_task_acknowledges_before_execution(self) -> None:
         conn = FakeDispatchConnection()

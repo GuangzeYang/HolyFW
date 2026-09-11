@@ -14,7 +14,10 @@ import argparse
 import configparser
 from concurrent.futures import ThreadPoolExecutor
 import json
+import logging
+import logging.handlers
 import os
+import queue
 import shlex
 import shutil
 import socket
@@ -27,7 +30,6 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import IO, Callable, Mapping, Sequence
-import logging
 
 from filelock import FileLock, Timeout as FileLockTimeout
 
@@ -86,10 +88,13 @@ SOLDIER_DATED_FILE_HANDLER_NAME = "soldier_dated_file"
 SOLDIER_CONSOLE_HANDLER_NAME = "soldier_console"
 SOLDIER_LOG_FORMAT = "%(asctime)s - %(levelname)s - %(task)s - %(message)s"
 LOG_DATE_CHECK_INTERVAL_SECONDS = 1.0
+CONSOLE_LOG_QUEUE_SIZE = 1024
 _PENDING_REPORTS_LOCK = threading.Lock()
 _ACTIVE_PROCESSES_LOCK = threading.Lock()
 _ACTIVE_PROCESSES: dict[int, subprocess.Popen] = {}
 _SHUTTING_DOWN = threading.Event()
+_CONSOLE_LOG_QUEUE: queue.Queue | None = None
+_CONSOLE_LOG_LISTENER: logging.handlers.QueueListener | None = None
 _TASK_RECORD_META_KEYS = (
     "task_id",
     "task_ref",
@@ -122,6 +127,16 @@ class _ConsoleVisibilityFilter(logging.Filter):
         if task == "system":
             return True
         return bool(getattr(record, "to_console", False))
+
+
+class _NonBlockingQueueHandler(logging.handlers.QueueHandler):
+    """Enqueue console records without blocking the caller if the queue is full."""
+
+    def enqueue(self, record: logging.LogRecord) -> None:
+        try:
+            self.queue.put_nowait(record)
+        except queue.Full:
+            pass
 
 
 def task_extra(task_id: str | None = None, *, to_console: bool = False) -> dict[str, object]:
@@ -199,7 +214,50 @@ def reattach_soldier_dated_file_handler(
     file_handler.setFormatter(_plain_log_formatter())
     file_handler.name = SOLDIER_DATED_FILE_HANDLER_NAME
     root.addHandler(file_handler)
+    handlers = root.handlers
+    handlers.remove(file_handler)
+    handlers.insert(0, file_handler)
     return log_file
+
+
+def stop_soldier_console_listener() -> None:
+    """Stop the console QueueListener so reconfigure and tests do not leak a writer thread."""
+    global _CONSOLE_LOG_LISTENER, _CONSOLE_LOG_QUEUE
+    listener = _CONSOLE_LOG_LISTENER
+    _CONSOLE_LOG_LISTENER = None
+    _CONSOLE_LOG_QUEUE = None
+    if listener is None:
+        return
+    try:
+        listener.stop()
+    except Exception:
+        pass
+    for handler in listener.handlers:
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+
+def _attach_console_queue_handler(level: int) -> _NonBlockingQueueHandler:
+    """Start a bounded console listener and return the non-blocking root handler."""
+    global _CONSOLE_LOG_QUEUE, _CONSOLE_LOG_LISTENER
+    stop_soldier_console_listener()
+    log_queue: queue.Queue = queue.Queue(maxsize=CONSOLE_LOG_QUEUE_SIZE)
+    queue_handler = _NonBlockingQueueHandler(log_queue)
+    queue_handler.setLevel(level)
+    queue_handler.addFilter(_TaskDefaultFilter())
+    queue_handler.addFilter(_ConsoleVisibilityFilter())
+    queue_handler.name = SOLDIER_CONSOLE_HANDLER_NAME
+    listener = logging.handlers.QueueListener(
+        log_queue,
+        _build_console_handler(level),
+        respect_handler_level=True,
+    )
+    listener.start()
+    _CONSOLE_LOG_QUEUE = log_queue
+    _CONSOLE_LOG_LISTENER = listener
+    return queue_handler
 
 
 def configure_soldier_root_logging(logs_dir: Path, level: int = logging.INFO) -> Path:
@@ -207,6 +265,7 @@ def configure_soldier_root_logging(logs_dir: Path, level: int = logging.INFO) ->
     logs_dir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger()
     logger.setLevel(level)
+    stop_soldier_console_listener()
 
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
@@ -215,8 +274,9 @@ def configure_soldier_root_logging(logs_dir: Path, level: int = logging.INFO) ->
         except Exception:
             pass
 
-    logger.addHandler(_build_console_handler(level))
-    return reattach_soldier_dated_file_handler(logs_dir, level, logger=logger)
+    log_file = reattach_soldier_dated_file_handler(logs_dir, level, logger=logger)
+    logger.addHandler(_attach_console_queue_handler(level))
+    return log_file
 
 
 def soldier_data_dir() -> Path:
@@ -1724,6 +1784,7 @@ def run_listen(
         terminate_all_active_processes("soldier shutdown")
         if "executor" in locals():
             executor.shutdown(wait=True, cancel_futures=True)
+        stop_soldier_console_listener()
 
 
 def run_report(args: argparse.Namespace, config_path: Path) -> int:
