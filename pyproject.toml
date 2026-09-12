@@ -19,6 +19,8 @@ commander = "commander.cli:main"
 soldier = "soldier.soldier:main"
 attacker = "attacker.cli:main"
 sysmon-collect = "sysmon_collector.collector:main"
+dataset-extract = "dataset_processor.cli:main"
+dataset-export-evtx = "dataset_processor.cli:main_export"
 
 [tool.hatch.build]
 # Always ship in-package data files, even when Git does not track them.
@@ -40,7 +42,7 @@ artifacts = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["commander", "soldier", "attacker", "common", "holyfw_assets", "sysmon_collector"]
+packages = ["commander", "soldier", "attacker", "common", "holyfw_assets", "sysmon_collector", "dataset_processor"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "role_profiles" = "holyfw_assets/role_profiles"
@@ -57,6 +59,7 @@ include = [
   "/common",
   "/holyfw_assets",
   "/sysmon_collector",
+  "/dataset_processor",
   "/sysmonconfig.xml",
   "/role_profiles",
   "/domain_resource.md",

@@ -40,7 +40,7 @@ At local 00:00 it exports the previous calendar day (`00:00–24:00`):
 
 It does not export the still-open current day. Midnight export still runs if Sysmon is not running when observed.
 
-`attacker extract` does not read these paths by itself; pass that day's attacker `sysmon_*.evtx` as `--evtx`.
+`python -m dataset_processor` / `attacker extract` does not read these paths by itself. On Windows pass `--evtx` as `sysmon_*.evtx`, or first `python -m dataset_processor export-evtx` and on Linux pass the XML. Pass `security_logon_*.evtx` as `--security-evtx` (attacker) and/or `--dc-security-evtx` (DC) only on Windows when you want per-task Security slices. The mixed SPAN pcap passed as `--pcap` is never modified.
 
 ## 3. Optional environment variables
 

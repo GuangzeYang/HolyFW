@@ -18,11 +18,14 @@ from attacker.extract_pcap import (
     ProcessCreate,
     auto_unlogged_scan,
     build_display_filter,
+    build_window_query,
     connection_is_malicious,
     exclude_flows_from_config,
+    export_evtx_window,
     extract_from_sources,
     flow_is_excluded,
     image_basename,
+    infer_attacker_ip,
     lab_nets_from_config,
     match_streams,
     options_from_args,
@@ -34,6 +37,7 @@ from attacker.extract_pcap import (
     run_extract,
     select_malicious_connects,
     technique_pcap_stem,
+    utc_query_bound,
 )
 
 GUID = "11111111-1111-1111-1111-111111111111"
@@ -229,12 +233,26 @@ class TaskWindowTests(unittest.TestCase):
         self.assertEqual(start, datetime(2026, 9, 4, 4, 0, 0, tzinfo=timezone.utc))
         self.assertEqual(end, datetime(2026, 9, 4, 4, 1, 0, tzinfo=timezone.utc))
 
+    def test_window_query_uses_utc_bounds(self) -> None:
+        text = (
+            "---\n"
+            "started_at: 2026-09-04T04:00:00+00:00\n"
+            "completed_at: 2026-09-04T04:02:00+00:00\n"
+            "---\n"
+        )
+        start, end = parse_task_window(text, slack_seconds=5)
+        query = build_window_query(start, end)
+        self.assertIn("TimeCreated[@SystemTime>='2026-09-04T03:59:55.000Z'", query)
+        self.assertIn("@SystemTime<='2026-09-04T04:02:05.000Z']", query)
+        self.assertTrue(query.startswith("*[System["))
+        self.assertEqual(utc_query_bound(start), "2026-09-04T03:59:55.000Z")
+
 
 class TsharkFilterTests(unittest.TestCase):
     def test_parse_fields_and_match_stream(self) -> None:
         text = (
-            "1\t1756958401.0\t172.16.24.10\t172.16.24.1\t49723\t445\t\t\t12\t\t6\t\t\t1\t0\n"
-            "2\t1756958401.2\t172.16.24.1\t172.16.24.10\t445\t49723\t\t\t12\t\t6\t\t\t0\t1\n"
+            "1\t1756958401.0\t172.16.24.10\t172.16.24.1\t49723\t445\t\t\t12\t\t6\t\t\t1\t0\t0\t0\n"
+            "2\t1756958401.2\t172.16.24.1\t172.16.24.10\t445\t49723\t\t\t12\t\t6\t\t\t0\t1\t1\t0\n"
         )
         packets = parse_tshark_fields(text)
         self.assertEqual(len(packets), 2)
@@ -251,7 +269,7 @@ class TsharkFilterTests(unittest.TestCase):
 
     def test_outside_slack_does_not_bind_stream(self) -> None:
         packets = parse_tshark_fields(
-            "1\t100.0\t172.16.24.10\t172.16.24.1\t49723\t445\t\t\t99\t\t6\t\t\t1\t0\n"
+            "1\t100.0\t172.16.24.10\t172.16.24.1\t49723\t445\t\t\t99\t\t6\t\t\t1\t0\t0\t1\n"
         )
         connect = _connect(utc=datetime.fromtimestamp(200.0, tz=timezone.utc))
         from attacker.extract_pcap import SelectedConnect
@@ -293,7 +311,7 @@ class TsharkFilterTests(unittest.TestCase):
 
     def test_extract_from_sources_builds_filter(self) -> None:
         packets = parse_tshark_fields(
-            "1\t1756958401.0\t172.16.24.10\t172.16.24.1\t49723\t445\t\t\t12\t\t6\t\t\t1\t0\n"
+            "1\t1756958401.0\t172.16.24.10\t172.16.24.1\t49723\t445\t\t\t12\t\t6\t\t\t1\t0\t1\t0\n"
         )
         connect = _connect(utc=datetime.fromtimestamp(1756958401.0, tz=timezone.utc))
         matched, filt = extract_from_sources(
@@ -346,13 +364,28 @@ class ConfigAndCliTests(unittest.TestCase):
         )
         self.assertEqual(args.cmd, "extract")
         self.assertEqual(str(args.evtx), "sysmon.evtx")
+        self.assertIsNone(args.security_evtx)
         dated = parser.parse_args(
-            ["extract", "--date", "2026-09-06", "--evtx", "sysmon.evtx", "--pcap", "mix.pcapng"]
+            [
+                "extract",
+                "--date",
+                "2026-09-06",
+                "--evtx",
+                "sysmon.evtx",
+                "--security-evtx",
+                "security.evtx",
+                "--dc-security-evtx",
+                "dc.evtx",
+                "--pcap",
+                "mix.pcapng",
+            ]
         )
         self.assertEqual(dated.date, "2026-09-06")
         self.assertIsNone(dated.out_dir)
+        self.assertEqual(str(dated.security_evtx), "security.evtx")
+        self.assertEqual(str(dated.dc_security_evtx), "dc.evtx")
 
-    def test_scan_flag_requires_attacker_ip(self) -> None:
+    def test_scan_flag_without_attacker_ip_is_deferred(self) -> None:
         ns = mock.Mock(
             lab_nets=None,
             since="",
@@ -363,8 +396,9 @@ class ConfigAndCliTests(unittest.TestCase):
             attacker_ip="",
             no_require_cmdline=False,
         )
-        with self.assertRaises(ValueError):
-            options_from_args(ns, {})
+        options = options_from_args(ns, {})
+        self.assertTrue(options.include_unlogged_scan)
+        self.assertEqual(options.attacker_ip, "")
 
     def test_run_extract_writes_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -376,7 +410,7 @@ class ConfigAndCliTests(unittest.TestCase):
             out = root / "out"
             epoch = _connect().utc.timestamp()
             field_line = (
-                f"1\t{epoch:.1f}\t172.16.24.10\t172.16.24.1\t49723\t445\t\t\t12\t\t6\t\t\t1\t0\n"
+                f"1\t{epoch:.1f}\t172.16.24.10\t172.16.24.1\t49723\t445\t\t\t12\t\t6\t\t\t1\t0\t1\t0\n"
             )
 
             def fake_run(args, **_kwargs):
@@ -408,6 +442,7 @@ class ConfigAndCliTests(unittest.TestCase):
             records = json.loads((out / "tuples.json").read_text(encoding="utf-8"))
             self.assertEqual(records[0]["dest_port"], 445)
             self.assertIn("impacket", records[0]["command_line"])
+            self.assertTrue(records[0]["tcp_complete"])
 
     def test_technique_id_and_stem(self) -> None:
         self.assertEqual(
@@ -453,7 +488,7 @@ class ConfigAndCliTests(unittest.TestCase):
             pcap.write_bytes(b"pcap")
             epoch = _connect().utc.timestamp()
             field_line = (
-                f"1\t{epoch:.1f}\t172.16.24.10\t172.16.24.1\t49723\t445\t\t\t12\t\t6\t\t\t1\t0\n"
+                f"1\t{epoch:.1f}\t172.16.24.10\t172.16.24.1\t49723\t445\t\t\t12\t\t6\t\t\t1\t0\t1\t0\n"
             )
 
             def fake_run(args, **_kwargs):
@@ -483,7 +518,7 @@ class ConfigAndCliTests(unittest.TestCase):
                 no_require_cmdline=False,
             )
             with mock.patch(
-                "attacker.extract_pcap.resolve_day_logs_dir",
+                "dataset_processor.extract.resolve_day_logs_dir",
                 return_value=logs,
             ):
                 payload = run_extract(args, config={}, run_fn=fake_run)
@@ -504,6 +539,329 @@ class ConfigAndCliTests(unittest.TestCase):
             self.assertTrue(all("task_id" in row and "technique" in row for row in records))
             self.assertTrue((logs / "benign.pcapng").is_file())
             self.assertFalse((logs / "malicious.pcapng").is_file())
+
+
+def _write_day_transcripts(logs: Path) -> None:
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "aaa111aaa111aaaa.md").write_text(
+        "---\n"
+        "task_id: aaa111aaa111aaaa\n"
+        "started_at: 2026-09-04T04:00:00+00:00\n"
+        "completed_at: 2026-09-04T04:02:00+00:00\n"
+        "task: Use the ad-attack skill: execute credential.brute-user against domain.\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    (logs / "bbb222bbb222bbbb.md").write_text(
+        "---\n"
+        "task_id: bbb222bbb222bbbb\n"
+        "started_at: 2026-09-04T04:00:00+00:00\n"
+        "completed_at: 2026-09-04T04:02:00+00:00\n"
+        "task: Use the ad-attack skill: execute discovery.port-scan against host 172.16.24.11.\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    (logs / "skip.md").write_text("---\nplanned_time: 10:00\n---\n", encoding="utf-8")
+
+
+def _extract_fake_run(field_line: str, *, empty_epl: bool = False, epl_calls: list | None = None):
+    def fake_run(args, **_kwargs):
+        cmd = [str(part) for part in args]
+        if "qe" in cmd:
+            return mock.Mock(returncode=0, stdout=EID1 + EID3, stderr="")
+        if "epl" in cmd:
+            if epl_calls is not None:
+                epl_calls.append(cmd)
+            dest = Path(cmd[3])
+            if empty_epl:
+                return mock.Mock(
+                    returncode=1,
+                    stdout="",
+                    stderr="No events were found that match the specified selection criteria.",
+                )
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"evtx")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        if "-T" in cmd and "fields" in cmd:
+            return mock.Mock(returncode=0, stdout=field_line, stderr="")
+        if "-w" in cmd:
+            dest = Path(cmd[cmd.index("-w") + 1])
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"pcap")
+        return mock.Mock(returncode=0, stdout="", stderr="")
+
+    return fake_run
+
+
+def _epoch_field_line() -> str:
+    epoch = _connect().utc.timestamp()
+    return f"1\t{epoch:.1f}\t172.16.24.10\t172.16.24.1\t49723\t445\t\t\t12\t\t6\t\t\t1\t0\t1\t0\n"
+
+
+class EvtxWindowExportTests(unittest.TestCase):
+    def test_epl_argv_uses_file_log_and_time_query(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "day.evtx"
+            dest = Path(tmp) / "slice.evtx"
+            src.write_bytes(b"src")
+            seen: list[list[str]] = []
+
+            def fake_run(args, **_kwargs):
+                cmd = [str(part) for part in args]
+                seen.append(cmd)
+                Path(cmd[3]).write_bytes(b"out")
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            since = datetime(2026, 9, 4, 3, 59, 55, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 4, 4, 2, 5, tzinfo=timezone.utc)
+            written = export_evtx_window(src, dest, since, until, run_fn=fake_run)
+            self.assertEqual(written, dest)
+            self.assertEqual(seen[0][1], "epl")
+            self.assertEqual(seen[0][2], str(src))
+            self.assertEqual(seen[0][3], str(dest))
+            self.assertIn("/lf:true", seen[0])
+            query = next(part[3:] for part in seen[0] if part.startswith("/q:"))
+            self.assertIn("TimeCreated[@SystemTime>='2026-09-04T03:59:55.000Z'", query)
+            self.assertIn("@SystemTime<='2026-09-04T04:02:05.000Z']", query)
+
+    def test_empty_window_is_not_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "day.evtx"
+            dest = Path(tmp) / "slice.evtx"
+            src.write_bytes(b"src")
+
+            def fake_run(args, **_kwargs):
+                return mock.Mock(
+                    returncode=1,
+                    stdout="",
+                    stderr="The specified query did not return any events. No events were found.",
+                )
+
+            written = export_evtx_window(
+                src,
+                dest,
+                datetime(2026, 9, 4, 4, 0, tzinfo=timezone.utc),
+                datetime(2026, 9, 4, 4, 2, tzinfo=timezone.utc),
+                run_fn=fake_run,
+            )
+            self.assertIsNone(written)
+            self.assertFalse(dest.exists())
+
+
+class InferAttackerIpTests(unittest.TestCase):
+    def test_majority_initiated_attack_image_in_lab(self) -> None:
+        ip = infer_attacker_ip(
+            [
+                _connect(source_ip="172.16.24.10"),
+                _connect(source_ip="172.16.24.10"),
+                _connect(source_ip="8.8.8.8"),
+                _connect(initiated=False, source_ip="172.16.24.99"),
+                _connect(image=r"C:\Windows\System32\svchost.exe", source_ip="172.16.24.11"),
+            ],
+            ("172.16.24.0/24",),
+        )
+        self.assertEqual(ip, "172.16.24.10")
+
+    def test_empty_when_no_attack_connects(self) -> None:
+        self.assertEqual(
+            infer_attacker_ip(
+                [_connect(image=r"C:\Windows\System32\svchost.exe")],
+                ("172.16.24.0/24",),
+            ),
+            "",
+        )
+
+
+class BatchEvtxAndScanTests(unittest.TestCase):
+    def test_batch_writes_evtx_and_scan_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "2026-09-04"
+            _write_day_transcripts(logs)
+            sysmon = root / "sysmon.evtx"
+            security = root / "security.evtx"
+            dc = root / "dc.evtx"
+            for path in (sysmon, security, dc):
+                path.write_bytes(b"evtx")
+            pcap = root / "mix.pcapng"
+            pcap.write_bytes(b"pcap")
+            epl_calls: list[list[str]] = []
+            args = mock.Mock(
+                evtx=sysmon,
+                security_evtx=security,
+                dc_security_evtx=dc,
+                pcap=pcap,
+                out_dir=None,
+                date="2026-09-04",
+                tshark="tshark",
+                wevtutil="wevtutil",
+                tuples_name="tuples.json",
+                lab_nets=["172.16.24.0/24"],
+                since="",
+                until="",
+                task_md=None,
+                include_unlogged_scan=False,
+                attacker_ip="172.16.24.10",
+                no_require_cmdline=False,
+            )
+            with mock.patch(
+                "dataset_processor.extract.resolve_day_logs_dir",
+                return_value=logs,
+            ):
+                payload = run_extract(
+                    args,
+                    config={},
+                    run_fn=_extract_fake_run(_epoch_field_line(), epl_calls=epl_calls),
+                )
+            self.assertTrue(payload["ok"])
+            brute = next(item for item in payload["tasks"] if item["technique"] == "credential.brute-user")
+            scan = next(item for item in payload["tasks"] if item["technique"] == "discovery.port-scan")
+            self.assertTrue(str(brute["sysmon"]).endswith("aaa111aaa111aaaa_credential_brute-user_Sysmon.evtx"))
+            self.assertTrue(str(brute["security"]).endswith("aaa111aaa111aaaa_credential_brute-user_Security.evtx"))
+            self.assertTrue(str(brute["dc_security"]).endswith("aaa111aaa111aaaa_credential_brute-user_DC_Security.evtx"))
+            self.assertTrue(Path(brute["sysmon"]).is_file())
+            self.assertIn("icmp", scan["display_filter"])
+            self.assertTrue(any("/lf:true" in " ".join(cmd) for cmd in epl_calls))
+            self.assertEqual(len(payload["skipped"]), 1)
+
+    def test_infers_attacker_ip_for_port_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "2026-09-04"
+            _write_day_transcripts(logs)
+            sysmon = root / "sysmon.evtx"
+            sysmon.write_bytes(b"evtx")
+            pcap = root / "mix.pcapng"
+            pcap.write_bytes(b"pcap")
+            args = mock.Mock(
+                evtx=sysmon,
+                security_evtx=None,
+                dc_security_evtx=None,
+                pcap=pcap,
+                out_dir=None,
+                date="2026-09-04",
+                tshark="tshark",
+                wevtutil="wevtutil",
+                tuples_name="tuples.json",
+                lab_nets=["172.16.24.0/24"],
+                since="",
+                until="",
+                task_md=None,
+                include_unlogged_scan=False,
+                attacker_ip="",
+                no_require_cmdline=False,
+            )
+            with mock.patch(
+                "dataset_processor.extract.resolve_day_logs_dir",
+                return_value=logs,
+            ):
+                payload = run_extract(
+                    args,
+                    config={},
+                    run_fn=_extract_fake_run(_epoch_field_line()),
+                )
+            self.assertEqual(payload["attacker_ip"], "172.16.24.10")
+            scan = next(item for item in payload["tasks"] if item["technique"] == "discovery.port-scan")
+            self.assertIn("icmp", scan["display_filter"])
+            self.assertNotIn("warnings", scan)
+
+    def test_scan_without_ip_still_writes_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "2026-09-04"
+            _write_day_transcripts(logs)
+            sysmon = root / "sysmon.evtx"
+            sysmon.write_bytes(b"evtx")
+            pcap = root / "mix.pcapng"
+            pcap.write_bytes(b"pcap")
+
+            def no_connects(args, **_kwargs):
+                cmd = [str(part) for part in args]
+                if "qe" in cmd:
+                    return mock.Mock(returncode=0, stdout=EID1, stderr="")
+                if "epl" in cmd:
+                    dest = Path(cmd[3])
+                    dest.write_bytes(b"evtx")
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                if "-T" in cmd:
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                if "-w" in cmd:
+                    dest = Path(cmd[cmd.index("-w") + 1])
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(b"pcap")
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            args = mock.Mock(
+                evtx=sysmon,
+                security_evtx=None,
+                dc_security_evtx=None,
+                pcap=pcap,
+                out_dir=None,
+                date="2026-09-04",
+                tshark="tshark",
+                wevtutil="wevtutil",
+                tuples_name="tuples.json",
+                lab_nets=["172.16.24.0/24"],
+                since="",
+                until="",
+                task_md=None,
+                include_unlogged_scan=False,
+                attacker_ip="",
+                no_require_cmdline=False,
+            )
+            with mock.patch(
+                "dataset_processor.extract.resolve_day_logs_dir",
+                return_value=logs,
+            ):
+                payload = run_extract(args, config={}, run_fn=no_connects)
+            scan = next(item for item in payload["tasks"] if item["technique"] == "discovery.port-scan")
+            self.assertIsNone(scan["pcap"])
+            self.assertTrue(Path(scan["sysmon"]).is_file())
+            self.assertIn("unlogged scan omitted", scan["warnings"])
+            self.assertIn("empty pcap filter skipped", scan["warnings"])
+            skipped_reasons = [item["reason"] for item in payload["skipped"]]
+            self.assertTrue(all("attacker-ip" not in reason for reason in skipped_reasons))
+
+    def test_empty_evtx_window_does_not_fail_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "2026-09-04"
+            _write_day_transcripts(logs)
+            sysmon = root / "sysmon.evtx"
+            sysmon.write_bytes(b"evtx")
+            pcap = root / "mix.pcapng"
+            pcap.write_bytes(b"pcap")
+            args = mock.Mock(
+                evtx=sysmon,
+                security_evtx=None,
+                dc_security_evtx=None,
+                pcap=pcap,
+                out_dir=None,
+                date="2026-09-04",
+                tshark="tshark",
+                wevtutil="wevtutil",
+                tuples_name="tuples.json",
+                lab_nets=["172.16.24.0/24"],
+                since="",
+                until="",
+                task_md=None,
+                include_unlogged_scan=False,
+                attacker_ip="172.16.24.10",
+                no_require_cmdline=False,
+            )
+            with mock.patch(
+                "dataset_processor.extract.resolve_day_logs_dir",
+                return_value=logs,
+            ):
+                payload = run_extract(
+                    args,
+                    config={},
+                    run_fn=_extract_fake_run(_epoch_field_line(), empty_epl=True),
+                )
+            self.assertTrue(payload["ok"])
+            brute = next(item for item in payload["tasks"] if item["technique"] == "credential.brute-user")
+            self.assertIsNone(brute["sysmon"])
+            self.assertIn("sysmon: no events were found", brute["warnings"])
 
 
 if __name__ == "__main__":

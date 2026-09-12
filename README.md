@@ -134,7 +134,7 @@ Each attacker task object has:
 - `started_at`
 - `completed_at`
 
-Per-task OpenCode transcripts and log captures live under `attacker/logs/YYYY-MM-DD/`: `{task_id}.md` and `{task_id}_{technique}_{channel}.evtx`. Live tshark is disabled. After the day, slice the domain SPAN with `attacker extract --date YYYY-MM-DD --evtx <sysmon.evtx> --pcap <span.pcapng>` to write `{task_id}_{technique}.pcapng` per technique.
+Per-task OpenCode transcripts live under `attacker/logs/YYYY-MM-DD/` as `{task_id}.md`. Live tshark is disabled. After the day, `python -m dataset_processor --date YYYY-MM-DD` (or the `attacker extract` wrapper) copies malicious and benign slices from the domain SPAN and the day's Sysmon/Security evtx by each transcript's time window into `{task_id}_{technique}.pcapng` plus `{task_id}_{technique}_{Sysmon,Security,DC_Security}.evtx`. The mixed SPAN pcap itself is not modified.
 
 ### Shared Task File
 
@@ -332,7 +332,7 @@ At local 00:00 the collector exports the **previous calendar day** (00:00–24:0
 - `sysmon_YYYY-MM-DD.evtx` — Sysmon Operational (all events in that day window)
 - `security_logon_YYYY-MM-DD.evtx` — Security **logon/auth subset only** (4624/4625/4768/4769/4776 and related IDs), not the full Security log
 
-If Sysmon is not running when observed, midnight export still continues for both channels. `attacker extract` does not read these paths automatically; pass the Sysmon file as `--evtx`. Security evtx is dataset evidence and is not used to slice pcaps.
+If Sysmon is not running when observed, midnight export still continues for both channels. `python -m dataset_processor` / `attacker extract` does not discover these paths automatically: pass the attacker Sysmon file as `--evtx`. Optional `--security-evtx` / `--dc-security-evtx` slice the day's Security (or `security_logon`) evtx by the same task time windows; omit them to skip Security exports.
 
 #### Start commander
 
@@ -382,11 +382,22 @@ attacker breaker reset --task
 
 `attacker build` reinstalls skills from the packaged template, so installed APT `state.json` / `changes.json` match the empty baseline in `attacker/skills/ad-attack/`. `attacker breaker reset --all` (also the default if you omit `--all` / `--task`) deletes today's `attacker/role_task/tasks_MM-DD.json` and rewrites `state.json` plus `changes.json` to empty baselines in both the packaged skill and `~/.config/opencode/skills/ad-attack/` when those directories exist. It does **not** revert Active Directory; use `changes.json` as the operator checklist. `attacker breaker reset --task` only deletes the day's task file. Pass `--date YYYY-MM-DD` to target another calendar day.
 
-After you have that day's domain SPAN pcap and the attacker Sysmon evtx, slice one malicious pcap per technique (names match `{task_id}_{technique}.pcapng`). Time windows come from each `{task_id}.md` `started_at` / `completed_at`. `discovery.host-scan` / `discovery.port-scan` also keep ICMP/ARP/bare SYN when `--attacker-ip` (or `extract.attacker_ip` in `attacker/config.json`) is set:
+After you have that day's domain SPAN pcap and the attacker Sysmon evtx, copy one malicious pcap **and** matching Sysmon/Security evtx per technique, plus a day-level `benign.pcapng` (mixed minus malicious; TCP only when the stream has SYN and FIN/RST). The mixed SPAN file is read-only. Time windows come from each `{task_id}.md` `started_at` / `completed_at`. `discovery.host-scan` / `discovery.port-scan` also keep ICMP/ARP/bare SYN from the attacker IP (CLI, `extract.attacker_ip`, or inferred from Sysmon EID 3):
 
 ```bash
-attacker extract --date 2026-09-06 --evtx sysmon.evtx --pcap span.pcapng --attacker-ip 172.16.24.202
+python -m dataset_processor export-evtx --evtx sysmon.evtx --out-dir xml
+python -m dataset_processor extract --date 2026-09-06 --evtx sysmon.evtx --pcap span.pcapng --attacker-ip 172.16.24.202
+python -m dataset_processor extract --date 2026-09-11 \
+  --evtx attacker/sysmon_2026-09-11.evtx \
+  --security-evtx attacker/security_logon_2026-09-11.evtx \
+  --dc-security-evtx DC/security_logon_2026-09-11.evtx \
+  --pcap span.pcap \
+  --transcripts-dir attacker/2026-09-11 \
+  --out-dir attacker/2026-09-11 \
+  --attacker-ip 172.16.24.202
 ```
+
+`attacker extract` and `dataset-extract` accept the same flags. See `dataset_processor/README.md`.
 
 ### 4. Common Utility Commands
 
@@ -617,12 +628,13 @@ Attacker records live under `attacker/logs/`:
 - `attacker_YYYY-MM-DD.log` — scheduler log (`time - LEVEL - logger - message`) for fill, wait, execute, and completion
 - `request_task_LLM_YYYY-MM-DD/{HHMMSS}_{batch}.md` — one markdown file per LLM fill request (system/user prompt plus response or error). Same-second collisions append `_2`
 - `YYYY-MM-DD/<task_id>.md` — Markdown transcript with YAML-like frontmatter (`started_at`, `completed_at`, `task`) and literal stdout/stderr (not JSON-escaped)
-- `YYYY-MM-DD/<task_id>_<technique>_{Sysmon,Security}.evtx` — per-task log window from `capture_logs.py`
-- `YYYY-MM-DD/<task_id>_<technique>.pcapng` — written later by `attacker extract --date`, not during the live task
+- `YYYY-MM-DD/<task_id>_<technique>.pcapng` — written by `python -m dataset_processor --date` (or `attacker extract`) as a **copy** from the domain SPAN; the mixed pcap is not modified
+- `YYYY-MM-DD/<task_id>_<technique>_{Sysmon,Security,DC_Security}.evtx` — written from the day's evtx using the same task time window (`--security-evtx` / `--dc-security-evtx` are optional)
+- `YYYY-MM-DD/benign.pcapng` — mixed minus malicious; incomplete TCP is omitted from this file only
 - `attacker/skills/ad-attack/changes.json` (and the installed OpenCode copy) — ledger of target-domain mutations for manual rollback; `attacker breaker reset --all` empties it together with `state.json`
 
 ```bash
-attacker extract --date 2026-09-06 --evtx sysmon.evtx --pcap span.pcapng --attacker-ip 172.16.24.202
+python -m dataset_processor extract --date 2026-09-06 --evtx sysmon.evtx --pcap span.pcapng --attacker-ip 172.16.24.202
 ```
 
 ## Important Notes
