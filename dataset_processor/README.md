@@ -59,6 +59,8 @@ Pass paths explicitly. The module does not search for evtx or pcap files.
 
 `--out-dir` must not resolve to the same file as `--pcap`. If it would, the command exits with an error.
 
+When a sibling `{task_id}.txt` sits next to the task markdown, extract **first** slices the mixed pcap to that task's time window, then applies the txt as a Wireshark display filter (`tshark -Y`). The txt is **only** the expression (no `tshark` command, no `frame.time_epoch`). `frame.number == 0` still skips writing a pcap. If the txt is missing, empty (other than the sentinel), rejected, or tshark fails, extract falls back to Sysmon 5-tuple matching.
+
 Tasks whose display filter matches nothing (`frame.number == 0`) **skip tshark** and do not write a pcap.
 
 ## 2. What extract writes

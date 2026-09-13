@@ -28,7 +28,7 @@ TIMEOUT_EXIT_CODE = 124
 MISSING_EXIT_CODE = 127
 COMMANDER_SMOKE_PROMPT = "Reply with exactly the word pong and stop."
 ATTACKER_SKILL_PROMPT = (
-    "Use the ad-attack skill: execute discovery.orientation against domain."
+    "Use the ad-discovery skill: execute discovery.orientation against domain."
 )
 OPENCODE_PERMISSION_ALLOW: dict[str, object] = {
     "*": "allow",

@@ -34,9 +34,12 @@ from attacker.extract_pcap import (
     parse_technique_id,
     parse_tshark_fields,
     processes_by_guid,
+    load_task_display_filter,
     run_extract,
     select_malicious_connects,
+    task_filter_is_forbidden,
     technique_pcap_stem,
+    time_window_display_filter,
     utc_query_bound,
 )
 
@@ -447,7 +450,7 @@ class ConfigAndCliTests(unittest.TestCase):
     def test_technique_id_and_stem(self) -> None:
         self.assertEqual(
             parse_technique_id(
-                "Use the ad-attack skill: execute discovery.port-scan against host 172.16.24.11."
+                "Use the ad-discovery skill: execute discovery.port-scan against host 172.16.24.11."
             ),
             "discovery.port-scan",
         )
@@ -862,6 +865,126 @@ class BatchEvtxAndScanTests(unittest.TestCase):
             brute = next(item for item in payload["tasks"] if item["technique"] == "credential.brute-user")
             self.assertIsNone(brute["sysmon"])
             self.assertIn("sysmon: no events were found", brute["warnings"])
+
+    def test_task_txt_filter_is_expression_only(self) -> None:
+        self.assertTrue(task_filter_is_forbidden("tshark -r mix.pcap -Y ip -w out.pcap"))
+        self.assertTrue(task_filter_is_forbidden("ip.src == 1.1.1.1 && frame.time_epoch >= 1"))
+        self.assertFalse(task_filter_is_forbidden("ip.addr == 172.16.24.10 && kerberos"))
+        window = time_window_display_filter(
+            datetime(2026, 9, 4, 4, 0, tzinfo=timezone.utc),
+            datetime(2026, 9, 4, 4, 2, tzinfo=timezone.utc),
+        )
+        self.assertIn("frame.time_epoch", window)
+
+    def test_batch_prefers_sibling_txt_then_time_slice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "2026-09-04"
+            _write_day_transcripts(logs)
+            expr = "ip.addr == 172.16.24.10 && ip.addr == 172.16.24.1 && kerberos"
+            (logs / "aaa111aaa111aaaa.txt").write_text(expr + "\n", encoding="utf-8")
+            xml_path = root / "sysmon.xml"
+            xml_path.write_text(EID1 + EID3, encoding="utf-8")
+            pcap = root / "mix.pcapng"
+            pcap.write_bytes(b"pcap")
+            y_filters: list[str] = []
+
+            def fake_run(args, **_kwargs):
+                cmd = [str(part) for part in args]
+                if "-T" in cmd and "fields" in cmd:
+                    return mock.Mock(returncode=0, stdout=_epoch_field_line(), stderr="")
+                if "-Y" in cmd and "-w" in cmd:
+                    y_filters.append(cmd[cmd.index("-Y") + 1])
+                    dest = Path(cmd[cmd.index("-w") + 1])
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(b"pcap")
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            args = mock.Mock(
+                evtx=xml_path,
+                pcap=pcap,
+                out_dir=None,
+                date="2026-09-04",
+                tshark="tshark",
+                wevtutil="wevtutil",
+                tuples_name="tuples.json",
+                lab_nets=["172.16.24.0/24"],
+                since="",
+                until="",
+                task_md=None,
+                include_unlogged_scan=False,
+                attacker_ip="172.16.24.10",
+                no_require_cmdline=False,
+            )
+            with mock.patch(
+                "dataset_processor.extract.resolve_day_logs_dir",
+                return_value=logs,
+            ):
+                payload = run_extract(args, config={}, run_fn=fake_run)
+            brute = next(item for item in payload["tasks"] if item["technique"] == "credential.brute-user")
+            scan = next(item for item in payload["tasks"] if item["technique"] == "discovery.port-scan")
+            self.assertEqual(brute["filter_source"], "task_txt")
+            self.assertEqual(brute["display_filter"], expr)
+            self.assertEqual(scan["filter_source"], "sysmon")
+            self.assertTrue(any(item == expr for item in y_filters))
+            self.assertTrue(any("frame.time_epoch" in item for item in y_filters))
+            self.assertFalse("frame.time_epoch" in expr)
+            self.assertEqual(load_task_display_filter(logs / "aaa111aaa111aaaa.md"), expr)
+
+    def test_batch_skips_sentinel_txt_and_falls_back_on_tshark_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "2026-09-04"
+            _write_day_transcripts(logs)
+            (logs / "aaa111aaa111aaaa.txt").write_text("frame.number == 0\n", encoding="utf-8")
+            (logs / "bbb222bbb222bbbb.txt").write_text(
+                "ip.src == 172.16.24.10 && tcp\n", encoding="utf-8"
+            )
+            xml_path = root / "sysmon.xml"
+            xml_path.write_text(EID1 + EID3, encoding="utf-8")
+            pcap = root / "mix.pcapng"
+            pcap.write_bytes(b"pcap")
+
+            def fake_run(args, **_kwargs):
+                cmd = [str(part) for part in args]
+                if "-T" in cmd and "fields" in cmd:
+                    return mock.Mock(returncode=0, stdout=_epoch_field_line(), stderr="")
+                if "-Y" in cmd and "-w" in cmd:
+                    filt = cmd[cmd.index("-Y") + 1]
+                    if "tcp" in filt and "frame.time_epoch" not in filt:
+                        return mock.Mock(returncode=1, stdout="", stderr="display filter is invalid")
+                    dest = Path(cmd[cmd.index("-w") + 1])
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(b"pcap")
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            args = mock.Mock(
+                evtx=xml_path,
+                pcap=pcap,
+                out_dir=None,
+                date="2026-09-04",
+                tshark="tshark",
+                wevtutil="wevtutil",
+                tuples_name="tuples.json",
+                lab_nets=["172.16.24.0/24"],
+                since="",
+                until="",
+                task_md=None,
+                include_unlogged_scan=False,
+                attacker_ip="172.16.24.10",
+                no_require_cmdline=False,
+            )
+            with mock.patch(
+                "dataset_processor.extract.resolve_day_logs_dir",
+                return_value=logs,
+            ):
+                payload = run_extract(args, config={}, run_fn=fake_run)
+            brute = next(item for item in payload["tasks"] if item["technique"] == "credential.brute-user")
+            scan = next(item for item in payload["tasks"] if item["technique"] == "discovery.port-scan")
+            self.assertEqual(brute["filter_source"], "task_txt")
+            self.assertIsNone(brute["pcap"])
+            self.assertEqual(scan["filter_source"], "sysmon")
+            self.assertTrue(any("task txt tshark failed" in w for w in scan.get("warnings") or []))
 
 
 if __name__ == "__main__":

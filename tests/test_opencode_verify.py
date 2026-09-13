@@ -137,7 +137,10 @@ class PromptPickerTests(unittest.TestCase):
 
     def test_attacker_uses_discovery_orientation(self) -> None:
         pack = REPO_ROOT / "attacker" / "skills"
-        prompt, reason = select_skill_prompt("ad-attack", pack)
+        shared, shared_skip = select_skill_prompt("ad-attack", pack)
+        self.assertIsNone(shared)
+        self.assertIn("no opencode run example", shared_skip or "")
+        prompt, reason = select_skill_prompt("ad-discovery", pack)
         self.assertIsNone(reason)
         self.assertEqual(prompt, ATTACKER_SKILL_PROMPT)
 

@@ -214,4 +214,11 @@ def execute_task(
         },
     )
     logger.info("Wrote task record %s", record_path)
+    filter_path = record_path.with_suffix(".txt")
+    try:
+        filter_text = filter_path.read_text(encoding="utf-8").strip() if filter_path.is_file() else ""
+    except OSError:
+        filter_text = ""
+    if not filter_text:
+        logger.warning("Missing task display filter %s", filter_path)
     return item

@@ -1,8 +1,8 @@
-# ad-attack Prompt Invocation Template
+# Attacker Prompt Invocation Template
 
 This is a **command reference for the human operator / task scheduler**. It tells you the exact `opencode run "..."` text to issue in order to instruct the attacker agent.
 
-The agent's role definition and its mandatory execution protocol (pre-flight check, read state, bracket each action with capture, write back, rollback) live in `attacker/skills/ad-attack/SKILL.md` and are applied automatically by opencode. You do **not** repeat them in the task text — you only select the technique and the objects.
+The mandatory execution protocol (pre-flight check, read state, bracket each action with capture, write back, rollback, display-filter file) lives in `attacker/skills/ad-attack/SKILL.md`. Technique catalogs live in the phase skills (`ad-discovery`, `ad-credential`, `ad-lateral`, `ad-collection`, `ad-persistence`). You do **not** repeat protocol in the task text — you only select the phase skill, the technique, and the objects.
 
 ## 1. How the command reaches the agent
 
@@ -13,13 +13,15 @@ The agent's role definition and its mandatory execution protocol (pre-flight che
    opencode run "<task text>"
    ```
 
-   opencode loads the `ad-attack` skill, reads `state.json`, resolves the object references, and runs the technique.
+   opencode loads the phase skill named in the task, reads `state.json` from the shared `ad-attack` runtime, resolves the object references, and runs the technique.
 
 ## 2. Canonical object-based form
 
 ```
-Use the ad-attack skill: using the <field> of <object>, execute <technique-id> against <target-ref>.
+Use the <phase-skill> skill: using the <field> of <object>, execute <technique-id> against <target-ref>.
 ```
+
+`<phase-skill>` follows the technique id prefix: `discovery.*` → `ad-discovery`, `credential.*` → `ad-credential`, `lateral.*` → `ad-lateral`, `collection.*` → `ad-collection`, `persistence.*` → `ad-persistence`.
 
 Reference grammar:
 
@@ -135,71 +137,71 @@ After the seed, keep rotating toward the campaign goal. Map intents to catalog i
 ### Discovery
 
 ```
-opencode run "Use the ad-attack skill: execute discovery.orientation against domain."
-opencode run "Use the ad-attack skill: execute discovery.host-scan against subnet 172.16.24.0/24."
-opencode run "Use the ad-attack skill: execute discovery.port-scan against host 172.16.24.11."
-opencode run "Use the ad-attack skill: execute discovery.host-identify against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the usernames of wordlists, execute discovery.user-enum-kerbrute against domain."
-opencode run "Use the ad-attack skill: using the password of user alice, execute discovery.user-enum-ldap against domain."
-opencode run "Use the ad-attack skill: using the password of user alice, execute discovery.user-enum-sid against domain."
-opencode run "Use the ad-attack skill: using the password of user alice, execute discovery.share-enum against host 172.16.24.11."
-opencode run "Use the ad-attack skill: execute discovery.group-enum against domain."
-opencode run "Use the ad-attack skill: execute discovery.password-policy against domain."
-opencode run "Use the ad-attack skill: execute discovery.trust-enum against domain."
-opencode run "Use the ad-attack skill: execute discovery.security-software against domain."
-opencode run "Use the ad-attack skill: execute discovery.local-groups against domain."
-opencode run "Use the ad-attack skill: using the password of user alice, execute discovery.bloodhound against domain."
+opencode run "Use the ad-discovery skill: execute discovery.orientation against domain."
+opencode run "Use the ad-discovery skill: execute discovery.host-scan against subnet 172.16.24.0/24."
+opencode run "Use the ad-discovery skill: execute discovery.port-scan against host 172.16.24.11."
+opencode run "Use the ad-discovery skill: execute discovery.host-identify against host 172.16.24.11."
+opencode run "Use the ad-discovery skill: using the usernames of wordlists, execute discovery.user-enum-kerbrute against domain."
+opencode run "Use the ad-discovery skill: using the password of user alice, execute discovery.user-enum-ldap against domain."
+opencode run "Use the ad-discovery skill: using the password of user alice, execute discovery.user-enum-sid against domain."
+opencode run "Use the ad-discovery skill: using the password of user alice, execute discovery.share-enum against host 172.16.24.11."
+opencode run "Use the ad-discovery skill: execute discovery.group-enum against domain."
+opencode run "Use the ad-discovery skill: execute discovery.password-policy against domain."
+opencode run "Use the ad-discovery skill: execute discovery.trust-enum against domain."
+opencode run "Use the ad-discovery skill: execute discovery.security-software against domain."
+opencode run "Use the ad-discovery skill: execute discovery.local-groups against domain."
+opencode run "Use the ad-discovery skill: using the password of user alice, execute discovery.bloodhound against domain."
 ```
 
 ### Credential Access
 
 ```
-opencode run "Use the ad-attack skill: using the usernames of wordlists, execute credential.password-spray against domain."
-opencode run "Use the ad-attack skill: using the passwords of wordlists, execute credential.brute-user against domain."
-opencode run "Use the ad-attack skill: using the passwords of wordlists, execute credential.brute-force against domain."
-opencode run "Use the ad-attack skill: using the usernames of wordlists, execute credential.asrep-roast against domain."
-opencode run "Use the ad-attack skill: using the password of user alice, execute credential.kerberoast against domain."
-opencode run "Use the ad-attack skill: using the password of user alice, execute credential.dump-secrets against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the ntlm_hash of user admin, execute credential.dcsync against domain."
-opencode run "Use the ad-attack skill: using the password of user alice, execute credential.gpp-password against domain."
-opencode run "Use the ad-attack skill: using the password of user admin, execute credential.lsass-dump against host 172.16.24.11."
+opencode run "Use the ad-credential skill: using the usernames of wordlists, execute credential.password-spray against domain."
+opencode run "Use the ad-credential skill: using the passwords of wordlists, execute credential.brute-user against domain."
+opencode run "Use the ad-credential skill: using the passwords of wordlists, execute credential.brute-force against domain."
+opencode run "Use the ad-credential skill: using the usernames of wordlists, execute credential.asrep-roast against domain."
+opencode run "Use the ad-credential skill: using the password of user alice, execute credential.kerberoast against domain."
+opencode run "Use the ad-credential skill: using the password of user alice, execute credential.dump-secrets against host 172.16.24.11."
+opencode run "Use the ad-credential skill: using the ntlm_hash of user admin, execute credential.dcsync against domain."
+opencode run "Use the ad-credential skill: using the password of user alice, execute credential.gpp-password against domain."
+opencode run "Use the ad-credential skill: using the password of user admin, execute credential.lsass-dump against host 172.16.24.11."
 ```
 
 ### Lateral Movement
 
 ```
-opencode run "Use the ad-attack skill: using the ntlm_hash of user svc_backup, execute lateral.pth-psexec against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the ntlm_hash of user svc_backup, execute lateral.pth-wmiexec against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the ntlm_hash of user svc_backup, execute lateral.pth-smbexec against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the ntlm_hash of user administrator, execute lateral.overpass-the-hash against domain."
-opencode run "Use the ad-attack skill: using the password of user alice, execute lateral.exec-wmiexec against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the password of user alice, execute lateral.exec-smbexec against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the password of user alice, execute lateral.exec-psexec against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the password of user alice, execute lateral.exec-dcomexec against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the password of user alice, execute lateral.exec-atexec against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the password of user alice, execute lateral.delegation-enum against domain."
-opencode run "Use the ad-attack skill: using the password of user svc_sql, execute lateral.delegation-s4u against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the ccache_file of ticket tgt[0], execute lateral.pass-the-ticket against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the tools of campaign, execute lateral.tool-transfer against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the password of user alice, execute lateral.exec-winrm against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the password of user alice, execute lateral.exec-schtasks against host 172.16.24.11."
+opencode run "Use the ad-lateral skill: using the ntlm_hash of user svc_backup, execute lateral.pth-psexec against host 172.16.24.11."
+opencode run "Use the ad-lateral skill: using the ntlm_hash of user svc_backup, execute lateral.pth-wmiexec against host 172.16.24.11."
+opencode run "Use the ad-lateral skill: using the ntlm_hash of user svc_backup, execute lateral.pth-smbexec against host 172.16.24.11."
+opencode run "Use the ad-lateral skill: using the ntlm_hash of user administrator, execute lateral.overpass-the-hash against domain."
+opencode run "Use the ad-lateral skill: using the password of user alice, execute lateral.exec-wmiexec against host 172.16.24.11."
+opencode run "Use the ad-lateral skill: using the password of user alice, execute lateral.exec-smbexec against host 172.16.24.11."
+opencode run "Use the ad-lateral skill: using the password of user alice, execute lateral.exec-psexec against host 172.16.24.11."
+opencode run "Use the ad-lateral skill: using the password of user alice, execute lateral.exec-dcomexec against host 172.16.24.11."
+opencode run "Use the ad-lateral skill: using the password of user alice, execute lateral.exec-atexec against host 172.16.24.11."
+opencode run "Use the ad-lateral skill: using the password of user alice, execute lateral.delegation-enum against domain."
+opencode run "Use the ad-lateral skill: using the password of user svc_sql, execute lateral.delegation-s4u against host 172.16.24.11."
+opencode run "Use the ad-lateral skill: using the ccache_file of ticket tgt[0], execute lateral.pass-the-ticket against host 172.16.24.11."
+opencode run "Use the ad-lateral skill: using the tools of campaign, execute lateral.tool-transfer against host 172.16.24.11."
+opencode run "Use the ad-lateral skill: using the password of user alice, execute lateral.exec-winrm against host 172.16.24.11."
+opencode run "Use the ad-lateral skill: using the password of user alice, execute lateral.exec-schtasks against host 172.16.24.11."
 ```
 
 ### Collection
 
 ```
-opencode run "Use the ad-attack skill: using the password of user alice, execute collection.share-download against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the password of user alice, execute collection.local-file against host 172.16.24.11."
-opencode run "Use the ad-attack skill: execute collection.archive against domain."
+opencode run "Use the ad-collection skill: using the password of user alice, execute collection.share-download against host 172.16.24.11."
+opencode run "Use the ad-collection skill: using the password of user alice, execute collection.local-file against host 172.16.24.11."
+opencode run "Use the ad-collection skill: execute collection.archive against domain."
 ```
 
 ### Persistence
 
 ```
-opencode run "Use the ad-attack skill: using the ntlm_hash of user krbtgt, execute persistence.golden-ticket against domain."
-opencode run "Use the ad-attack skill: using the ntlm_hash of user svc_sql, execute persistence.silver-ticket against host 172.16.24.11."
-opencode run "Use the ad-attack skill: using the machine_account of campaign, execute persistence.add-computer against domain."
-opencode run "Use the ad-attack skill: using the password of user admin, execute persistence.service against host 172.16.24.11."
+opencode run "Use the ad-persistence skill: using the ntlm_hash of user krbtgt, execute persistence.golden-ticket against domain."
+opencode run "Use the ad-persistence skill: using the ntlm_hash of user svc_sql, execute persistence.silver-ticket against host 172.16.24.11."
+opencode run "Use the ad-persistence skill: using the machine_account of campaign, execute persistence.add-computer against domain."
+opencode run "Use the ad-persistence skill: using the password of user admin, execute persistence.service against host 172.16.24.11."
 ```
 
 > `persistence.rbcd` and `persistence.reset-password` are forbidden (in-place modification of an existing AD account); never emit them.

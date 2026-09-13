@@ -270,6 +270,27 @@ class ExecutionLogTests(unittest.TestCase):
                 self.assertNotIn(f"{key}:", yaml_block)
             self.assertNotIn("\\n", text.split("## Output", 1)[1])
             self.assertFalse(list(logs_dir.glob("*.jsonl")))
+            self.assertFalse((path.with_suffix(".txt")).is_file())
+
+    def test_execute_task_warns_when_filter_txt_missing(self) -> None:
+        item = {
+            "task": "run discovery",
+            "planned_time": "09:15",
+            "started_at": "",
+            "completed_at": "",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_dir = Path(tmp)
+            with self.assertLogs("attacker.execute", level="WARNING") as logged:
+                execute_task(
+                    item,
+                    logs_dir=logs_dir,
+                    timeout_seconds=30,
+                    now=_now(9, 16),
+                    runner=lambda _task, _timeout: (0, "agent output"),
+                    day=datetime(2026, 8, 23).date(),
+                )
+            self.assertTrue(any("Missing task display filter" in line for line in logged.output))
 
     def test_execute_task_completed_at_is_not_copied_from_now(self) -> None:
         item = {
@@ -1129,6 +1150,8 @@ class GenerationMessageTests(unittest.TestCase):
         system_prompt, prompt_template, state = load_generation_resources()
         self.assertIn("automated planner", system_prompt.lower())
         self.assertIn("ad-attack", prompt_template)
+        self.assertIn("ad-discovery", prompt_template)
+        self.assertIn("ad-credential", prompt_template)
         self.assertIsInstance(state, dict)
         self.assertIn("| id | requires | does | writes |", prompt_template)
         self.assertIn("requires", system_prompt)

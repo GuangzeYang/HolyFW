@@ -56,6 +56,10 @@ from dataset_processor.extract import (
     utc_query_bound,
     write_filtered_pcap,
     write_pcap_from_filters,
+    apply_task_txt_filter,
+    load_task_display_filter,
+    task_filter_is_forbidden,
+    time_window_display_filter,
 )
 from dataset_processor.paths import technique_pcap_stem
 
@@ -110,4 +114,8 @@ __all__ = [
     "utc_query_bound",
     "write_filtered_pcap",
     "write_pcap_from_filters",
+    "apply_task_txt_filter",
+    "load_task_display_filter",
+    "task_filter_is_forbidden",
+    "time_window_display_filter",
 ]

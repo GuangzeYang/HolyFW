@@ -856,6 +856,74 @@ def is_empty_display_filter(display_filter: str) -> bool:
     return str(display_filter or "").strip() == EMPTY_DISPLAY_FILTER
 
 
+_TASK_FILTER_FORBIDDEN = re.compile(
+    r"tshark|\b-r\b|\b-Y\b|\b-w\b|frame\.time_epoch|frame\.time\b",
+    re.IGNORECASE,
+)
+
+
+def task_filter_path(md_path: Path) -> Path:
+    return Path(md_path).with_suffix(".txt")
+
+
+def load_task_display_filter(md_path: Path) -> str:
+    path = task_filter_path(md_path)
+    if not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return " ".join(text.split())
+
+
+def task_filter_is_forbidden(expression: str) -> bool:
+    return bool(_TASK_FILTER_FORBIDDEN.search(str(expression or "")))
+
+
+def time_window_display_filter(since: datetime, until: datetime) -> str:
+    return (
+        f"frame.time_epoch >= {since.timestamp():.6f} && "
+        f"frame.time_epoch <= {until.timestamp():.6f}"
+    )
+
+
+def apply_task_txt_filter(
+    pcap: Path,
+    dest: Path,
+    *,
+    since: datetime,
+    until: datetime,
+    expression: str,
+    tshark: str,
+    run_fn: RunFn,
+) -> Path:
+    """Slice ``pcap`` to the task window, then apply ``expression`` as ``-Y``."""
+    window = dest.with_name(dest.stem + ".window" + dest.suffix)
+    try:
+        write_filtered_pcap(
+            pcap,
+            time_window_display_filter(since, until),
+            window,
+            tshark=tshark,
+            run_fn=run_fn,
+        )
+        write_filtered_pcap(
+            window,
+            expression,
+            dest,
+            tshark=tshark,
+            run_fn=run_fn,
+        )
+    finally:
+        if window.exists() and not same_pcap_path(window, dest) and not same_pcap_path(window, pcap):
+            try:
+                window.unlink()
+            except OSError:
+                pass
+    return dest
+
+
 def maybe_write_filtered_pcap(
     pcap: Path,
     display_filter: str,
@@ -1264,14 +1332,46 @@ def run_extract_batch(
             dropped_incomplete.extend(dropped)
         stem = technique_pcap_stem(task_id, technique)
         dest = out_dir / f"{stem}.pcapng"
-        if is_empty_display_filter(display_filter):
+        filter_source = "sysmon"
+        txt_filter = load_task_display_filter(md_path)
+        if txt_filter and task_filter_is_forbidden(txt_filter):
+            warnings.append("task txt filter rejected")
+            txt_filter = ""
+        written: Path | None = None
+        if txt_filter and is_empty_display_filter(txt_filter):
+            filter_source = "task_txt"
+            display_filter = txt_filter
             print(f"skipping {dest.name} (empty filter)", flush=True)
             warnings.append("empty pcap filter skipped")
-        else:
-            print(f"extracting {dest.name}", flush=True)
-        written = maybe_write_filtered_pcap(
-            pcap, display_filter, dest, tshark=tshark, run_fn=run_fn
-        )
+            written = maybe_write_filtered_pcap(
+                pcap, display_filter, dest, tshark=tshark, run_fn=run_fn
+            )
+        elif txt_filter:
+            try:
+                print(f"extracting {dest.name} from task txt", flush=True)
+                written = apply_task_txt_filter(
+                    pcap,
+                    dest,
+                    since=since,
+                    until=until,
+                    expression=txt_filter,
+                    tshark=tshark,
+                    run_fn=run_fn,
+                )
+                filter_source = "task_txt"
+                display_filter = txt_filter
+            except RuntimeError as exc:
+                warnings.append(f"task txt tshark failed: {exc}")
+                txt_filter = ""
+        if filter_source == "sysmon":
+            if is_empty_display_filter(display_filter):
+                print(f"skipping {dest.name} (empty filter)", flush=True)
+                warnings.append("empty pcap filter skipped")
+            else:
+                print(f"extracting {dest.name}", flush=True)
+            written = maybe_write_filtered_pcap(
+                pcap, display_filter, dest, tshark=tshark, run_fn=run_fn
+            )
         evtx_paths, evtx_warnings = export_task_evtx_files(
             stem=stem,
             out_dir=out_dir,
@@ -1290,6 +1390,8 @@ def run_extract_batch(
             technique=technique,
             complete_tcp=complete_ids,
         )
+        for row in records:
+            row["filter_source"] = filter_source
         all_records.extend(records)
         all_tcp.extend(
             item.tcp_stream
@@ -1312,6 +1414,7 @@ def run_extract_batch(
             "dc_security": evtx_paths["dc_security"],
             "connects": len(records),
             "display_filter": display_filter,
+            "filter_source": filter_source,
         }
         if warnings:
             task_row["warnings"] = warnings

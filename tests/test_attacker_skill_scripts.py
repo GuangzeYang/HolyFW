@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -193,3 +194,37 @@ class CaptureLogsElevateTests(unittest.TestCase):
             payload = json.loads(buf.getvalue())
             self.assertTrue(payload["errors"])
             self.assertIn("campaign.local_admin_account", payload["errors"][0])
+
+
+class WriteFilterTests(unittest.TestCase):
+    def test_writes_task_id_txt(self) -> None:
+        mod = _load_script("write_filter.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                "HOLYFW_ATTACKER_TASK_ID": "abc123abc123abcd",
+                "HOLYFW_ATTACKER_OUTPUT_DIR": tmp,
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                rc = mod.main(["--expression", "ip.addr == 172.16.24.10 && kerberos"])
+            self.assertEqual(rc, 0)
+            dest = Path(tmp) / "abc123abc123abcd.txt"
+            self.assertEqual(dest.read_text(encoding="utf-8").strip(), "ip.addr == 172.16.24.10 && kerberos")
+
+    def test_rejects_empty_and_command_or_time(self) -> None:
+        mod = _load_script("write_filter.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                "HOLYFW_ATTACKER_TASK_ID": "abc123abc123abcd",
+                "HOLYFW_ATTACKER_OUTPUT_DIR": tmp,
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                self.assertEqual(mod.main(["--expression", "   "]), 1)
+                self.assertEqual(
+                    mod.main(["--expression", "tshark -r mix.pcapng -Y ip -w out.pcapng"]),
+                    1,
+                )
+                self.assertEqual(
+                    mod.main(["--expression", "ip.src == 1.1.1.1 && frame.time_epoch >= 1"]),
+                    1,
+                )
+            self.assertFalse((Path(tmp) / "abc123abc123abcd.txt").exists())

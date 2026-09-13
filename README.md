@@ -92,7 +92,12 @@ HolyFramework/
 │   ├── opencode.json                      # Attacker permission only (no MCP, no custom LLM providers)
 │   ├── generator_system.md                # Task-generation system prompt
 │   ├── attacker_prompt_template.md        # Task-string grammar for the generator
-│   ├── skills/ad-attack/                  # Attacker OpenCode skill pack
+│   ├── skills/ad-attack/                  # Shared attacker runtime (state, scripts)
+│   ├── skills/ad-discovery/               # Discovery-phase OpenCode skill
+│   ├── skills/ad-credential/              # Credential-access OpenCode skill
+│   ├── skills/ad-lateral/                 # Lateral-movement OpenCode skill
+│   ├── skills/ad-collection/              # Collection-phase OpenCode skill
+│   ├── skills/ad-persistence/             # Persistence-phase OpenCode skill
 │   ├── config.json                        # Time model, batch size, and model settings
 │   ├── role_task/                         # Daily attacker task lists
 │   └── logs/                              # Scheduler log plus dated dataset folders
@@ -272,14 +277,14 @@ Roles: `hr`, `accountancy`, `manager`, `programmer`, `victim`.
 
 #### Install OpenCode skills on an attacker host
 
-Copies skills from `attacker/skills/` into `~/.config/opencode/skills/` and overwrites the installed `ad-attack` tree from that template (including empty `state.json` / `changes.json`). Writes `~/.config/opencode/opencode.json` from `attacker/opencode.json` (permission only; no MCP and no custom LLM `provider` block), and writes `~/.config/opencode/AGENTS.md` from `attacker/AGENTS.md`. Stops leftover `opencode.exe` and deletes the same OpenCode runtime cache/data/`auth.json` paths as `soldier build`. Does not install Playwright. Run once on the attacker host:
+Copies skills from `attacker/skills/` into `~/.config/opencode/skills/` and overwrites the installed `ad-attack` runtime plus phase skills (`ad-discovery`, `ad-credential`, `ad-lateral`, `ad-collection`, `ad-persistence`) from that template (including empty `state.json` / `changes.json` in `ad-attack`). Writes `~/.config/opencode/opencode.json` from `attacker/opencode.json` (permission only; no MCP and no custom LLM `provider` block), and writes `~/.config/opencode/AGENTS.md` from `attacker/AGENTS.md`. Stops leftover `opencode.exe` and deletes the same OpenCode runtime cache/data/`auth.json` paths as `soldier build`. Does not install Playwright. Run once on the attacker host:
 
 ```bash
 attacker build
 attacker build --test
 ```
 
-`--test` checks that OpenCode loads and runs the `ad-attack` representative prompt (`discovery.orientation`). `soldier build attacker` is rejected; soldier is for office roles and victim only.
+`--test` checks that OpenCode loads each installed attacker skill. `ad-attack` (shared runtime) has no live prompt. Phase skills use `attacker/skills/PROMPT_TEMPLATES.md` (`discovery.orientation` for `ad-discovery`). `soldier build attacker` is rejected; soldier is for office roles and victim only.
 
 #### Write DeepSeek provider env-key config on the commander host
 
