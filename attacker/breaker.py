@@ -52,6 +52,7 @@ BASELINE_STATE: dict[str, Any] = {
         "local_admin": {"username": "", "password": ""},
         "tools_dir": "tools",
         "tools": [],
+        "staging_dir": "",
     },
     "tickets": {"tgt": [], "service": [], "golden": [], "silver": []},
     "files": [],

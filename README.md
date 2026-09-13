@@ -95,8 +95,10 @@ HolyFramework/
 │   ├── skills/ad-attack/                  # Shared attacker runtime (state, scripts)
 │   ├── skills/ad-discovery/               # Discovery-phase OpenCode skill
 │   ├── skills/ad-credential/              # Credential-access OpenCode skill
+│   ├── skills/ad-privesc/                 # Privilege-escalation OpenCode skill
 │   ├── skills/ad-lateral/                 # Lateral-movement OpenCode skill
 │   ├── skills/ad-collection/              # Collection-phase OpenCode skill
+│   ├── skills/ad-exfil/                   # Exfiltration-phase OpenCode skill
 │   ├── skills/ad-persistence/             # Persistence-phase OpenCode skill
 │   ├── config.json                        # Time model, batch size, and model settings
 │   ├── role_task/                         # Daily attacker task lists
@@ -277,7 +279,7 @@ Roles: `hr`, `accountancy`, `manager`, `programmer`, `victim`.
 
 #### Install OpenCode skills on an attacker host
 
-Copies skills from `attacker/skills/` into `~/.config/opencode/skills/` and overwrites the installed `ad-attack` runtime plus phase skills (`ad-discovery`, `ad-credential`, `ad-lateral`, `ad-collection`, `ad-persistence`) from that template (including empty `state.json` / `changes.json` in `ad-attack`). Writes `~/.config/opencode/opencode.json` from `attacker/opencode.json` (permission only; no MCP and no custom LLM `provider` block), and writes `~/.config/opencode/AGENTS.md` from `attacker/AGENTS.md`. Stops leftover `opencode.exe` and deletes the same OpenCode runtime cache/data/`auth.json` paths as `soldier build`. Does not install Playwright. Run once on the attacker host:
+Copies skills from `attacker/skills/` into `~/.config/opencode/skills/` and overwrites the installed `ad-attack` runtime plus phase skills (`ad-discovery`, `ad-credential`, `ad-privesc`, `ad-lateral`, `ad-collection`, `ad-exfil`, `ad-persistence`) from that template (including empty `state.json` / `changes.json` in `ad-attack`). Writes `~/.config/opencode/opencode.json` from `attacker/opencode.json` (permission only; no MCP and no custom LLM `provider` block), and writes `~/.config/opencode/AGENTS.md` from `attacker/AGENTS.md`. Stops leftover `opencode.exe` and deletes the same OpenCode runtime cache/data/`auth.json` paths as `soldier build`. Does not install Playwright. Run once on the attacker host:
 
 ```bash
 attacker build

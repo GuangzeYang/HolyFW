@@ -2,7 +2,7 @@
 
 This is a **command reference for the human operator / task scheduler**. It tells you the exact `opencode run "..."` text to issue in order to instruct the attacker agent.
 
-The mandatory execution protocol (pre-flight check, read state, bracket each action with capture, write back, rollback, display-filter file) lives in `attacker/skills/ad-attack/SKILL.md`. Technique catalogs live in the phase skills (`ad-discovery`, `ad-credential`, `ad-lateral`, `ad-collection`, `ad-persistence`). You do **not** repeat protocol in the task text — you only select the phase skill, the technique, and the objects.
+The mandatory execution protocol (pre-flight check, read state, bracket each action with capture, write back, rollback, display-filter file) lives in `attacker/skills/ad-attack/SKILL.md`. Technique catalogs live in the phase skills (`ad-discovery`, `ad-credential`, `ad-privesc`, `ad-lateral`, `ad-collection`, `ad-exfil`, `ad-persistence`). You do **not** repeat protocol in the task text — you only select the phase skill, the technique, and the objects.
 
 ## 1. How the command reaches the agent
 
@@ -21,7 +21,7 @@ The mandatory execution protocol (pre-flight check, read state, bracket each act
 Use the <phase-skill> skill: using the <field> of <object>, execute <technique-id> against <target-ref>.
 ```
 
-`<phase-skill>` follows the technique id prefix: `discovery.*` → `ad-discovery`, `credential.*` → `ad-credential`, `lateral.*` → `ad-lateral`, `collection.*` → `ad-collection`, `persistence.*` → `ad-persistence`.
+`<phase-skill>` follows the technique id prefix: `discovery.*` → `ad-discovery`, `credential.*` → `ad-credential`, `privesc.*` → `ad-privesc`, `lateral.*` → `ad-lateral`, `collection.*` → `ad-collection`, `exfil.*` → `ad-exfil`, `persistence.*` → `ad-persistence`.
 
 Reference grammar:
 
@@ -70,6 +70,25 @@ Legend:
 | `credential.dcsync` | users.password or users.ntlm_hash | replicate krbtgt and hashes | users[krbtgt], domain.domain_sid |
 | `credential.gpp-password` | domain.name, domain.dc_ip, users.password | decrypt GPP cPassword | users[] |
 | `credential.lsass-dump` | users.password, hosts | dump LSASS memory | files[] |
+| `credential.laps` | users.password, domain.dc_ip | read LAPS local admin passwords | users[] |
+| `credential.ntds-dit` | users.password, domain.dc_ip | NTDS.dit IFM file copy | files[] |
+| `credential.dpapi` | users.password, domain.dc_ip | DPAPI backup keys / blobs | files[], users[] |
+| `credential.cached-logon` | users.password, hosts | dump MSCACHE from SECURITY hive | users[].ntlm_hash, files[] |
+| `privesc.adcs-find` | users.password, domain.dc_ip | enum AD CS templates | files[] |
+| `privesc.adcs-esc1` | users.password, domain.dc_ip | request ESC1 certificate | files[] |
+| `privesc.adcs-auth` | files (pfx), domain.dc_ip | PKINIT TGT from certificate | tickets.tgt[] |
+| `privesc.printerbug` | users.password, hosts | coerce authentication | notes |
+| `privesc.unconstrained-tgt` | domain.delegation, users.password | TGT on unconstrained host | tickets.tgt[] |
+| `privesc.backup-ntds` | users.password, domain.dc_ip | Backup Operators IFM | files[] |
+| `privesc.localgroup-add` | users.password, hosts | add to local Administrators | hosts[].compromised |
+| `privesc.always-install-elevated` | users.password, hosts | read AlwaysInstallElevated | notes |
+| `privesc.unquoted-service` | users.password, hosts | enum unquoted service paths | notes |
+| `privesc.schtask-system` | users.password, hosts | one-shot SYSTEM scheduled task | files[] |
+| `privesc.ms14-068` | users.password, domain.dc_fqdn | CVE-2014-6324 goldenPac | tickets.tgt[] |
+| `privesc.zerologon` | domain.netbios, domain.dc_ip | CVE-2020-1472 dump then restore DC$ | users[krbtgt] |
+| `privesc.printnightmare` | users.password, hosts, campaign.tools | CVE-2021-1675 public tool | hosts[].compromised |
+| `privesc.nopac` | users.password, domain.dc_ip | CVE-2021-42278/42287 public tool | tickets.tgt[] |
+| `privesc.certifried` | users.password, domain.dc_ip | CVE-2022-26923 on new computer | files[], users[] |
 | `lateral.pth-psexec` | users.ntlm_hash, hosts | PTH exec via SMB | hosts[].compromised |
 | `lateral.pth-wmiexec` | users.ntlm_hash, hosts | PTH exec via WMI | hosts[].compromised |
 | `lateral.pth-smbexec` | users.ntlm_hash, hosts | PTH exec via SMB pipes | hosts[].compromised |
@@ -88,14 +107,38 @@ Legend:
 | `collection.share-download` | hosts.shares, users.password | download file from share | files[] |
 | `collection.local-file` | users.password, hosts | collect local files | files[] |
 | `collection.archive` | files | compress staged files | files[] |
+| `collection.sysvol` | users.password, domain.dc_fqdn | download from SYSVOL | files[] |
+| `collection.gpo-files` | users.password, domain.dc_fqdn | GPO Preferences xml | files[] |
+| `collection.ldap-export` | users.password, domain.dc_ip | LDAP user export file | files[] |
+| `collection.unattend` | users.password, hosts | unattend.xml / sysprep.inf | files[] |
+| `collection.ps-history` | users.password, hosts | PowerShell ConsoleHost history | files[] |
+| `collection.dns-zone` | domain.name, domain.dc_ip | DNS AXFR / dnscmd enum | files[] |
+| `collection.remote-stage` | files, users.password, hosts.shares | put files on remote share | files[] |
+| `exfil.smb` | files, users.password, hosts.shares | upload archive over SMB | files[] |
+| `exfil.chunked-smb` | files, users.password, hosts.shares | chunked SMB upload | files[] |
+| `exfil.http` | files, hosts | HTTP POST to target | notes |
+| `exfil.https` | files, hosts | HTTPS POST to 443/5986 | notes |
+| `exfil.ftp` | files, hosts | FTP upload to :21 | notes |
+| `exfil.dns` | files, domain.dc_ip | DNS label with name/hash | notes |
+| `exfil.icmp` | files, hosts | large ICMP echo | notes |
+| `exfil.bits` | files, hosts | BITS upload | notes |
+| `exfil.winrm` | files, users.password, hosts.fqdn | WinRM Copy-Item | notes |
+| `exfil.webdav` | files, hosts | WebDAV copy | notes |
 | `persistence.golden-ticket` | users[krbtgt].ntlm_hash, domain.domain_sid | forge TGT | tickets.golden[] |
 | `persistence.silver-ticket` | users.ntlm_hash, domain.domain_sid, domain.spns | forge service ticket | tickets.silver[] |
 | `persistence.add-computer` | domain.name, domain.dc_ip, users.password | create machine account | users[], campaign.machine_account |
 | `persistence.rbcd` | FORBIDDEN | — | — |
 | `persistence.reset-password` | FORBIDDEN | — | — |
 | `persistence.service` | users.password, hosts | install persist service | files[] |
+| `persistence.add-user` | users.password, domain.name | create new domain user | users[] |
+| `persistence.local-user` | none | create local SAM user | users[] |
+| `persistence.scheduled-task` | users.password (remote) | new scheduled task | files[] |
+| `persistence.run-key` | users.password, hosts | new Run key value | files[] |
+| `persistence.startup-folder` | users.password, hosts, files | drop in Startup folder | files[] |
+| `persistence.wmi-event` | users.password, hosts | new WMI event subscription | files[] |
+| `persistence.bits-job` | files | new BITS persistence job | files[] |
 
-> `persistence.rbcd` and `persistence.reset-password` are **forbidden** (they modify an existing AD account in place). Never generate them. Every other technique id above is available.
+> `persistence.rbcd` and `persistence.reset-password` are **forbidden** (they modify an existing AD account in place). Never generate them. Every other technique id above is available. `privesc.zerologon` is allowed: the agent must restore DC$ in the same technique.
 
 ## 4. Object resolution rules
 
@@ -120,16 +163,17 @@ On a fresh deployment, seed in this order (writes are in the catalog):
 5. `discovery.user-enum-kerbrute` (or `discovery.user-enum-ldap`)
 6. `discovery.group-enum` / `discovery.password-policy` / `discovery.trust-enum`
 7. `credential.password-spray` / `credential.kerberoast` / `credential.gpp-password`
-8. Only then: lateral movement, collection, and persistence.
+8. `privesc.adcs-find` / other `privesc.*` whose `requires` are met
+9. Only then: lateral movement, collection, exfiltration, and persistence.
 
 ## 5b. Ongoing campaign
 
 After the seed, keep rotating toward the campaign goal. Map intents to catalog ids (no new commands):
 
-- Expand privilege: `credential.*` → `lateral.*` (mark `hosts[].compromised`) → allowed `persistence.*`.
+- Expand privilege: `credential.*` → `privesc.*` → `lateral.*` (mark `hosts[].compromised`) → allowed `persistence.*` / `exfil.*`.
 - Refresh facts: `discovery.orientation`, `host-scan`, `host-identify`, `share-enum`, `group-enum`, `password-policy`, `trust-enum`, `user-enum-*`.
-- Domain shares: `discovery.share-enum` → `collection.share-download` → `collection.archive`.
-- DC configuration (`hosts[].role` is `dc`): `password-policy`, `trust-enum`, `bloodhound`, `gpp-password`, plus `share-enum` / `share-download` on that DC.
+- Domain shares: `discovery.share-enum` → `collection.share-download` → `collection.archive` → `exfil.smb`.
+- DC configuration (`hosts[].role` is `dc`): `password-policy`, `trust-enum`, `bloodhound`, `gpp-password`, `collection.sysvol` / `collection.gpo-files`, plus `share-enum` / `share-download` on that DC.
 - Employee host files (`role` is member or unknown, credentials already in state): `lateral.exec-*` or PTH, then `collection.local-file`.
 
 ## 6. Worked examples (copy-paste commands)
@@ -165,6 +209,20 @@ opencode run "Use the ad-credential skill: using the password of user alice, exe
 opencode run "Use the ad-credential skill: using the ntlm_hash of user admin, execute credential.dcsync against domain."
 opencode run "Use the ad-credential skill: using the password of user alice, execute credential.gpp-password against domain."
 opencode run "Use the ad-credential skill: using the password of user admin, execute credential.lsass-dump against host 172.16.24.11."
+opencode run "Use the ad-credential skill: using the password of user alice, execute credential.laps against domain."
+opencode run "Use the ad-credential skill: using the password of user admin, execute credential.ntds-dit against domain."
+opencode run "Use the ad-credential skill: using the password of user alice, execute credential.dpapi against domain."
+opencode run "Use the ad-credential skill: using the password of user admin, execute credential.cached-logon against host 172.16.24.11."
+```
+
+### Privilege Escalation
+
+```
+opencode run "Use the ad-privesc skill: using the password of user alice, execute privesc.adcs-find against domain."
+opencode run "Use the ad-privesc skill: using the password of user alice, execute privesc.adcs-esc1 against domain."
+opencode run "Use the ad-privesc skill: using the password of user alice, execute privesc.printerbug against host 172.16.24.11."
+opencode run "Use the ad-privesc skill: using the password of user alice, execute privesc.ms14-068 against domain."
+opencode run "Use the ad-privesc skill: execute privesc.zerologon against domain."
 ```
 
 ### Lateral Movement
@@ -193,6 +251,16 @@ opencode run "Use the ad-lateral skill: using the password of user alice, execut
 opencode run "Use the ad-collection skill: using the password of user alice, execute collection.share-download against host 172.16.24.11."
 opencode run "Use the ad-collection skill: using the password of user alice, execute collection.local-file against host 172.16.24.11."
 opencode run "Use the ad-collection skill: execute collection.archive against domain."
+opencode run "Use the ad-collection skill: using the password of user alice, execute collection.sysvol against domain."
+opencode run "Use the ad-collection skill: using the password of user alice, execute collection.ldap-export against domain."
+```
+
+### Exfiltration
+
+```
+opencode run "Use the ad-exfil skill: using the password of user alice, execute exfil.smb against host 172.16.24.11."
+opencode run "Use the ad-exfil skill: execute exfil.dns against domain."
+opencode run "Use the ad-exfil skill: execute exfil.icmp against host 172.16.24.11."
 ```
 
 ### Persistence
@@ -202,6 +270,8 @@ opencode run "Use the ad-persistence skill: using the ntlm_hash of user krbtgt, 
 opencode run "Use the ad-persistence skill: using the ntlm_hash of user svc_sql, execute persistence.silver-ticket against host 172.16.24.11."
 opencode run "Use the ad-persistence skill: using the machine_account of campaign, execute persistence.add-computer against domain."
 opencode run "Use the ad-persistence skill: using the password of user admin, execute persistence.service against host 172.16.24.11."
+opencode run "Use the ad-persistence skill: using the password of user admin, execute persistence.add-user against domain."
+opencode run "Use the ad-persistence skill: execute persistence.local-user against domain."
 ```
 
 > `persistence.rbcd` and `persistence.reset-password` are forbidden (in-place modification of an existing AD account); never emit them.
@@ -214,7 +284,7 @@ Do:
 - Reference objects by the exact names that exist in the state file.
 - Keep secrets out of the task text; only object names appear.
 - Use the stable technique ids (they double as the capture `--label`).
-- Schedule discovery before credential/lateral/collection/persistence on a cold start.
+- Schedule discovery before credential/privesc/lateral/collection/exfil/persistence on a cold start.
 - After the seed, keep scheduling toward the campaign goal: expand privilege, refresh known facts, and collect shares / DC config / employee files.
 - Pre-fill `campaign.machine_account` and `campaign.tools` before running the techniques that consume them.
 
@@ -227,6 +297,6 @@ Don't:
 Hard mutation constraints (never violated):
 
 - Never generate `persistence.reset-password` (resets an existing account's password) or `persistence.rbcd` (writes a delegation grant onto an existing account). Both modify existing AD account info in place and are forbidden.
-- Never generate any task that edits an existing account's password or attributes.
-- `persistence.add-computer` (adds a new machine account) is allowed; deleting accounts the attacker itself created is allowed.
+- Never generate any task that edits an existing account's password or attributes, except `privesc.zerologon` (must restore DC$ in the same technique).
+- `persistence.add-computer` and `persistence.add-user` (new accounts) are allowed; deleting accounts the attacker itself created is allowed.
 - The executing agent records every domain addition in `changes.json`.

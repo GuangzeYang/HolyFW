@@ -60,6 +60,25 @@ CATALOG_TECHNIQUE_IDS = (
     "credential.dcsync",
     "credential.gpp-password",
     "credential.lsass-dump",
+    "credential.laps",
+    "credential.ntds-dit",
+    "credential.dpapi",
+    "credential.cached-logon",
+    "privesc.adcs-find",
+    "privesc.adcs-esc1",
+    "privesc.adcs-auth",
+    "privesc.printerbug",
+    "privesc.unconstrained-tgt",
+    "privesc.backup-ntds",
+    "privesc.localgroup-add",
+    "privesc.always-install-elevated",
+    "privesc.unquoted-service",
+    "privesc.schtask-system",
+    "privesc.ms14-068",
+    "privesc.zerologon",
+    "privesc.printnightmare",
+    "privesc.nopac",
+    "privesc.certifried",
     "lateral.pth-psexec",
     "lateral.pth-wmiexec",
     "lateral.pth-smbexec",
@@ -78,12 +97,36 @@ CATALOG_TECHNIQUE_IDS = (
     "collection.share-download",
     "collection.local-file",
     "collection.archive",
+    "collection.sysvol",
+    "collection.gpo-files",
+    "collection.ldap-export",
+    "collection.unattend",
+    "collection.ps-history",
+    "collection.dns-zone",
+    "collection.remote-stage",
+    "exfil.smb",
+    "exfil.chunked-smb",
+    "exfil.http",
+    "exfil.https",
+    "exfil.ftp",
+    "exfil.dns",
+    "exfil.icmp",
+    "exfil.bits",
+    "exfil.winrm",
+    "exfil.webdav",
     "persistence.golden-ticket",
     "persistence.silver-ticket",
     "persistence.add-computer",
     "persistence.rbcd",
     "persistence.reset-password",
     "persistence.service",
+    "persistence.add-user",
+    "persistence.local-user",
+    "persistence.scheduled-task",
+    "persistence.run-key",
+    "persistence.startup-folder",
+    "persistence.wmi-event",
+    "persistence.bits-job",
 )
 
 
@@ -1152,6 +1195,8 @@ class GenerationMessageTests(unittest.TestCase):
         self.assertIn("ad-attack", prompt_template)
         self.assertIn("ad-discovery", prompt_template)
         self.assertIn("ad-credential", prompt_template)
+        self.assertIn("ad-privesc", prompt_template)
+        self.assertIn("ad-exfil", prompt_template)
         self.assertIsInstance(state, dict)
         self.assertIn("| id | requires | does | writes |", prompt_template)
         self.assertIn("requires", system_prompt)

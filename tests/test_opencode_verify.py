@@ -143,6 +143,12 @@ class PromptPickerTests(unittest.TestCase):
         prompt, reason = select_skill_prompt("ad-discovery", pack)
         self.assertIsNone(reason)
         self.assertEqual(prompt, ATTACKER_SKILL_PROMPT)
+        privesc, privesc_skip = select_skill_prompt("ad-privesc", pack)
+        self.assertIsNone(privesc_skip)
+        self.assertIn("privesc.adcs-find", privesc or "")
+        exfil, exfil_skip = select_skill_prompt("ad-exfil", pack)
+        self.assertIsNone(exfil_skip)
+        self.assertIn("exfil.smb", exfil or "")
 
 
 class BundledMcpTests(unittest.TestCase):

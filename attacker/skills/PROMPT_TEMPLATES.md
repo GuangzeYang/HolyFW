@@ -31,3 +31,15 @@ opencode run "Use the ad-collection skill: execute collection.archive against do
 ```text
 opencode run "Use the ad-persistence skill: using the machine_account of campaign, execute persistence.add-computer against domain."
 ```
+
+## ad-privesc
+
+```text
+opencode run "Use the ad-privesc skill: using the password of user alice, execute privesc.adcs-find against domain."
+```
+
+## ad-exfil
+
+```text
+opencode run "Use the ad-exfil skill: using the password of user alice, execute exfil.smb against host 172.16.24.11."
+```
