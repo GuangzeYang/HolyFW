@@ -1,4 +1,11 @@
-﻿<!--                       NOTICE : This is a balanced generated output of Sysmon-modular with medium verbosity                  -->
+﻿<!-- HolyFW Sysmon config for all lab hosts (office roles, DC, and attacker):    -->
+<!--   Sysmon64.exe -c <path>\attacker\sysmonconfig.xml                          -->
+<!-- attacker build does not run Sysmon64 -c; load this by hand on each host.    -->
+<!-- Stock sysmon-modular medium, plus:                                          -->
+<!--   holyfw_attacker_tool — python/nmap/kerbrute ProcessCreate + NetworkConnect -->
+<!--   holyfw_exclude_kaspersky — drop KES avp.exe ProcessAccess flood            -->
+<!--                                                                             -->
+<!--                       NOTICE : This is a balanced generated output of Sysmon-modular with medium verbosity                  -->
 <!--                        due to the balanced nature of this configuration there will be potential blind spots                 -->
 <!--                        for more information go to https://github.com/olafhartong/sysmon-modular/wiki                        -->
 <!--                                                                                                                             -->
@@ -480,11 +487,23 @@
           <CommandLine name="technique_id=T1202,technique_name=Remote File Copy" condition="contains all">wsl.exe;--exec bash</CommandLine>
           <CommandLine name="technique_id=T1202,technique_name=Remote File Copy" condition="contains all">/dev/tcp</CommandLine>
         </Rule>
+        <Image name="holyfw_attacker_tool" condition="image">python.exe</Image>
+        <Image name="holyfw_attacker_tool" condition="image">pythonw.exe</Image>
+        <Image name="holyfw_attacker_tool" condition="image">python3.exe</Image>
+        <Image name="holyfw_attacker_tool" condition="image">py.exe</Image>
+        <Image name="holyfw_attacker_tool" condition="image">nmap.exe</Image>
+        <Image name="holyfw_attacker_tool" condition="image">kerbrute.exe</Image>
+        <CommandLine name="holyfw_attacker_tool" condition="contains">impacket</CommandLine>
+        <CommandLine name="holyfw_attacker_tool" condition="contains">bloodhound</CommandLine>
+        <CommandLine name="holyfw_attacker_tool" condition="contains">nmap</CommandLine>
+        <CommandLine name="holyfw_attacker_tool" condition="contains">kerbrute</CommandLine>
       </ProcessCreate>
     </RuleGroup>
     <!-- Event ID 1 == Process Creation - Excludes -->
     <RuleGroup groupRelation="or">
       <ProcessCreate onmatch="exclude">
+        <Image name="holyfw_exclude_kaspersky" condition="contains">\Kaspersky Lab\</Image>
+        <Image name="holyfw_exclude_kaspersky" condition="image">avp.exe</Image>
         <Rule groupRelation="and">
           <Image condition="end with">AcroRd32.exe</Image>
           <CommandLine condition="contains any">/CR;channel=</CommandLine>
@@ -862,11 +881,19 @@
         <DestinationPort name="technique_id=T1571,technique_name=Non-Standard Port" condition="is">9030</DestinationPort>
         <DestinationPort name="technique_id=T1021.006,technique_name=Windows Remote Management" condition="is">5985</DestinationPort>
         <DestinationPort name="technique_id=T1021.006,technique_name=Windows Remote Management" condition="is">5986</DestinationPort>
+        <Image name="holyfw_attacker_tool" condition="image">python.exe</Image>
+        <Image name="holyfw_attacker_tool" condition="image">pythonw.exe</Image>
+        <Image name="holyfw_attacker_tool" condition="image">python3.exe</Image>
+        <Image name="holyfw_attacker_tool" condition="image">py.exe</Image>
+        <Image name="holyfw_attacker_tool" condition="image">nmap.exe</Image>
+        <Image name="holyfw_attacker_tool" condition="image">kerbrute.exe</Image>
       </NetworkConnect>
     </RuleGroup>
     <!-- Event ID 3 == Network Connection - Excludes -->
     <RuleGroup groupRelation="or">
       <NetworkConnect onmatch="exclude">
+        <Image name="holyfw_exclude_kaspersky" condition="contains">\Kaspersky Lab\</Image>
+        <Image name="holyfw_exclude_kaspersky" condition="image">avp.exe</Image>
         <Image condition="end with">AppData\Roaming\Dropbox\bin\Dropbox.exe</Image>
         <Image condition="end with">winlogbeat.exe</Image>
         <Image condition="end with">packetbeat.exe</Image>
@@ -1073,6 +1100,8 @@
     <!-- Event ID 7 == Image Loaded - Excludes -->
     <RuleGroup groupRelation="or">
       <ImageLoad onmatch="exclude">
+        <Image name="holyfw_exclude_kaspersky" condition="contains">\Kaspersky Lab\</Image>
+        <ImageLoaded name="holyfw_exclude_kaspersky" condition="contains">\Kaspersky Lab\</ImageLoaded>
         <Rule groupRelation="and">
           <Image condition="is">C:\Windows\System32\cscript.exe</Image>
           <OriginalFileName condition="is">scrobj.dll</OriginalFileName>
@@ -1154,6 +1183,7 @@
       <RawAccessRead onmatch="include" />
     </RuleGroup>
     <!-- Event ID 10 == ProcessAccess - Includes -->
+    <!-- Stock sysmon-modular medium include. Kaspersky is dropped in the exclude group below. -->
     <RuleGroup groupRelation="or">
       <ProcessAccess onmatch="include">
         <CallTrace name="technique_id=T1003,technique_name=Credential Dumping" condition="contains">dbghelp.dll</CallTrace>
@@ -1246,6 +1276,10 @@
     <!-- Event ID 10 == ProcessAccess - Excludes -->
     <RuleGroup groupRelation="or">
       <ProcessAccess onmatch="exclude">
+        <SourceImage name="holyfw_exclude_kaspersky" condition="contains">\Kaspersky Lab\</SourceImage>
+        <SourceImage name="holyfw_exclude_kaspersky" condition="image">avp.exe</SourceImage>
+        <SourceImage name="holyfw_exclude_kaspersky" condition="image">avpui.exe</SourceImage>
+        <TargetImage name="holyfw_exclude_kaspersky" condition="contains">\Kaspersky Lab\</TargetImage>
         <SourceImage condition="is">C:\Program Files\Adobe\Adobe Creative Cloud Experience\libs\node.exe</SourceImage>
         <SourceImage condition="contains all">C:\Program Files;\Common Files\Adobe\AdobeGCClient\AGMService.exe</SourceImage>
         <SourceImage condition="is">C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe</SourceImage>
@@ -2167,6 +2201,8 @@
     <RuleGroup groupRelation="or">
       <!--Default to log all and exclude a few common processes-->
       <DnsQuery onmatch="exclude">
+        <Image name="holyfw_exclude_kaspersky" condition="contains">\Kaspersky Lab\</Image>
+        <Image name="holyfw_exclude_kaspersky" condition="image">avp.exe</Image>
         <QueryName condition="end with">.1rx.io</QueryName>
         <QueryName condition="end with">.2mdn.net</QueryName>
         <QueryName condition="end with">.adadvisor.net</QueryName>

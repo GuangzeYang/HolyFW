@@ -7,17 +7,14 @@ Run from an **Administrator PowerShell**. `soldier listen` and `attacker` do not
 ## 1. Configure Sysmon first (once, and again after any XML change)
 
 ```powershell
-# Office hosts / DC
-Sysmon64.exe -c <HolyFW>\sysmonconfig.xml
-
-# Attacker host only (do not use the repo-root XML)
+# All lab hosts (office roles, DC, attacker)
 Sysmon64.exe -c <HolyFW>\attacker\sysmonconfig.xml
 
 # Print the config that is currently loaded
 Sysmon64.exe -c
 ```
 
-The attacker profile logs process create and network connect for python/nmap/kerbrute (EID 1 / 3) and **does not log EID 10** (ProcessAccess), so AV process-access noise cannot fill the default 64MB channel and wipe the day's events.
+This profile is sysmon-modular medium plus `holyfw_attacker_tool` (python/nmap/kerbrute EID 1 / 3) and `holyfw_exclude_kaspersky` (drop KES `avp.exe` ProcessAccess). The repo-root `sysmonconfig.xml` is the stock profile without those patches.
 
 Enlarge the channel (`Sysmon64.exe -c` does not change this):
 
