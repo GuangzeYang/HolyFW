@@ -1,13 +1,32 @@
 ---
 name: playwright-browser
-description: Use when a task must drive a browser through Playwright MCP for navigation, search, clicking, typing, forms, tabs, downloads, and in-page follow-up. Always load before exchange-use or odoo-use. Do not write browser automation code. Do not use for SMB files.
+description: Use when a task must browse the public web through Playwright MCP (navigation, search, clicking, typing, forms, tabs, downloads, in-page follow-up). Do not use for Exchange OWA or Odoo. Do not write browser automation code. Do not use for SMB files.
 ---
 
 # Tools
 
 Call existing Playwright MCP tools only. Do not launch a second browser with a script. Do not load `/demo-skill`.
 
-Take an accessibility snapshot (or equivalent element list) **before** each click/type when the target is not already focused. Prefer the control’s visible name, role, and placeholder over CSS. If two matches exist, pick the one in the main content, not the header chrome, unless the step names the header.
+Prefer the control’s visible name, role, and placeholder over raw CSS. If two matches exist, pick the one in the main content, not the header chrome, unless the step names the header.
+
+# Scope (public web only)
+
+This skill drives **public web** traffic. Do **not** open Exchange or Odoo with it.
+
+Stop immediately if the current or next URL contains any of:
+
+- `/owa/`
+- `172.16.24.12`
+- `i1-mail1-c02`
+- `172.16.24.14:8069`
+
+Those pages belong to `exchange-use` or `odoo-use`. Do not continue with this skill’s ops. Do not open a second browser.
+
+# Screenshot analysis (required on public web)
+
+After every `goto`, `search`, and `follow` lands, and again before `Verify:`, call `take_screenshot` and read the image. Use it to confirm the title, result list, article, or form actually opened. On unknown sites, pick the next control from the screenshot plus visible name — do not invent placeholder control names.
+
+An accessibility `snapshot` is allowed to locate a named control. Do not take two consecutive full a11y snapshots.
 
 # Session
 
@@ -16,55 +35,47 @@ Take an accessibility snapshot (or equivalent element list) **before** each clic
 3. Close a tab when that tab’s steps are done and another tab still has work. After the **whole** prompt is verified, close the browser.
 4. Do not close the browser after the first click.
 
-# OWA overlay (when the URL contains `/owa/`)
-
-These rules override Human-like pacing, `type`, and `press` on Outlook Web App.
-
-- Do **not** type in chunks. Fill each field in one shot.
-- Do **not** press **Escape**. It opens **Discard message** instead of closing Suggested contacts.
-- Do **not** pass `submit: true` on recipient `type` except a single **Enter** after the full SMTP address.
-- After Enter on To/Cc/Bcc, click the **button** `Use this address: <the smtp just typed>`. Do not click Search Directory. Do not click a leftover `Use this address:` for an earlier recipient. Then snapshot. Ignore leftover `div[ispopup="1"]` if the Suggested contacts box is gone.
-- If a click fails with *intercepts pointer events*, click that **Use this address:** button, snapshot, retry once.
-- After any OWA dialog (**Discard message** → **Don't discard**), snapshot again. Never reuse element refs from before the dialog.
-- Close OWA popups with the labelled button (**Don't discard**, **OK**, **Send**). Not Escape.
-
 # Human-like pacing
 
 - Wait until the page is loaded (network idle or main landmark visible) before acting.
 - Type in short chunks. Pause between click, type, and scroll.
-- After a navigation, scroll once before extracting text.
+- After a navigation, screenshot, then scroll once before extracting text.
 - Move near a control, then click with a small offset. Do not click the exact center immediately.
 - Clear a field that already has text before typing a replacement.
-- Close ads, cookie banners, and pop-ups before continuing (Accept / Close / X / Skip). Certificate interstitial: snapshot the current tab, click **Advanced（高级）**, then **Continue** / **Proceed to … (unsafe)（继续前往 …（不安全））**. Do not click **Back to safety** / **Return to safe connection（返回安全连接）**. Do not `goto` the same URL again.
+- Close ads, cookie banners, and pop-ups before continuing (Accept / Close / X / Skip). Certificate interstitial: screenshot the current tab, click **Advanced（高级）**, then **Continue** / **Proceed to … (unsafe)（继续前往 …（不安全））**. Do not click **Back to safety** / **Return to safe connection（返回安全连接）**. Do not `goto` the same URL again.
 
 # Failures
 
 - Browser closed: open a new browser and retry the **current** step once.
 - Tool timeout: wait, retry once, then stop.
 - 404/403 after a click: reload once, then Back, then stop if still failed.
-- Control not found: snapshot again, scroll, retry once, then stop. Do not invent a different site.
-- `ERR_CERT_*` / `chrome-error://chromewebdata/` / **Your connection is not private（您的连接不是私密连接）** / **Privacy error（隐私设置错误）**: the interstitial is already showing. Snapshot the current tab, click **Advanced（高级）**, snapshot, click **Proceed to … (unsafe)（继续前往 …（不安全））** (or **Continue** / **继续前往** and the current host). Do not re-`goto` the same URL. Do not click **Back to safety** / **Return to safe connection（返回安全连接）**. Do not open a second browser.
+- *strict mode violation* (2+ matches): append `:visible` or `>> nth=0`, or scope to the main content. Do not fall back to `run_code_unsafe`.
+- *intercepts pointer events*: a dropdown/popup covers the control — close or confirm it, then retry once.
+- Control not found: `find` the name first; screenshot; retry once, then stop. Do not invent a different site.
+- `ERR_CERT_*` / `chrome-error://chromewebdata/` / **Your connection is not private（您的连接不是私密连接）** / **Privacy error（隐私设置错误）**: the interstitial is already showing. Screenshot the current tab, click **Advanced（高级）**, screenshot, click **Proceed to … (unsafe)（继续前往 …（不安全））** (or **Continue** / **继续前往** and the current host). Do not re-`goto` the same URL. Do not click **Back to safety** / **Return to safe connection（返回安全连接）**. Do not open a second browser.
 
 # Search recipe (only when an op is `search`)
 
-Do not use this recipe for Exchange or Odoo (those skills have their own URLs).
+Do not use this recipe for Exchange or Odoo.
 
 1. If the current URL is not Bing, `goto` `https://www.bing.com` and wait for `#sb_form_q`.
 2. If Bing fails to load, `goto` `https://www.baidu.com` and use `#kw`.
 3. Do not use Google as the search engine.
 4. Fill the search box with `{query}`. Press Enter (or click the search submit).
-5. Wait for the result list (`#b_results` on Bing). If there are **no** result headings (`#b_results h2 a` count is 0) after one wait: snapshot, then `goto` `https://www.baidu.com` and search with `#kw`. Do not `follow` `{nth}` when the hit list is empty.
+5. Wait for the result list (`#b_results` on Bing). Screenshot. If there are **no** result headings (`#b_results h2 a` count is 0) after one wait: `goto` `https://www.baidu.com` and search with `#kw`. Do not `follow` `{nth}` when the hit list is empty.
 6. Further ops (`follow`, `click`, `scroll`, `extract`) run **on the result page or the opened hit**, not on a new blank search.
 
 # Primitive ops
 
 Execute the numbered list in the prompt, in order. Each item is one op. Unknown ops: stop.
 
+**Ops are not tool names.** Map each op to an existing MCP tool: `click` → `playwright_browser_click`, `type` / `fill` → `playwright_browser_type`, `press` → `playwright_browser_press_key`, `goto` / `back` / `forward` / `reload` / `new tab` → `playwright_browser_navigate` (`_back`, `tabs`), `select` → `playwright_browser_select_option`, `hover` → `playwright_browser_hover`, `wait` → `playwright_browser_wait_for`, `upload` → `playwright_browser_file_upload`, and **`extract` → `playwright_browser_evaluate` (scoped) or `playwright_browser_find`**. There is **no** `playwright_browser_extract`, `playwright_browser_follow`, or `playwright_browser_search` tool — calling them fails the run.
+
 Shared optional fields: `name` (accessible name / visible text), `role`, `nth` (1-based), `url`, `query`, `text`, `key`, `path`, `direction`, `amount`, `timeout_seconds`.
 
 ## goto
 
-Navigate to `{url}`. Wait for load. If `{url}` is omitted and the prompt named a site in natural language, use that URL only when it is explicit; otherwise stop.
+Navigate to `{url}`. Wait for load. Screenshot. If `{url}` is omitted and the prompt named a site in natural language, use that URL only when it is explicit; otherwise stop. Refuse OWA / Odoo URLs (see **Scope**).
 
 ## back / forward / reload
 
@@ -72,7 +83,7 @@ Browser history or reload. Wait for load.
 
 ## new tab
 
-Open a tab. Optional `{url}`. Then activate it.
+Open a tab. Optional `{url}`. Then activate it. Refuse OWA / Odoo URLs.
 
 ## search
 
@@ -80,7 +91,7 @@ Run the Search recipe with `{query}`. Optional `{nth}`: after results load, foll
 
 ## click
 
-Snapshot. Click the control matching `{name}` / `{role}` / `{nth}`. If the prompt describes the control in words (`the blue Submit button`), match that text.
+Snapshot if needed to locate `{name}` / `{role}` / `{nth}`. Click that control. If the prompt describes the control in words (`the blue Submit button`), match that text.
 
 ## hover
 
@@ -132,7 +143,7 @@ On a list of links (search hits, articles, pagination):
 
 1. If `{nth}` is set, click that result heading/link (skip ads / “Sponsored”).
 2. If `{name}` or `{query}` is set, click the first result whose title contains it.
-3. Wait for the new page. Then continue with later ops **on that page**.
+3. Wait for the new page. Screenshot. Then continue with later ops **on that page**.
 
 ## back
 
@@ -144,13 +155,15 @@ After `goto`, `search`, or `follow`, keep going with the remaining ops on the **
 
 # Verify
 
-After the last op, satisfy `Verify:` from the prompt (URL contains …, heading visible, extracted text non-empty, file downloaded). If Verify is missing, confirm the last op’s obvious success (page loaded, click produced a navigation or enabled state). Only then close the browser.
+After the last op, take a screenshot, then satisfy `Verify:` from the prompt (URL contains …, heading visible, extracted text non-empty, file downloaded). If Verify is missing, confirm the last op’s obvious success (page loaded, click produced a navigation or enabled state). Only then close the browser.
 
 # Anti-patterns
 
 - Do not load `/demo-skill`.
 - Do not search on Google.
-- Do not chain clicks with no wait and no snapshot.
+- Do not open `/owa/`, `172.16.24.12`, `i1-mail1-c02`, or Odoo `172.16.24.14:8069`.
+- Do not skip `take_screenshot` after `goto` / `search` / `follow` or before Verify.
+- Do not chain clicks with no wait and no screenshot.
 - Do not keep unused tabs until the end of the day.
 - Do not start a second Playwright via a Node script.
 - Do not treat Exchange OWA or Odoo as generic search; those have their own skills.

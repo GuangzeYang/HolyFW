@@ -38,7 +38,7 @@ opencode run "Use the exchange-use skill, open the Exchange mailbox, send email,
 ```
 
 ```text
-opencode run "Use the exchange-use skill, open the Exchange mailbox, view email, {target: first email}"
+opencode run "Use the exchange-use skill, open the Exchange mailbox, view email, {target: 1}"
 ```
 
 ## odoo-use
@@ -88,7 +88,7 @@ class PromptPickerTests(unittest.TestCase):
         picked = pick_representative_prompt(
             [
                 "...",
-                "Use the exchange-use skill, open the Exchange mailbox, view email, {target: first email}",
+                "Use the exchange-use skill, open the Exchange mailbox, view email, {target: 1}",
             ]
         )
         self.assertIsNotNone(picked)

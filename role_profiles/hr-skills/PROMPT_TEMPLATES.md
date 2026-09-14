@@ -1,6 +1,6 @@
 # HR opencode prompt templates
 
-English only. Run on the HR soldier host with the matching skill installed. Detailed copies live under `new_skill/hr-skills/`; `skills/hr-skills/` holds the deployed HR skills.
+English only. Run on the HR soldier host with the matching skill installed. Detailed copies live under `role_profiles/hr-skills/`; the deployed copy is `~/.config/opencode/skills/`.
 
 Grammar details live next to each skill:
 
@@ -22,7 +22,7 @@ opencode run "Use the exchange-use skill, open the Exchange mailbox, send email,
 ```
 
 ```text
-opencode run "Use the exchange-use skill, open the Exchange mailbox, view email, {target: first email}"
+opencode run "Use the exchange-use skill, open the Exchange mailbox, view email, {target: 1}"
 ```
 
 ```text
@@ -68,10 +68,8 @@ Ops: `goto` `search` `click` `type` `fill` `scroll` `wait` `select` `press` `che
 opencode run "Use the playwright-browser skill, open the browser, then execute: 1. search, {query: Windows Active Directory backup} 2. follow, {nth: 1} 3. scroll, {direction: down} 4. extract. Verify: article text is non-empty. Close the browser after verification."
 ```
 
-Replace `REPLACE_*` tokens when generating random browse traffic:
-
 ```text
-opencode run "Use the playwright-browser skill, open the browser, then execute: 1. search, {query: REPLACE_QUERY} 2. follow, {nth: 2} 3. click, {name: REPLACE_IN_PAGE_CONTROL} 4. scroll, {direction: down}. Verify: REPLACE_VISIBLE_RESULT. Close the browser after verification."
+opencode run "Use the playwright-browser skill, open the browser, then execute: 1. goto, {url: https://www.example.com} 2. scroll, {direction: down} 3. extract. Verify: main heading is visible. Close the browser after verification."
 ```
 
 ## smb-access

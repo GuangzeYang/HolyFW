@@ -25,7 +25,7 @@ Use the exchange-use skill, open the Exchange mailbox, <action>, {<field>: <valu
 | `open people` | none |
 | `open tasks` | none |
 
-`target` defaults to `first email` when omitted on view/reply/forward/delete/flag.
+When `target` is omitted on view/reply/forward/delete/flag, the soldier opens the first email. Use `target: 1` for the first row, `target: last` for the oldest row, or a subject/sender substring (e.g. `target: Budget review`). Never emit the string `first email` as a target value.
 
 ## Examples
 
@@ -38,7 +38,11 @@ opencode run "Use the exchange-use skill, open the Exchange mailbox, send email,
 ```
 
 ```text
-opencode run "Use the exchange-use skill, open the Exchange mailbox, view email, {target: first email}"
+opencode run "Use the exchange-use skill, open the Exchange mailbox, view email, {target: 1}"
+```
+
+```text
+opencode run "Use the exchange-use skill, open the Exchange mailbox, view email, {target: last}"
 ```
 
 ```text
@@ -50,7 +54,7 @@ opencode run "Use the exchange-use skill, open the Exchange mailbox, reply all, 
 ```
 
 ```text
-opencode run "Use the exchange-use skill, open the Exchange mailbox, forward, {target: first email, recipient: hr, min_words: 400}"
+opencode run "Use the exchange-use skill, open the Exchange mailbox, forward, {target: 1, recipient: hr, min_words: 400}"
 ```
 
 ```text
@@ -58,7 +62,7 @@ opencode run "Use the exchange-use skill, open the Exchange mailbox, search, {qu
 ```
 
 ```text
-opencode run "Use the exchange-use skill, open the Exchange mailbox, move, {target: first email, folder: Deleted Items}"
+opencode run "Use the exchange-use skill, open the Exchange mailbox, move, {target: 1, folder: Deleted Items}"
 ```
 
 ```text

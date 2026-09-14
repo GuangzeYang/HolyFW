@@ -3,239 +3,225 @@ name: exchange-use
 description: Use when sending, viewing, replying, forwarding, searching, or filing Exchange mail in Outlook on the web (OWA 2016). Depends on playwright-browser. Do not use for Odoo, SMB, or generic web search.
 ---
 
-Load `playwright-browser`, then apply the **OWA overlay** in that skill. On `/owa/` pages those overlay rules beat generic pacing.
+Use Playwright MCP tools. This skill owns `/owa/` pages. Do **not** apply playwright-browser public-web rules (stop-on-OWA, screenshot after every navigation) except **Visual fallback** below.
 
-If already signed in (Inbox or folder list visible), skip Sign in.
+**Snapshot budget (important).** The Inbox list is virtualized (25 rows at a time) and every full a11y `snapshot` re-dumps the whole mailbox chrome — often 50 KB+. Re-snapshotting after each step is what makes this skill time out. **Do not dump the mail view. Use the selectors below.**
+
+# Visual fallback
+
+1. Click/type the verified selector. If it fails, retry **the same selector once**.
+2. If it still fails, `take_screenshot` **once**, read the image, and continue the current action from a visible control (button label, dialog, certificate page).
+3. Do not take two screenshots in a row. Do not replace this step with a full-page a11y snapshot of Inbox.
+4. If the screenshot still does not unlock the step, stop and report. Do not switch to a playwright-browser task, and do not open a second browser.
+
+If already signed in (folder list / Inbox visible), skip Sign in.
 
 # Endpoints (frozen)
 
 - Preferred URL: `https://i1-mail1-c02.ndrtest.local/owa/`
-- Fallback host: `172.16.24.12`
 - Fallback logon URL: `https://172.16.24.12/owa/auth/logon.aspx`
 - Username: `ndrtest\manager`
 - Password: `Njupt@241`
 - Do not invent another host, mailbox, or password.
 
+# Verified selectors (use these, do not guess)
+
+| Target | Selector |
+|---|---|
+| Username | `#username` |
+| Password | `#password` |
+| Sign-in button | `div.signinbutton` |
+| Mail app | `a:has-text("Mail")` |
+| Folder row (Inbox / Sent Items / Drafts …) | `[role="treeitem"]:has-text("Inbox") >> nth=0` (always append `>> nth=0`; the Favorites copy and the mailbox copy both match) |
+| Search button | `button[aria-label="Activate Search Textbox"]` |
+| Search input | `input[role="combobox"][aria-label^="Search mail and people"]` |
+| Exit search | `button:has-text("Exit search")` |
+| Message rows (**message list only**) | `[role="listbox"][aria-label="conversation"] [role="option"]` |
+| Nth message | `[role="listbox"][aria-label="conversation"] [role="option"] >> nth=<N-1>` (`target: 1` = first row) |
+| Reading pane | `[aria-label="Reading Pane"]` |
+| Reading-pane menu button | `button[aria-label="More Actions"]` (use `>> nth=0` if a conversation has several) |
+| Pane menu items | `[role="menu"][aria-label="Context menu"] button:has-text("Forward")` (or `"Reply"`, `"Reply all"`, `"Flag"`, `"Mark as unread"`) |
+| New message | `button[title="Write a new message (N)"]` (it has **title**, no `aria-label`) |
+| Compose To / Cc | `input[aria-label="To"]` / `input[aria-label="Cc"]` |
+| Show Bcc / Show Cc | `button[aria-label="Show Bcc"]` / `button[aria-label="Show Cc"]` |
+| Subject | `input[aria-label^="Subject"]` |
+| Body | `[role="textbox"][aria-label="Message body"]` |
+| Send (compose) | `button[aria-label="Send"] >> nth=0` (3 **Send** buttons exist; `nth=0` is the compose toolbar) |
+| Attach | `button[aria-label="Attach"]` |
+| Discard (compose) | `button[aria-label="Discard"] >> nth=0` |
+| Discard confirm | `button:has-text("This message will be deleted")` |
+| Don't discard | `button:has-text("Don't discard")` |
+| Recipient suggestion | `button:has-text("Use this address: <smtp>")` |
+| Recipient success signal | `[role="status"]` — text `<smtp> added to the To line` |
+
+**Scoping matters.** `[role="listbox"]` alone also matches hidden search-filter listboxes (`… search filter`), which makes clicks fail with *not visible* or *strict mode*. Always scope to `[role="listbox"][aria-label="conversation"]`.
+
+A pane menu item has **two** matches (a wrapper `div[role=menuitem]` and the inner `button[role=menuitem]`). Target the **button** form above. If you still get a *strict mode violation*, append `>> nth=0`.
+
 # Sign in (FQDN, then IP)
 
-1. Navigate to `https://i1-mail1-c02.ndrtest.local/owa/`. Wait until the logon form (`#username`) or Mail chrome loads.
-2. **Degrade to IP** when any of these happen: connection closed / timeout / DNS failure / HTTP 4xx–5xx / logon form never appears after one wait. Then open `https://172.16.24.12/owa/auth/logon.aspx` (ignore the certificate name mismatch). Do **not** open `https://172.16.24.12/owa/` first — that path returns HTTP 500 before a session exists.
-3. Certificate warning / interstitial: follow **Certificate interstitial**. Do not retry the current URL.
-4. Username: click `#username` (labelled **Domain\user name:**). Fill `ndrtest\manager`. Do not use `#passwordText`.
-5. Password: click `#password`. Fill the password above.
-6. Click `div.signinbutton[role=button]` (visible text **sign in**, `onclick=clkLgn()`). If missing, press Enter in `#password`.
-7. Wait until title contains `Mail - manager@ndrtest.local` and the folder list shows **Inbox**. After IP logon the hash is `/owa/#path=/mail`. If the logon form is still shown, stop.
-
-# Certificate interstitial
-
-Playwright `navigate` / `goto` may return `net::ERR_CERT_COMMON_NAME_INVALID` (or another `ERR_CERT_*`) while the tab is already on `chrome-error://chromewebdata/`. Treat that as **the interstitial is showing**, not as a failed navigation.
-
-1. Snapshot the **current** tab. Do **not** `goto` / navigate the same URL again. Do not `Start-Process` or open system Chrome. Do not `evaluate` or `run_code_unsafe` to dismiss the warning.
-2. Match the page: title **Privacy error（隐私设置错误）**, heading **Your connection is not private（您的连接不是私密连接）**.
-3. Click **Advanced（高级）** (left white button). Do **not** click **Back to safety** / **Return to safe connection（返回安全连接）**.
-4. Snapshot. Click **Proceed to 172.16.24.12 (unsafe)（继续前往 172.16.24.12（不安全））**, or any control whose name contains **Proceed** / **Continue** / **继续前往** and the current host.
-5. Wait until `#username` or Mail chrome is visible. If it is still missing after one more snapshot, stop. Do not loop `goto`.
+1. Navigate to `https://i1-mail1-c02.ndrtest.local/owa/`. If you get HTTP 4xx–5xx, a connection error, or no logon form after one wait, go to step 2.
+2. Open `https://172.16.24.12/owa/auth/logon.aspx`. Do **not** open `https://172.16.24.12/owa/` first (HTTP 500 before a session exists).
+3. Certificate interstitial (`ERR_CERT_*` / `chrome-error://chromewebdata/`): do **not** re-`goto`. Follow **Recovery**.
+4. Username is usually pre-filled `ndrtest\manager`; if empty, fill `#username`. Do not use `#passwordText`.
+5. Fill `#password` with `Njupt@241`.
+6. Click `div.signinbutton` (visible text **sign in**). If missing, press Enter in `#password`.
+7. Wait until the title contains `Mail - manager@ndrtest.local`. If the logon form is still shown, stop.
 
 # Recipient rules (OWA people picker)
 
-Do this for every To / Cc / Bcc value. Extra recipients do not change the procedure.
-
-**Type a full SMTP address.** Prompt `manager` means type `manager@ndrtest.local`. Never type a short alias.
-
-**Use the field textbox** (`role=textbox`, `aria-label` To / Cc / Bcc). Do **not** click the buttons whose `aria-label` is `Cc button. Press Enter to open recipient selection window…` or `Bcc button. Press Enter to open recipient selection window…` — those open a separate people window.
-
-**Show extra fields (not the people window):**
-- Cc missing: click **Show Cc** (`aria-label=Show Cc`). Snapshot until a Cc textbox exists.
-- Bcc missing: click **Show Bcc** (`aria-label=Show Bcc`; visible text is often just **Bcc**, on the right of the To row). Snapshot until a Bcc textbox exists.
+Fill every To / Cc / Bcc with the **full SMTP** address. `manager` means `manager@ndrtest.local`. Never a short alias.
 
 For **each** address:
 
-1. Snapshot. Click the textbox.
-2. Type the **entire** SMTP address in one shot (no chunked typing, no `submit: true` except the Enter below).
+1. Click the field (`input[aria-label="To"]`, `"Cc"`, `"Bcc"`).
+2. Type the entire SMTP address in one shot.
 3. Press **Enter once**.
-4. Snapshot. A **Suggested contacts** box usually sits under the field and covers Cc / Subject / body. It contains a **button** whose name is `Use this address: <the smtp you just typed>` and a **Search Directory** button. Playwright MCP clicks on the next field **timeout** while that box is up (`subtree intercepts pointer events` from `_fp_7`).
-5. **Click the button `Use this address: <that exact smtp>`.** Do not click Search Directory. Do not click `Use this address:` for a *previous* recipient — leftover markup stays in the DOM (`div[ispopup="1"]` can remain after the box is gone; ignore it).
-6. Snapshot. Success: the field shows a recipient **pill** (chip with an X) **and** the Suggested contacts box for this smtp is gone. Then go to the next field. If **Use this address** is already gone after Enter but a pill is present (common on Cc/Bcc), continue — do not wait for the button.
-7. If the pill shows *The address may not be valid*: click Remove on the pill, type the full SMTP again, Enter, then click **Use this address:** for that smtp. Do not wait for GAL. Do not `evaluate` the DOM. A short alias may **not** show that warning; still never type short names.
+4. Success = `<smtp> added to the To line` appears in `[role="status"]` and a chip with the display name sits in the To row. **The text you typed then leaves the input — an empty input after Enter is success, not failure.**
+5. If instead a visible `button:has-text("Use this address: <smtp>")` appears, click it.
+6. If neither the status text nor a chip appears, click the field, type the SMTP again, press Enter, and click **Use this address** if offered.
 
-**Never press Escape** in compose. Escape opens **Discard message** (buttons **Discard** / **Don't discard**).
+- Cc missing → `button[aria-label="Show Cc"]`. Bcc missing → `button[aria-label="Show Bcc"]`. Do **not** click the Cc/Bcc buttons that open the recipient-selection window.
+- Never press **Escape**: it opens **Discard message**. If that dialog appears, click **Don't discard**.
+- **Do not loop.** The authoritative signal is `[role="status"]` containing `<smtp> added to the To line`; when it is present the recipient is locked even if the input looks empty and no clickable **Use this address** button is visible. Retry at most once.
 
-If **Discard message** is open: click **Don't discard** (*Return to the message for further editing*). Snapshot. Continue. Do not click the blue **Discard**.
+# Select the target message (shared by view / reply / forward / delete / flag / move)
 
-If a later click times out with *intercepts pointer events*: the Suggested contacts box is still open. Click **Use this address:** for the smtp you last typed, snapshot, retry the blocked click once.
+1. Folder: `[role="treeitem"]:has-text("Inbox") >> nth=0` (or the `folder` value). If search is active (`#path=/mail/search`, folder pane hidden), click `button:has-text("Exit search")` first.
+2. Pick the row **inside the message list only** (`[role="listbox"][aria-label="conversation"] [role="option"]`):
+   - `target: last` → click `... >> nth=0`, then press **`End`**. The reading pane jumps to the oldest message.
+   - `target` is a number N → `... >> nth=<N-1>` (`target: 1` = first email).
+   - `target` is `first email` (legacy) → same as omitted / `target: 1`.
+   - `target` is other text → the row whose text contains it (use **search** if it is not in the first 25 rows).
+   - `target` omitted → `... >> nth=0`.
+3. Confirm the selection: `[aria-label="Reading Pane"]` shows the body and `button[aria-label="More Actions"]` is visible.
 
-Never paste several addresses as one string.
-
-# Dialogs and stale refs
-
-After **any** popup, picker, or Don't-discard dialog: take a **new snapshot**. Previous `aria-ref` / `f3e…` targets are invalid. `find` Subject, Message body, Send, and Sent Items on the new snapshot. Do not reuse refs from before the dialog.
-
-# Shared Mail layout
-
-Verified on `https://172.16.24.12/owa/#path=/mail` (Office 365–style OWA).
-
-Black top bar: **Mail**. App launcher is `#O365_MainLink_NavMenu` (**Open the app launcher to access your Office 365 apps**). Calendar / People / Tasks live in that launcher, not as a left vertical strip.
-
-Left folder pane: search **Search Mail and People** (`Activate Search Textbox`), Favorites (**Inbox**, **Sent Items**, **Drafts**), then mailbox **manager** with **Inbox**, **Drafts**, **Sent Items**, **Deleted Items**, **Junk Email**, **Notes**.
-
-Message list: **New** (plus; clicking it opens compose immediately — there is no **Email message** submenu), **More** (`...`), list header **Inbox** + **Filter**.
-
-Empty reading pane: **Select an item to read**. After a conversation is selected: toolbar **Reply all**, **Delete**, **Archive**, **Junk**, **Sweep**, **Move to**, **Categories**, **Mark as unread**, **Mark as read**, **Flag for follow-up**, **Print**; in the pane **Mail Actions**: **Reply all**, **Reply**, **More Actions**. **Forward** is under **More** / **More Actions**.
-
-Compose (right pane after **New**): To **textbox**; **Show Cc** / **Show Bcc** (`aria-label`; Bcc visible text is often **Bcc**); do not use the Cc/Bcc *recipient-selection* buttons. Subject placeholder **Add a subject**, body **Add a message or drag a file here**, blue **Send**, **Discard**, **Attach**. Two Send buttons exist (compose toolbar and bottom); either compose Send is fine.
-
-Locate controls by visible name or `aria-label` first. Wait for the pane to finish rendering before the next click.
-
-# Prose expansion
-
-Commander sets `min_words` plus `subject` / `topic` or a one-sentence `body` outline. Expand the letter on this host. Do not expect a full letter in the prompt.
-
-Before typing `body`:
-
-1. If `min_words` is present, write original English of at least that many whitespace-separated words about `subject`, `topic`, or the outline. No lorem ipsum. No invented credentials, hosts, or secrets.
-2. If `min_words` is absent and `body` is present, type `body` unchanged (legacy prompts).
-3. Type the expanded text in one shot. Do not expand recipient, subject, paths, or queries.
+**Skip `[Draft]` rows.** A row whose text begins with `[Draft]` (any message in **Drafts**) **cannot be forwarded**: OWA hides/disables **Forward** and clicking the row opens the compose editor, not the reading pane. Match a non-draft message. If the only match for `target` is a draft, **stop and report the ambiguity** — do **not** move the message to another folder, edit it, or send a look-alike "new" email.
 
 # Actions
 
-Skip any field that the prompt omitted. Stop on the first missing required control.
-
-## send email
-
-Required: `recipient`, `subject`, `min_words`. Optional: `body` (short outline), `cc`, `bcc`, `attachment`.
-
-1. Click **Mail** if it is not already selected (top bar or app launcher).
-2. Click **New**. Compose opens in the right pane. Do not wait for an **Email message** menu item.
-3. Lock every `recipient` with **Recipient rules** (full SMTP, Enter, click **Use this address:** for that smtp).
-4. If `cc` is set: after the Suggested contacts box for To is gone, use the **Cc textbox** (click **Show Cc** first if the textbox is missing). Lock each cc address the same way.
-5. If `bcc` is set: click **Show Bcc**, snapshot until a Bcc textbox exists, then lock each address the same way.
-6. Snapshot. Click **Add a subject**. Type `subject` in one shot.
-7. Apply **Prose expansion**, then click **Message body** (`Add a message or drag a file here`). Type the expanded text in one shot.
-8. If `attachment` is set: click **Attach**. Set the file path from the prompt. Wait until a file chip appears.
-9. Snapshot. Click the blue **Send** (compose Send, not a folder).
-10. Wait until the compose pane is gone (list **New** is usable again). Then snapshot. Click **Sent Items** (Favorites row, not a buried duplicate if both exist). Confirm a row whose subject **starts with** `subject` (long or unicode subjects truncate in the list). If it is missing, wait once more and refresh the folder; if still missing, the send failed; stop.
-
-## view email
-
-Required: `target` (default: `first email`). Optional: `folder` (default: Inbox).
-
-1. Click **Mail**, then the folder (`Inbox` unless `folder` is set).
-2. If `target` is `first email`, click the first message row under the list (below Filter if shown).
-3. Otherwise click the row whose subject or sender contains `target`. Scroll the list until it is visible. If it is not found, stop.
-4. Wait until the reading pane shows the body.
-5. If the message looks unread **and** toolbar **Mark as read** is visible, click it. If the control is missing, the item is already read or this row is not a message; continue. Same for **Flag for follow-up** / **Mark as unread**: missing control means skip, not task failure.
-6. Read the body. Do not reply unless the prompt action is reply / reply all / forward.
-
-## reply
-
-Required: `min_words`. Optional: `body` (short outline), `target`, `cc`.
-
-1. Complete **view email** for `target` (default first email).
-2. Prefer **Reply** under reading-pane **Mail Actions**. On this OWA build the top toolbar usually shows **Reply all** and **not** **Reply**. If **Reply** is missing, click toolbar **Reply all** (same compose for a two-party thread). Do not fail the task because `getByRole('button', { name: 'Reply' })` is false.
-3. If `cc` is set, lock each address with **Recipient rules**.
-4. Apply **Prose expansion**, then type the expanded text at the **top** of the compose area. Keep the quoted original.
-5. Click **Send**. Confirm the subject appears in **Sent Items**.
-
-## reply all
-
-Same as **reply**, but click **Reply all**.
+Skip omitted fields. Stop on the first missing required control.
 
 ## forward
 
-Required: `recipient`, `min_words`. Optional: `target`, `body` (short outline), `cc`.
+Required: `recipient`, `min_words`. Optional: `target` (default first email), `body`, `cc`.
 
-1. Complete **view email** for `target`.
-2. Open **More Actions** in the reading pane (or toolbar **More**) and click **Forward**.
-3. Fill **To** / **Cc** using Recipient rules.
-4. Apply **Prose expansion**, then type the expanded text above the quoted message.
-5. Click **Send**. Confirm **Sent Items**.
+1. Click **Mail** (`a:has-text("Mail")`), then select the message per **Select the target message**.
+2. Click `button[aria-label="More Actions"]`.
+3. Click `[role="menu"][aria-label="Context menu"] button:has-text("Forward")`. The compose title becomes `Fw: <subject>`.
+   - **Do not** use the top toolbar **More** — its menu has no **Forward**.
+4. Fill **To** (and `cc`) using **Recipient rules**.
+5. Type the expanded body into `[role="textbox"][aria-label="Message body"]` (above the quoted message).
+6. Click `button[aria-label="Send"] >> nth=0`.
+7. Verify: open **Sent Items** (`[role="treeitem"]:has-text("Sent Items") >> nth=0`) and confirm the top row is addressed to `recipient` with the subject/body you wrote. OWA often hides the `Fw:` prefix in the list, so do not require it. If missing, wait once, reload the folder, then stop.
+
+## reply / reply all
+
+Required: `min_words`. Optional: `body`, `target`, `cc`.
+
+1. Select the message per **Select the target message**.
+2. Click `button[aria-label="More Actions"]`, then `...button:has-text("Reply")` or `"Reply all"`. Some threads only expose **Reply all** — use it. Do not fail because a control named exactly **Reply** is absent.
+3. Fill `cc` if set; type the expanded body at the top of the compose body and keep the quoted original.
+4. Click `button[aria-label="Send"] >> nth=0`, then verify in **Sent Items**.
+
+## send email
+
+Required: `recipient`, `subject`, `min_words`. Optional: `body`, `cc`, `bcc`, `attachment`.
+
+1. Click **Mail**, then `button[title="Write a new message (N)"]` (the New button has **title**, not `aria-label`; plain `button:has-text("New")` can match several).
+2. Fill **To** / **Cc** / **Bcc** (Recipient rules).
+3. Fill `input[aria-label^="Subject"]`.
+4. Type the expanded body into `[role="textbox"][aria-label="Message body"]`.
+5. If `attachment`: see **Attachments** below — click **Attach** (`button[aria-label="Attach"]`), set an allowed path, wait for the file chip.
+6. Click `button[aria-label="Send"] >> nth=0`.
+7. Verify **Sent Items** for the top row addressed to `recipient` (the `subject` may render without any prefix).
+
+# Attachments
+
+`file_upload` only accepts paths under the workspace roots (the HolyFW folder and its `.playwright-mcp`). A UNC/share path (e.g. `\\172.16.24.11\...`) or any path outside those roots fails with *File access denied … outside allowed roots*.
+
+1. Resolve the file:
+   - Bare filename (e.g. `intern-kickoff.pptx`) → find it under the workspace root (`$env:USERPROFILE\Desktop\HolyFW`) or the Desktop.
+   - UNC / share path → copy it next to the workspace: `Copy-Item -LiteralPath "<unc>" -Destination "$env:USERPROFILE\Desktop\HolyFW\.playwright-mcp\<name>" -Force`.
+2. Click **Attach** (`button[aria-label="Attach"]`) → a file chooser opens.
+3. `playwright_browser_file_upload` with the **allowed** path.
+4. Wait until the file chip appears in compose (check `document.body.innerText` contains the filename), then Send.
+
+## view email
+
+Required: `target` (default first email). Optional: `folder`.
+
+1. Select the target message per **Select the target message** (respect `folder`).
+2. Read `[aria-label="Reading Pane"]`. Do not reply unless the action is reply/reply all/forward.
 
 ## search
 
-Required: `query`.
+Required: `query`. Optional: `target`.
 
 1. Click **Mail**.
-2. Click **Search Mail and People** at the top of the folder pane (`Activate Search Textbox`). Do **not** wait for a placeholder named exactly `Search Mail` — that locator times out.
-3. Clear any existing text. Type `query`. Press Enter.
-4. Wait for the result list. Click the first row, or the row matching `target` if set.
+2. Click `button[aria-label="Activate Search Textbox"]`; the focused box is `input[role="combobox"][aria-label^="Search mail and people"]`.
+3. Clear existing text, type `query`, press **Enter**.
+4. Read the result rows `[role="listbox"][aria-label="conversation"] [role="option"]`. Click the first, or the one containing `target`. Skip `[Draft]` rows unless the task is about a draft.
 5. Confirm the reading pane shows a body or an empty-result message. Do not invent hits.
+6. To leave search and restore the folder pane (folder rows are hidden while search is active), click `button:has-text("Exit search")`.
 
-## delete
+## delete / move / flag / mark unread / save draft / attach and send / open calendar·people·tasks
 
-Optional: `target`, `folder`.
+- **delete**: select the message per **Select the target message**, click toolbar `button[aria-label="Delete (Del)"]`; confirm if asked; verify the row is gone.
+- **move**: select, click `button[aria-label="Move To (V)"]`, click the destination folder, verify. Do not use move to "fix" a draft or any other message outside the task.
+- **flag**: select, click `button[aria-label="More Actions"] >> nth=0`, then `[role="menu"][aria-label="Context menu"] button:has-text("Flag")`. If the item reads **Mark complete**, it is already flagged. For `target: last`, use the shared selection (press `End`). Do not hunt the inline hover flag icon.
+- **mark unread**: select, click `button[aria-label="More Actions"] >> nth=0`, then `...button:has-text("Mark as unread")`.
+- **save draft**: compose as **send email** but do **not** Send; open another folder so OWA autosaves, then open **Drafts** and confirm the row. Click **Discard** only if the prompt says discard.
+- **attach and send**: **send email** with `attachment` required.
+- **open calendar / people / tasks**: click `#O365_MainLink_NavMenu`, then the app. Do not create items unless the prompt supplies fields.
 
-1. Complete **view email**.
-2. Click toolbar **Delete** (`Delete (Del)`).
-3. If a confirmation dialog appears, confirm.
-4. Verify the row is gone from the current folder or present in **Deleted Items**. If search already finds no row, delete succeeded (idempotent).
+# Prose expansion
 
-## move
+Commander sets `min_words` plus `subject` / `topic` or a one-sentence `body` outline. Before typing the body:
 
-Required: `folder` (destination). Optional: `target`.
+1. If `min_words` is present, write original English of at least that many whitespace-separated words about `subject` / `topic` / outline. No lorem ipsum; no invented credentials, hosts, or secrets.
+2. Else if `body` is present, type `body` unchanged.
+3. Type it in one shot with the normal `type` / `fill` (do **not** pass `slowly: true` — slow-typing a long body trips the tool timeout). Do not expand recipient, subject, paths, or queries.
 
-1. Complete **view email**.
-2. Click toolbar **Move to**.
-3. Click the destination folder name.
-4. Open that folder and confirm the message is listed.
+# Recovery (symptom → fix)
 
-## flag
-
-Optional: `target`.
-
-1. Complete **view email**.
-2. If toolbar **Flag for follow-up** is missing, the item cannot be flagged from this view (often the first list `option` is not a mail, or the pane is still compose). Select a real message row first and retry once; if still missing, skip flag (do not fail the mailbox session).
-3. Click **Flag for follow-up**. Confirm the flag icon is set.
-
-## mark unread
-
-Optional: `target`.
-
-1. Complete **view email**.
-2. Click toolbar **Mark as unread**.
-3. Confirm the row looks unread.
-
-## save draft
-
-Required: `min_words`. Optional: `body` (short outline), `recipient`, `subject`.
-
-1. Click **New**. Compose opens in the right pane (same as send email).
-2. Fill any provided To / Subject. Apply **Prose expansion** for the body. Do **not** click Send.
-3. Click **Discard** only if the prompt says discard. Otherwise open another folder so OWA autosaves, then open **Drafts**.
-4. Confirm a draft row exists.
-
-## attach and send
-
-Same as **send email** with `attachment` required. Path comes from the prompt. Do not invent a file path.
-
-## open calendar / people / tasks
-
-Click `#O365_MainLink_NavMenu` (app launcher), then **Calendar**, **People**, or **Tasks**. Calendar lands on `#path=/calendar/view/Month`. Wait for that module’s main pane. Do not create events or contacts unless the prompt gives fields; if it does, click **New**, fill only those fields, then save if a Save button is shown.
-
-# Verify then close
-
-Do not close the browser until the verification step for the action succeeded. Then close the browser (playwright-browser session end).
+- **Selector still fails after one retry** → **Visual fallback**: `take_screenshot` once, read it, continue. Do not dump a full a11y snapshot of Inbox.
+- **A message-row click fails with *not visible* or *strict mode*** → you matched a hidden search-filter listbox. Scope to `[role="listbox"][aria-label="conversation"] [role="option"]`.
+- **Snapshot output huge / "truncated"** → stop snapshotting; use the selector table.
+- **strict mode violation (2+ matches)** → append `>> nth=0`, or use the exact button selector for that menu item.
+- **`intercepts pointer events`** → a Suggested-contacts box is covering the field: click `button:has-text("Use this address: <smtp>")`, then retry the blocked click once.
+- **`chrome-error://chromewebdata/` / `ERR_CERT_*` / "Your connection is not private"** → the interstitial is showing. Snapshot once, click **Advanced（高级）**, click **Proceed to 172.16.24.12 (unsafe)（继续前往…）**. Never re-`goto`; never click **Back to safety**; never open a second browser.
+- **HTTP 500 on the FQDN** → retry on `https://172.16.24.12/owa/auth/logon.aspx`.
+- **Reading pane stays "Select an item to read"** → click the row once more (scoped selector). If it still does not open, the row may be a draft (it opens the compose editor) — see the draft rule.
+- **Forward missing / clicking the row opens the compose editor** → the target is a `[Draft]`. Stop and report; do not move or edit it.
+- **A folder row (`treeitem`) is not visible / times out** → search is active. Click `button:has-text("Exit search")` first.
+- **`File access denied … outside allowed roots` on attach** → copy the file under `$env:USERPROFILE\Desktop\HolyFW\.playwright-mcp\` and upload that path.
+- **Discard message dialog** → click **Don't discard**.
+- **To input empty with no chip** → check `[role="status"]` for "added to the To line"; if absent, re-type the full SMTP, press Enter, then click **Use this address:**.
+- **Tool timeout** → wait, retry the same step once, then stop.
 
 # Anti-patterns
 
+- Do not take a screenshot until the verified selector has failed twice.
+- Do not switch to a playwright-browser task or open a second browser on `/owa/`.
 - Do not use Gmail, Outlook desktop, or a local mail client.
-- Do not guess another role’s password.
-- Do not skip Enter after each recipient.
-- Do not click Send on a reply task, or Reply on a view task.
-- Do not continue if Sign in did not reach Mail.
-- Do not open `https://172.16.24.12/owa/` as the first IP URL (HTTP 500). Use `/owa/auth/logon.aspx`.
-- Do not click **Back to safety** / **Return to safe connection（返回安全连接）** on a certificate interstitial.
-- Do not `goto` / navigate the same URL again after `ERR_CERT_*` or `chrome-error://chromewebdata/`.
-- Do not open a second browser (`Start-Process`, system Chrome) to bypass the certificate page.
-- Do not fail because toolbar **Reply** is missing; use **Reply all**.
-- Do not press Escape in compose.
+- Do not guess another role's password.
+- Do not take full-page snapshots in the mail view; do not snapshot twice in a row.
+- Do not match message rows with an unscoped `[role="listbox"]`; always add `[aria-label="conversation"]`.
+- Do not forward, edit, or move a `[Draft]`; if the only `target` match is a draft, stop.
+- Do not move messages between folders, or flag/unflag other messages, as a "workaround".
+- Do not upload a file from outside the workspace roots; copy it into `.playwright-mcp` first.
 - Do not type short aliases into To/Cc/Bcc.
-- Do not wait on *may not be valid*; remove the pill and retype the full SMTP.
-- Do not click the next field while a **Suggested contacts** / **Use this address:** box is covering compose. Leftover `div[ispopup="1"]` in the DOM after the box is gone is not a blocker.
-- Do not click the Cc/Bcc button that opens a recipient-selection window.
+- Do not press Escape in compose.
+- Do not click the top toolbar **More** for Forward.
+- Do not use `run_code_unsafe` / raw `evaluate` to click when a selector above matches.
+- Do not open `https://172.16.24.12/owa/` as the first IP URL (HTTP 500).
+- Do not re-`goto` after `ERR_CERT_*`; do not click **Back to safety**.
+- Do not fail because toolbar **Reply** is missing; use **Reply all**.
 
 # Idempotency
 
-- Sign in: if Inbox is already visible, skip the logon form.
+- Sign in: skip the form if Inbox is already visible.
 - View / search the same subject twice is safe.
-- Send / reply / forward always create a new message; use a unique `subject` when the caller needs to find the mail later.
+- Send / reply / forward always create a new message; use a unique `subject` to find it later.
 - Mark as read / delete: skip if the control or the row is already gone.

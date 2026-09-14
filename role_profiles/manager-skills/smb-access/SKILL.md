@@ -74,30 +74,29 @@ Commander sets `min_words` plus `topic` or a one-sentence `content` outline. Exp
 
 When `create file` / `update file` uses a `.docx` path, write a real Word document from the expanded prose, then **upload** it to the share. Do **not** `Set-Content` a `.docx` (that is not a Word file). Do not rename a `.txt` to `.docx`.
 
-1. Apply **Prose expansion**.
-2. Save locally with Word COM (Desktop or `$env:TEMP`), then `Copy-Item` to the UNC path.
+1. Apply **Prose expansion** and write it to a local `.txt` (use the Write tool), e.g. `(Join-Path $env:TEMP 'opencode\<name>.txt')`.
+2. Convert to `.docx` with Word COM and save to a **local temp path**, then `Copy-Item` to the UNC path.
 3. Success: UNC `Test-Path` is `$true` and `(Get-Item -LiteralPath '<unc>').Length -gt 4000`.
 
+**Use `SaveAs([ref]$path,[ref]16)` to `$env:TEMP` — not `SaveAs2`, and not a OneDrive/Desktop path.** On this host `SaveAs2` (and saving to the redirected Desktop) hangs indefinitely; `SaveAs` to the temp dir works.
+
 ```powershell
-$local = Join-Path $env:USERPROFILE 'Desktop\<file.docx>'
-$parent = Split-Path -Parent '<unc>'
-if (-not (Test-Path -LiteralPath $parent)) {
-  New-Item -ItemType Directory -Force -Path $parent | Out-Null
-}
+$srcTxt = Join-Path $env:TEMP 'opencode\<name>.txt'
+$local  = Join-Path $env:TEMP 'opencode\<name>.docx'
+$unc    = '\\172.16.24.11\Company_Data\<subpath>\<name>.docx'   # real UNC: two leading backslashes
+$text = (Get-Content -LiteralPath $srcTxt -Raw) -replace "`r`n","`r" -replace "`n","`r"
 $word = New-Object -ComObject Word.Application
-$word.Visible = $false
-$word.DisplayAlerts = 0
-$doc = $word.Documents.Add()
-$word.Selection.TypeText('<topic>')
-$word.Selection.TypeParagraph()
-$word.Selection.TypeText('<expanded prose>')
-$doc.SaveAs2($local, 16)
-$doc.Close()
-$word.Quit()
-Copy-Item -LiteralPath $local -Destination '<unc>' -Force
+$word.Visible = $false; $word.DisplayAlerts = 0
+$doc = $word.Documents.Add(); $doc.Content.Text = $text
+$doc.SaveAs([ref]$local, [ref]16); $doc.Close(); $word.Quit()
+[System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null
+$parent = Split-Path -Parent $unc
+if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+Copy-Item -LiteralPath $local -Destination $unc -Force
+Test-Path -LiteralPath $unc; (Get-Item -LiteralPath $unc).Length
 ```
 
-If Word COM is unavailable, stop and report the error. Text files (`.txt`, `.md`, `.csv`) still use `Set-Content` / `Add-Content` `-Encoding UTF8` as below.
+If the command is killed by a timeout, run `Stop-Process -Name WINWORD -Force -ErrorAction SilentlyContinue`, then retry with the recipe above (avoid `$word.Selection.TypeText` loops — assigning `$doc.Content.Text` in one shot is reliable). If Word COM is genuinely unavailable, stop and report the error. Text files (`.txt`, `.md`, `.csv`) still use `Set-Content` / `Add-Content` `-Encoding UTF8` as below.
 
 # Operations
 
@@ -219,3 +218,5 @@ Success: `Test-Path` is `$false`. Never `Remove-Item` `\\172.16.24.11\Company_Da
 - Do not call `New-Item -LiteralPath` (parameter does not exist on PS 5.1 here). Use `New-Item -Path`.
 - Do not put `..` in `Rename-Item -NewName` (OS rejects it as a path).
 - Do not `Set-Content` or `Get-Content` a `.docx`. Use Word COM, then `Copy-Item` to upload or download.
+- Do not use `SaveAs2` or save a Word document to the Desktop/OneDrive; both hang on this host. Use `SaveAs([ref]$path,[ref]16)` to `$env:TEMP`.
+- Do not build a document with a per-paragraph `$word.Selection.TypeText` loop; assign `$doc.Content.Text` once.

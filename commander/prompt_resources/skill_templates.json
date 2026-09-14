@@ -5,11 +5,11 @@
     "template": "Use the exchange-use skill, open the Exchange mailbox, <action>, {<field>: <value>, ...}",
     "params": "JSON-like object: no quotation marks around keys or values. Omit unused keys. Omit the {...} block when the action has no fields.",
     "rules": [
-      "target defaults to first email when omitted on view, reply, reply all, forward, delete, or flag.",
-      "recipient, cc, and bcc must be a lab role short name (manager, hr, accountancy, programmer) or the matching *@ndrtest.local address. Do not send to the current role.",
+      "When target is omitted on view, reply, reply all, forward, delete, or flag, the soldier opens the first email. Use target: 1 for the first row, target: last for the oldest row, or a subject/sender substring. Never emit the string first email as a target value.",
+      "recipient, cc, and bcc must be a lab role short name (manager, hr, accountancy, programmer) or the matching *@ndrtest.local address. Do not set recipient, cc, or bcc to the current role's short name or mailbox.",
       "Do not invent mailboxes outside the four lab roles.",
       "Prefer send email, reply, and forward over view-only mailbox actions. Use attachment when a share file already exists in the day's story.",
-      "For send email, reply, reply all, forward, and save draft: set min_words to an integer from 500 to 800. Do not write a long body; at most one short outline sentence. The soldier expands the prose.",
+      "For send email, reply, reply all, forward, and save draft: set min_words to an integer from 300 to 800. Do not write a long body; at most one short outline sentence. The soldier expands the prose.",
       "Do not put min_words on view, search, delete, move, flag, mark unread, or recipient/subject/path fields."
     ],
     "actions": [
@@ -91,11 +91,12 @@
     "template": "Use the odoo-use skill, log in to the Odoo system, use the <module> module, <operation>, {<field>: <value>, ...}",
     "params": "JSON-like object: no quotation marks around keys or values. Omit unused keys. Omit the {...} block when the operation has no fields.",
     "rules": [
-      "Do not mention playwright-browser in the task string; the odoo-use skill loads it.",
+      "Do not mention playwright-browser in the task string; odoo-use uses Playwright MCP itself.",
       "Use only listed module and operation names.",
       "Create and add operations need a unique name or job position; do not reuse a fixed demo name.",
       "Prefer create, add, update, and post message over view-only module actions.",
-      "For post message: set min_words to an integer from 500 to 800. Do not write a long body; at most one short outline sentence. The soldier expands the prose."
+      "For post message: set min_words to an integer from 300 to 800. Do not write a long body; at most one short outline sentence. The soldier expands the prose.",
+      "For create applicant: set name and optional job position, email, phone. Do not write a long applicant body in the task string."
     ],
     "actions": [
       {
@@ -220,7 +221,7 @@
       "<detail> is a short phrase that restates the op (view a folder, create a file, download a file). Do not add extra semantics.",
       "For create file prefer a .docx path with topic and min_words. The soldier writes a Word document about that topic and uploads it to the share. Do not write the document body in the task string.",
       "Prefer create file, copy, download, and append over view-only folder listing.",
-      "For create file, append, and update file: set min_words to an integer from 500 to 800. Do not write a long content value; at most one short topic sentence.",
+      "For create file, append, and update file: set min_words to an integer from 300 to 800. Do not write a long content value; at most one short topic sentence.",
       "create file write paths should end in .docx (preferred), or .txt, .md, or .csv. append and update file stay on .txt, .md, or .csv.",
       "Use copy to place a .docx onto Exchange or Public (share-to-share). Use download to copy a share file onto the local Desktop."
     ],
@@ -357,7 +358,7 @@
     "rules": [
       "Write the entire numbered list on one line inside the task string. Do not insert raw newlines.",
       "Every playwright task must include at least four numbered ops, a Verify: clause, and Close the browser after verification.",
-      "Never use Google. Never open OWA or Odoo URLs with this skill.",
+      "Public web only. Never use Google. Never open OWA or Odoo URLs (no /owa/, 172.16.24.12, i1-mail1-c02, or 172.16.24.14:8069).",
       "After search, prefer follow with nth, then scroll, extract.",
       "Do not invent in-page control names for unknown public sites.",
       "Do not emit REPLACE_ tokens or other placeholders."

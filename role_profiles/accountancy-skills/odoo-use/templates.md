@@ -1,6 +1,6 @@
 # odoo-use prompt templates
 
-Pass the quoted string to `opencode run`. The skill loads playwright-browser internally; do not require that name in the prompt.
+Pass the quoted string to `opencode run`. Do not mention playwright-browser in the prompt; odoo-use uses Playwright MCP itself.
 
 ## Grammar
 
@@ -21,6 +21,7 @@ Omit the `{...}` block when the operation has no fields. Omit unused keys.
 | `Recruitment` | `create job posting` | `job position` (required), `email address` |
 | `Recruitment` | `update job posting` | `job position`, `department`, `email address` |
 | `Recruitment` | `delete job posting` | `job position` |
+| `Recruitment` | `view applications` | `job position` |
 | `Recruitment` | `create applicant` | `name`, `job position`, `email`, `phone` |
 | `Discuss` | `read inbox` | none |
 | `Discuss` | `post message` | `min_words` (required, 300-800), `body` (optional short outline), `channel`, `topic` |

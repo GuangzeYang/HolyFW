@@ -64,7 +64,7 @@ We use agents to define a set of roles, with each role assigned to a separate ho
 
 When a generated task uses a domain resource, its description must follow the corresponding invocation grammar below. Parameter blocks are JSON-like: no quotation marks around keys or values. Omit unused keys. Omit the `{...}` block when the action or operation has no fields. The task string is the invocation only (never wrap it with `opencode run`).
 
-For actions that produce prose (`send email`, `reply`, `reply all`, `forward`, `save draft`, `create file`, `append`, `update file`, FTPS `upload` / `append` / `update file`, Odoo `post message`): set `min_words` to an integer from 500 to 800. Do not write a long `body` or `content`; at most one short outline sentence. The soldier expands the prose. Do not put `min_words` on paths, recipients, subjects, or view-only actions. SMB `create file` should prefer a `.docx` path plus `topic`; the soldier writes a Word document about that topic and uploads it. `append` / `update file` stay on `.txt`, `.md`, or `.csv`.
+For actions that produce prose (`send email`, `reply`, `reply all`, `forward`, `save draft`, `create file`, `append`, `update file`, Odoo `post message`): set `min_words` to an integer from 300 to 800. For FTPS `upload` / `append` / `update file`: set `min_words` to an integer from 500 to 800. Do not write a long `body` or `content`; at most one short outline sentence. The soldier expands the prose. Do not put `min_words` on paths, recipients, subjects, or view-only actions. SMB `create file` should prefer a `.docx` path plus `topic`; the soldier writes a Word document about that topic and uploads it. `append` / `update file` stay on `.txt`, `.md`, or `.csv`.
 
 Prefer traffic-producing work as the bulk of a generated day: Exchange `send email` / `reply` / `forward` (use `attachment` when a share file already exists in the day's story); SMB `create file` / `copy` / `download` / `append`; FTPS `upload` / `download` / `append` / `copy`; Odoo create / update / `post message`; Playwright search then follow. Treat view-only actions (`view email`, view folder, `list` on FTPS, `view calendar`, `view surveys`, `open people`, `open tasks`, `flag`, `mark unread`) as filler. Keep one skill invocation per task. Related traffic may be consecutive when causal.
 
@@ -74,7 +74,7 @@ Template:
 
 `Use the exchange-use skill, open the Exchange mailbox, <action>, {<field>: <value>, ...}`
 
-`target` defaults to `first email` when omitted on view, reply, reply all, forward, delete, or flag. `recipient`, `cc`, and `bcc` must be a lab role short name (`manager`, `hr`, `accountancy`, `programmer`) or the matching `*@ndrtest.local` address, and must not be the current role.
+When `target` is omitted on view, reply, reply all, forward, delete, or flag, the soldier opens the first email. Use `target: 1` for the first row, `target: last` for the oldest row, or a subject/sender substring. Never emit the string `first email` as a target value. `recipient`, `cc`, and `bcc` must be a lab role short name (`manager`, `hr`, `accountancy`, `programmer`) or the matching `*@ndrtest.local` address, and must not be the current role's short name or mailbox.
 
 | `<action>` | Required fields | Optional fields |
 |---|---|---|
@@ -101,7 +101,7 @@ Template (one line; numbered ops; must include `Verify:` and `Close the browser 
 
 Ops: `goto` `search` `click` `type` `fill` `scroll` `wait` `select` `press` `check` `uncheck` `upload` `download` `extract` `follow` `hover` `back` `forward` `reload` `new tab`.
 
-Do not use Google. Do not open OWA or Odoo URLs with this skill. Each Playwright task must include at least four numbered ops (for example `search` → `follow` → `scroll` → `extract`), plus `Verify:` and `Close the browser after verification.` After `search`, prefer `follow` with `nth`, then `scroll`, `extract`. Do not invent in-page control names for unknown public sites. Do not emit placeholder tokens.
+Public web only. Do not use Google. Do not open OWA or Odoo URLs (`/owa/`, `172.16.24.12`, `i1-mail1-c02`, `172.16.24.14:8069`). Each Playwright task must include at least four numbered ops (for example `search` → `follow` → `scroll` → `extract`), plus `Verify:` and `Close the browser after verification.` After `search`, prefer `follow` with `nth`, then `scroll`, `extract`. Do not invent in-page control names for unknown public sites. Do not emit placeholder tokens.
 
 ## SMB Shared Folders
 
