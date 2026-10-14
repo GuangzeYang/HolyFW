@@ -27,10 +27,31 @@
     "combos": "wordlists/combos.txt"
   },
   "campaign": {
+    "goal": "Collect employee and infrastructure files, stage them, and upload one benign lab payload per compromised member host.",
+    "objectives": [
+      {
+        "id": "employee-documents",
+        "goal": "Collect at least 3 distinct files from 2 member hosts",
+        "status": "active",
+        "progress": {"files": 0, "hosts": [], "paths": []}
+      },
+      {
+        "id": "payload-deployment",
+        "goal": "Upload one benign lab payload to 2 compromised hosts",
+        "status": "pending",
+        "progress": {"hosts": [], "tools": []}
+      },
+      {
+        "id": "dc-configuration",
+        "goal": "Collect SYSVOL, GPO, and directory export from the DC",
+        "status": "pending",
+        "progress": {"techniques": []}
+      }
+    ],
     "machine_account": {"name": "", "password": ""},
     "local_admin": {"username": "", "password": ""},
     "tools_dir": "tools",
-    "tools": [],
+    "tools": ["lab-payload-1m.bin", "lab-payload-20m.bin", "lab-payload-64m.bin"],
     "staging_dir": ""
   },
   "tickets": {"tgt": [], "service": [], "golden": [], "silver": []},

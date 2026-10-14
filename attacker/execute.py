@@ -17,6 +17,7 @@ from common.llm_catalog import enabled_provider, opencode_model_spec
 from common.task_markdown import OPENCODE_RUN_FLAGS, format_opencode_session
 
 from attacker.capture_paths import OUTPUT_DIR_ENV, TASK_ID_ENV, resolve_attacker_skill_root
+from attacker.planner import action_signature, parse_task_action
 from attacker.task_record import task_record_path, write_attacker_task_record
 
 OPENCODE_PERMISSION_ALLOW: dict[str, object] = {
@@ -190,6 +191,17 @@ def execute_task(
         packed = run(item["task"], timeout_seconds)
     exit_code, stdout, stderr = unpack_opencode_result(packed)
     item["completed_at"] = iso_now()
+    item["exit_code"] = str(exit_code)
+    if exit_code == TIMEOUT_EXIT_CODE:
+        item["status"] = "timeout"
+    elif exit_code == 0:
+        item["status"] = "success"
+    else:
+        item["status"] = "failed"
+    parsed = parse_task_action(item.get("task") or "")
+    if parsed is not None:
+        item["technique_id"] = parsed["technique"]
+        item["action_signature"] = action_signature(parsed)
     logger.info(
         "Finished planned_time=%s task_id=%s exit_code=%s started_at=%s completed_at=%s",
         item.get("planned_time"),
@@ -211,6 +223,9 @@ def execute_task(
             "command": format_opencode_command(prompt),
             "stdout": stdout,
             "stderr": stderr,
+            "status": item.get("status") or "",
+            "technique_id": item.get("technique_id") or "",
+            "action_signature": item.get("action_signature") or "",
         },
     )
     logger.info("Wrote task record %s", record_path)

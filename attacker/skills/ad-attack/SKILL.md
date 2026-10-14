@@ -377,6 +377,9 @@ One object per domain controller, server, or member machine. Item shape:
   "services": ["SMB", "LDAP", "DNS"],
   "open_ports": [88, 135, 389, 445],
   "shares": ["Company_Data", "Public"],
+  "discovered_files": [
+    {"path": "C:\\HolyFW\\Documents\\Finance\\annual-report.bin", "collected": false}
+  ],
   "compromised": false,
   "source": "discovery.host-scan",
   "stale": false,
@@ -443,7 +446,9 @@ Attacker-owned/decided values that are not discovered facts:
 |-------|---------|
 | `machine_account.name` / `password` | The machine account name (ends with `$`) and password created by `persistence.add-computer` and reused by `persistence.rbcd` |
 | `tools_dir` | Local directory that holds attacker tools (relative to the skill root or absolute) |
-| `tools[]` | Local tool filenames used by `lateral.tool-transfer` (e.g. `mimikatz.exe`) |
+| `tools[]` | Local benign payload filenames used by `lateral.tool-transfer`. The lab seed creates `lab-payload-1m.bin`, `lab-payload-20m.bin`, and `lab-payload-64m.bin`. |
+| `goal` | Long-term campaign objective used by the planner. |
+| `objectives[]` | Sub-goals with `id`, `goal`, `status` (`pending`, `active`, `completed`), and `progress`. |
 | `local_admin_account.name` / `password` | Account the agent uses for local elevation on the attack host (Local Elevation Protocol): shape `{"name": "<account>", "password": "<password>"}`. Operator-preseeded as a fallback; the agent also records the account it actually elevated with so later elevations reuse it. |
 | `local_admins[]` | Members of the local Administrators group discovered by `discovery.local-groups` (feeds the Local Elevation Protocol and host privilege mapping) |
 | `staging_dir` | Local directory where collected data is staged and archived by `collection.archive` |
@@ -485,6 +490,7 @@ Reference grammar:
 - `<field>`: the object attribute to use (e.g. `password`, `ntlm_hash`, `kerberos_aes256`, `usernames`, `passwords`, `spns`, `open_ports`, `os`, `dc_ip`, `domain_sid`).
 - `<target-ref>`: `host <ip|fqdn|machine_account>`, `domain`, or `subnet <cidr>`.
 - The `using the <field> of <object>` clause is omitted for techniques with no source object (orientation, host-scan, port-scan).
+- Intent clauses follow the target: `query <name>`, `path <path>`, and `tool <filename>`. `lateral.remote-query` uses `query`. `collection.local-file-download` uses `path` of one uncollected `hosts[].discovered_files` entry. `lateral.tool-transfer` uses `tool` of one `campaign.tools` filename. A different query, path, or tool is a different action.
 
 Examples:
 
@@ -499,7 +505,7 @@ Use the ad-exfil skill: using the files of campaign, execute exfil.smb against h
 Use the ad-persistence skill: using the ntlm_hash of user krbtgt, execute persistence.golden-ticket against domain.
 ```
 
-The only parameter that may originate outside `state.json` is a single candidate password for spraying (the user/password wordlist paths themselves come from `wordlists`).
+The only parameters that may originate outside `state.json` are the intent clause (`query`, `path`, or `tool`) and a single candidate password for spraying (the user/password wordlist paths themselves come from `wordlists`). A download `path` must already be listed in that host's `discovered_files`.
 
 ---
 

@@ -23,17 +23,24 @@ from attacker.generation import (
     parse_generated_tasks,
     task_targets_in_lab_nets,
 )
-from attacker.capture_paths import capture_file_stem, dataset_output_dir, resolve_attacker_skill_root
-from attacker.runtime import run_loop, step
+from attacker.planner import (
+    action_signature,
+    filter_planner_batch,
+    parse_task_action,
+    record_campaign_progress,
+)
 from attacker.task_file import (
     all_completed,
     empty_slot_indices,
     load_attacker_payload,
     load_attacker_tasks,
+    normalize_task_item,
     pending_ready,
     save_attacker_tasks,
     tasks_from_schedule,
 )
+from attacker.capture_paths import capture_file_stem, dataset_output_dir, resolve_attacker_skill_root
+from attacker.runtime import run_loop, step
 
 
 CATALOG_TECHNIQUE_IDS = (
@@ -94,8 +101,10 @@ CATALOG_TECHNIQUE_IDS = (
     "lateral.tool-transfer",
     "lateral.exec-winrm",
     "lateral.exec-schtasks",
+    "lateral.remote-query",
     "collection.share-download",
-    "collection.local-file",
+    "collection.remote-file-search",
+    "collection.local-file-download",
     "collection.archive",
     "collection.sysvol",
     "collection.gpo-files",
@@ -166,8 +175,26 @@ class TaskFileTests(unittest.TestCase):
             original = tasks_from_schedule(["09:11"])
             save_attacker_tasks(path, original)
             loaded = load_attacker_tasks(path)
-            self.assertEqual(loaded[0]["planned_time"], "09:11")
-            self.assertEqual(loaded[0]["task_id"], original[0]["task_id"])
+        self.assertEqual(loaded[0]["planned_time"], "09:11")
+        self.assertEqual(loaded[0]["task_id"], original[0]["task_id"])
+
+    def test_normalize_keeps_execution_fields(self) -> None:
+        item = normalize_task_item(
+            {
+                "task": "Use the ad-discovery skill: execute discovery.orientation against domain.",
+                "planned_time": "09:11",
+                "started_at": "",
+                "completed_at": "2026-08-23T09:12:00",
+                "exit_code": "0",
+                "status": "success",
+                "technique_id": "discovery.orientation",
+                "action_signature": "discovery.orientation||domain|",
+            }
+        )
+        self.assertEqual(item["status"], "success")
+        self.assertEqual(item["exit_code"], "0")
+        self.assertEqual(item["technique_id"], "discovery.orientation")
+        self.assertEqual(item["action_signature"], "discovery.orientation||domain|")
 
 
 class BatchFillTests(unittest.TestCase):
@@ -295,6 +322,8 @@ class ExecutionLogTests(unittest.TestCase):
             )
             self.assertTrue(item["started_at"])
             self.assertTrue(item["completed_at"])
+            self.assertEqual(item["status"], "success")
+            self.assertEqual(item["exit_code"], "0")
             self.assertRegex(item["task_id"], r"^[0-9a-f]{16}$")
             path = logs_dir / "2026-08-23" / f"{item['task_id']}.md"
             self.assertTrue(path.is_file())
@@ -1126,6 +1155,11 @@ class GenerationMessageTests(unittest.TestCase):
         self.assertEqual(user_payload["state"]["domain"]["name"], "ndrtest.local")
         self.assertEqual(user_payload["lab_nets"], ["172.16.24.0/24"])
         self.assertIn("lab_nets", user_payload["output"])
+        self.assertNotIn("known_completed_tasks", user_payload)
+        self.assertIn("recent_actions", user_payload)
+        self.assertIn("cooldowns", user_payload)
+        self.assertIn("batch_constraints", user_payload)
+        self.assertIn(user_payload["campaign"]["stage"], {"orientation", "enumeration", "collection"})
 
     def test_rejects_host_outside_configured_lab_net(self) -> None:
         lab = ("172.16.24.0/24",)
@@ -1202,14 +1236,18 @@ class GenerationMessageTests(unittest.TestCase):
         self.assertIn("requires", system_prompt)
         self.assertIn("FORBIDDEN", system_prompt)
         self.assertIn("Campaign goal", system_prompt)
-        self.assertIn("refresh", system_prompt)
+        self.assertIn("batch_constraints", system_prompt)
+        self.assertNotIn("Irregularly refresh", system_prompt)
         self.assertIn("share", system_prompt)
         self.assertIn("lab_nets", system_prompt)
         self.assertIn("172.16.24.0/24", prompt_template)
         self.assertNotIn("192.168.14.71", prompt_template)
         self.assertIn("Ongoing campaign", prompt_template)
         self.assertIn("collection.share-download", prompt_template)
-        self.assertIn("collection.local-file", prompt_template)
+        self.assertIn("`collection.remote-file-search`", prompt_template)
+        self.assertIn("`collection.local-file-download`", prompt_template)
+        self.assertIn("`lateral.remote-query`", prompt_template)
+        self.assertNotRegex(prompt_template, r"`collection\.local-file`")
         for technique_id in CATALOG_TECHNIQUE_IDS:
             self.assertIn(f"`{technique_id}`", prompt_template)
 
@@ -1338,10 +1376,18 @@ class RequestTaskMdTests(unittest.TestCase):
 
     def test_second_fill_uses_batch_two_filename(self) -> None:
         tasks = tasks_from_schedule(["09:11", "09:22", "10:01", "14:07", "15:20", "16:33"])
+        first_tasks = [
+            "Use the ad-discovery skill: execute discovery.orientation against domain.",
+            "Use the ad-discovery skill: execute discovery.host-scan against subnet 172.16.24.0/24.",
+            "Use the ad-discovery skill: execute discovery.password-policy against domain.",
+            "Use the ad-discovery skill: execute discovery.trust-enum against domain.",
+            "Use the ad-discovery skill: execute discovery.security-software against domain.",
+        ]
+        remainder = "Use the ad-discovery skill: execute discovery.local-groups against domain."
         first = [
             AgentResponse(
                 model="test",
-                response_text=json.dumps({"tasks": [f"task-{index}" for index in range(5)]}),
+                response_text=json.dumps({"tasks": first_tasks}),
                 status_code=200,
                 elapsed_seconds=0.1,
                 raw_response_text="{}",
@@ -1350,7 +1396,7 @@ class RequestTaskMdTests(unittest.TestCase):
         second = [
             AgentResponse(
                 model="test",
-                response_text='{"tasks": ["task-remainder"]}',
+                response_text=json.dumps({"tasks": [remainder]}),
                 status_code=200,
                 elapsed_seconds=0.1,
                 raw_response_text="{}",
@@ -1395,7 +1441,232 @@ class RequestTaskMdTests(unittest.TestCase):
             self.assertEqual(len(batch_two), 1)
             self.assertIn("batch: 1", batch_one[0].read_text(encoding="utf-8"))
             self.assertIn("batch: 2", batch_two[0].read_text(encoding="utf-8"))
-            self.assertEqual(tasks[5]["task"], "task-remainder")
+            self.assertEqual(tasks[5]["task"], remainder)
+
+
+def _foothold_state() -> dict:
+    return {
+        "domain": {"name": "ndrtest.local", "dc_ip": "172.16.24.11"},
+        "hosts": [
+            {
+                "ip": "172.16.24.21",
+                "fqdn": "pc.ndrtest.local",
+                "open_ports": [445],
+                "discovered_files": [
+                    {
+                        "path": "C:\\HolyFW\\Documents\\Finance\\annual-report.bin",
+                        "collected": False,
+                    }
+                ],
+            }
+        ],
+        "users": [{"username": "alice", "password": "secret"}],
+    }
+
+
+def _query(name: str) -> str:
+    return (
+        "Use the ad-lateral skill: using the password of user alice, "
+        f"execute lateral.remote-query against host 172.16.24.21 query {name}."
+    )
+
+
+class PlannerConstraintTests(unittest.TestCase):
+    def test_query_and_path_are_different_signatures(self) -> None:
+        systeminfo = parse_task_action(_query("systeminfo"))
+        whoami = parse_task_action(_query("whoami"))
+        directory = parse_task_action(
+            "Use the ad-lateral skill: using the password of user alice, "
+            "execute lateral.remote-query against host 172.16.24.21 query dir path C:\\HolyFW."
+        )
+        self.assertIsNotNone(systeminfo)
+        self.assertIsNotNone(whoami)
+        self.assertIsNotNone(directory)
+        assert systeminfo is not None and whoami is not None and directory is not None
+        self.assertNotEqual(action_signature(systeminfo), action_signature(whoami))
+        self.assertNotEqual(action_signature(systeminfo), action_signature(directory))
+        self.assertIn("query=dir", action_signature(directory))
+        self.assertIn("path=c:\\holyfw", action_signature(directory))
+
+    def test_success_cooldown_blocks_same_signature(self) -> None:
+        text = "Use the ad-discovery skill: execute discovery.orientation against domain."
+        now = datetime(2026, 8, 23, 12, 0)
+        tasks = [
+            {
+                "task": text,
+                "completed_at": "2026-08-23T10:00:00",
+                "status": "success",
+                "planned_time": "09:00",
+                "started_at": "2026-08-23T10:00:00",
+                "task_id": "a" * 16,
+            }
+        ]
+        kept, reasons, _quota = filter_planner_batch(
+            [text],
+            state={},
+            tasks=tasks,
+            batch_size=1,
+            now=now,
+        )
+        self.assertEqual(kept, [])
+        self.assertTrue(any(reason.startswith("cooldown:") for reason in reasons))
+
+    def test_failure_cooldown_is_shorter_than_discovery_success(self) -> None:
+        text = "Use the ad-discovery skill: execute discovery.orientation against domain."
+        now = datetime(2026, 8, 23, 12, 0)
+        tasks = [
+            {
+                "task": text,
+                "completed_at": "2026-08-23T09:00:00",
+                "status": "failed",
+                "planned_time": "09:00",
+                "started_at": "2026-08-23T09:00:00",
+                "task_id": "b" * 16,
+            }
+        ]
+        kept, _reasons, _quota = filter_planner_batch(
+            [text],
+            state={},
+            tasks=tasks,
+            batch_size=1,
+            now=now,
+        )
+        self.assertEqual(kept, [text])
+
+    def test_share_enum_success_uses_its_own_cooldown(self) -> None:
+        text = (
+            "Use the ad-discovery skill: using the password of user alice, "
+            "execute discovery.share-enum against host 172.16.24.21."
+        )
+        now = datetime(2026, 8, 23, 12, 0)
+        recent = {
+            "task": text,
+            "completed_at": "2026-08-23T11:00:00",
+            "status": "success",
+            "planned_time": "11:00",
+            "started_at": "2026-08-23T11:00:00",
+            "task_id": "c" * 16,
+        }
+        blocked, reasons, _quota = filter_planner_batch(
+            [text],
+            state={},
+            tasks=[recent],
+            batch_size=1,
+            now=now,
+        )
+        self.assertEqual(blocked, [])
+        self.assertTrue(any(reason.startswith("cooldown:") for reason in reasons))
+        older = dict(recent)
+        older["completed_at"] = "2026-08-23T07:00:00"
+        allowed, _reasons, _quota = filter_planner_batch(
+            [text],
+            state={},
+            tasks=[older],
+            batch_size=1,
+            now=now,
+        )
+        self.assertEqual(allowed, [text])
+
+    def test_stale_host_discovery_skips_cooldown(self) -> None:
+        text = "Use the ad-discovery skill: execute discovery.port-scan against host 172.16.24.21."
+        now = datetime(2026, 8, 23, 12, 0)
+        tasks = [
+            {
+                "task": text,
+                "completed_at": "2026-08-23T11:30:00",
+                "status": "success",
+                "planned_time": "11:30",
+                "started_at": "2026-08-23T11:30:00",
+                "task_id": "d" * 16,
+            }
+        ]
+        state = {"hosts": [{"ip": "172.16.24.21", "stale": True}]}
+        kept, _reasons, _quota = filter_planner_batch(
+            [text],
+            state=state,
+            tasks=tasks,
+            batch_size=1,
+            now=now,
+        )
+        self.assertEqual(kept, [text])
+
+    def test_foothold_limits_discovery_and_requires_follow_on_work(self) -> None:
+        scans = [
+            "Use the ad-discovery skill: execute discovery.password-policy against domain.",
+            "Use the ad-discovery skill: execute discovery.trust-enum against domain.",
+            "Use the ad-discovery skill: execute discovery.group-enum against domain.",
+        ]
+        kept, reasons, quota_met = filter_planner_batch(
+            scans,
+            state=_foothold_state(),
+            tasks=[],
+            batch_size=3,
+            now=datetime(2026, 8, 23, 12, 0),
+        )
+        self.assertEqual(len(kept), 1)
+        self.assertFalse(quota_met)
+        self.assertTrue(any(reason.startswith("discovery quota:") for reason in reasons))
+        self.assertTrue(any("collection or lateral" in reason for reason in reasons))
+
+    def test_download_requires_an_uncollected_discovered_path(self) -> None:
+        download = (
+            "Use the ad-collection skill: using the password of user alice, "
+            "execute collection.local-file-download against host 172.16.24.21 "
+            "path C:\\HolyFW\\Documents\\Finance\\annual-report.bin."
+        )
+        missing = (
+            "Use the ad-collection skill: using the password of user alice, "
+            "execute collection.local-file-download against host 172.16.24.21 "
+            "path C:\\HolyFW\\missing.bin."
+        )
+        now = datetime(2026, 8, 23, 12, 0)
+        kept, _reasons, quota_met = filter_planner_batch(
+            [download, _query("systeminfo")],
+            state=_foothold_state(),
+            tasks=[],
+            batch_size=2,
+            now=now,
+        )
+        self.assertEqual(kept, [download, _query("systeminfo")])
+        self.assertTrue(quota_met)
+        rejected, reasons, _quota = filter_planner_batch(
+            [missing],
+            state=_foothold_state(),
+            tasks=[],
+            batch_size=1,
+            now=now,
+        )
+        self.assertEqual(rejected, [])
+        self.assertTrue(any("not an uncollected discovered file" in reason for reason in reasons))
+        collected = _foothold_state()
+        collected["hosts"][0]["discovered_files"][0]["collected"] = True
+        already, reasons, _quota = filter_planner_batch(
+            [download],
+            state=collected,
+            tasks=[],
+            batch_size=1,
+            now=now,
+        )
+        self.assertEqual(already, [])
+        self.assertTrue(any("already collected" in reason for reason in reasons))
+
+    def test_progress_marks_file_collected_and_advances_objective(self) -> None:
+        state = _foothold_state()
+        item = {
+            "status": "success",
+            "task": (
+                "Use the ad-collection skill: using the password of user alice, "
+                "execute collection.local-file-download against host 172.16.24.21 "
+                "path C:\\HolyFW\\Documents\\Finance\\annual-report.bin."
+            ),
+        }
+        self.assertTrue(record_campaign_progress(state, item))
+        self.assertTrue(state["hosts"][0]["discovered_files"][0]["collected"])
+        objective = state["campaign"]["objectives"][0]
+        self.assertEqual(objective["id"], "employee-documents")
+        self.assertEqual(objective["progress"]["files"], 1)
+        self.assertIn("172.16.24.21", objective["progress"]["hosts"])
+        self.assertFalse(record_campaign_progress(state, item))
 
 
 if __name__ == "__main__":

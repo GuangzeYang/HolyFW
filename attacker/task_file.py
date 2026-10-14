@@ -11,6 +11,7 @@ from common import assign_task_id, existing_task_id, parse_hhmm_to_minute, save_
 from common.schedule_shift import SCHEDULE_SHIFT_KEY
 
 TASK_FIELDS = ("task_id", "task", "planned_time", "started_at", "completed_at")
+RESULT_FIELDS = ("exit_code", "status", "technique_id", "action_signature")
 
 
 def tasks_file_path(data_dir: Path, day: date | None = None) -> Path:
@@ -51,6 +52,10 @@ def normalize_task_item(raw: Any) -> dict[str, str]:
         "completed_at": _as_text(raw.get("completed_at")),
         "task_id": existing_task_id(raw.get("task_id")),
     }
+    for key in RESULT_FIELDS:
+        text = _as_text(raw.get(key))
+        if text:
+            item[key] = text
     assign_task_id(item)
     return item
 
@@ -111,10 +116,6 @@ def empty_slot_indices(tasks: list[dict[str, str]]) -> list[int]:
 
 def all_completed(tasks: list[dict[str, str]]) -> bool:
     return bool(tasks) and all(task_is_complete(item) for item in tasks)
-
-
-def completed_task_texts(tasks: list[dict[str, str]]) -> list[str]:
-    return [_as_text(item.get("task")) for item in tasks if task_is_complete(item) and task_has_content(item)]
 
 
 def raw_tasks_missing_ids(path: Path) -> bool:

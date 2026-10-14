@@ -6,16 +6,25 @@ import ipaddress
 import json
 import logging
 import re
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from common import extract_react_finish_json, repair_json_text
 from common.agent_request_abc import AgentRequestABC, AgentRequestError, AgentTimeoutError
 
 from attacker.extract_pcap import ip_in_nets, lab_nets_from_config, parse_networks
 from attacker.logging_setup import write_request_task_md
-from attacker.task_file import completed_task_texts, empty_slot_indices
+from attacker.planner import (
+    active_cooldowns,
+    batch_constraints_for,
+    campaign_stage,
+    filter_planner_batch,
+    merge_planner_config,
+    planner_state_view,
+    recent_actions,
+)
+from attacker.task_file import empty_slot_indices
 
 DEFAULT_BATCH_SIZE = 5
 ATTACKER_PACKAGE_DIR = Path(__file__).resolve().parent
@@ -224,23 +233,41 @@ def build_generation_messages(
     prompt_template: str,
     state: dict[str, Any],
     lab_nets: Sequence[str] = (),
+    planner: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
+    rejected: Sequence[str] | None = None,
 ) -> tuple[str, str]:
     nets = tuple(str(item) for item in lab_nets if str(item).strip()) or lab_nets_from_config(None)
-    payload = {
+    config = merge_planner_config(planner)
+    clock = now if now is not None else datetime.now().astimezone()
+    view = planner_state_view(state)
+    campaign = view.get("campaign") if isinstance(view.get("campaign"), dict) else {}
+    payload: dict[str, Any] = {
         "batch_size": int(batch_size),
         "lab_nets": list(nets),
-        "known_completed_tasks": completed_task_texts(tasks),
+        "campaign": {
+            "stage": campaign_stage(view),
+            "goal": campaign.get("goal") or "",
+            "objectives": campaign.get("objectives") or [],
+        },
+        "recent_actions": recent_actions(tasks, limit=int(config["recent_action_limit"])),
+        "cooldowns": active_cooldowns(tasks, view, clock, config),
+        "batch_constraints": batch_constraints_for(view, int(batch_size), config),
         "prompt_template": prompt_template,
-        "state": state,
+        "state": view,
         "output": (
             "Return a JSON object {\"tasks\": [string, ...]} with exactly "
             f"{int(batch_size)} English ad-attack task strings. "
             "One technique per string. Follow the prompt template grammar. "
             "Reference only objects that exist in state. "
             f"against host <ip> and against subnet <cidr> must lie in lab_nets {list(nets)}. "
-            "Never copy example IPs or subnets from the prompt template."
+            "Never copy example IPs or subnets from the prompt template. "
+            "Obey batch_constraints and cooldowns. "
+            "A different query, path, tool, host, or user is a different action."
         ),
     }
+    if rejected:
+        payload["rejected_last_attempt"] = list(rejected)
     user_text = json.dumps(payload, ensure_ascii=False, indent=2)
     return system_prompt.strip(), user_text
 
@@ -286,6 +313,22 @@ def _write_fill_interaction(
     )
 
 
+def _split_lab_tasks(
+    texts: Sequence[str],
+    lab_nets: Sequence[str],
+    state: dict[str, Any] | None,
+) -> tuple[list[str], list[str]]:
+    kept: list[str] = []
+    reasons: list[str] = []
+    for text in texts:
+        if task_targets_in_lab_nets(text, lab_nets, state=state):
+            kept.append(text)
+        else:
+            reasons.append(f"outside lab_nets: {text}")
+            logger.warning("Rejected attacker task outside lab_nets %s: %s", list(lab_nets), text)
+    return kept, reasons
+
+
 def request_task_batch(
     *,
     batch_size: int,
@@ -300,8 +343,11 @@ def request_task_batch(
     day: date | None = None,
     batch: int | None = None,
     slot_batch_size: int | None = None,
+    planner: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> list[str]:
     nets = tuple(str(item) for item in lab_nets if str(item).strip()) or lab_nets_from_config(None)
+    planner_config = merge_planner_config(planner)
     last_error = "empty model response"
     attempts = max(1, int(max_attempts))
     provider = getattr(agent_client, "provider_name", None) or "LLM"
@@ -311,6 +357,7 @@ def request_task_batch(
         tasks,
         slot_batch_size if slot_batch_size is not None else batch_size,
     )
+    rejected: list[str] = []
     logger.info(
         "Requesting %s attacker task string(s) from %s model=%s base_url=%s (max_attempts=%s)",
         batch_size,
@@ -328,6 +375,7 @@ def request_task_batch(
             model,
             base_url,
         )
+        clock = now if now is not None else datetime.now().astimezone()
         system_text, user_text = build_generation_messages(
             batch_size=batch_size,
             tasks=tasks,
@@ -335,6 +383,9 @@ def request_task_batch(
             prompt_template=prompt_template,
             state=state,
             lab_nets=nets,
+            planner=planner_config,
+            now=clock,
+            rejected=rejected,
         )
         messages = [
             {"role": "system", "content": system_text},
@@ -390,24 +441,40 @@ def request_task_batch(
             raw_response_text=response.raw_response_text,
             request_state="finished",
         )
-        parsed = filter_tasks_to_lab_nets(
+        in_lab, lab_reasons = _split_lab_tasks(
             parse_generated_tasks(response.response_text),
             nets,
-            state=state,
+            state,
         )
-        if len(parsed) >= batch_size:
+        kept, planner_reasons, quota_met = filter_planner_batch(
+            in_lab,
+            state=state,
+            tasks=tasks,
+            batch_size=batch_size,
+            now=clock,
+            config=planner_config,
+        )
+        rejected = lab_reasons + planner_reasons
+        if rejected:
+            logger.warning("Rejected attacker tasks on attempt %s: %s", attempt, rejected)
+        if len(kept) >= batch_size and quota_met:
             logger.info("LLM returned %s task string(s)", batch_size)
-            return parsed[:batch_size]
-        if parsed and attempt == attempts:
-            logger.info("LLM returned %s in-lab task string(s) (requested %s)", len(parsed), batch_size)
-            return parsed
-        if parsed:
+            return kept[:batch_size]
+        if kept and attempt == attempts:
+            logger.info(
+                "LLM returned %s planner-valid task string(s) (requested %s)",
+                len(kept),
+                batch_size,
+            )
+            return kept[:batch_size]
+        if kept or rejected:
             last_error = (
-                f"attempt {attempt}: {len(parsed)} in-lab task string(s) (requested {batch_size})"
+                f"attempt {attempt}: {len(kept)} planner-valid task string(s) "
+                f"(requested {batch_size})"
             )
             logger.warning("%s; retrying", last_error)
             continue
-        last_error = f"attempt {attempt}: no in-lab task strings in model response"
+        last_error = f"attempt {attempt}: no planner-valid task strings in model response"
         logger.warning("%s", last_error)
     logger.error("Failed to generate %s attacker tasks: %s", batch_size, last_error)
     raise RuntimeError(f"Failed to generate {batch_size} attacker tasks: {last_error}")
@@ -427,6 +494,8 @@ def fill_next_batch(
     logs_dir: Path | None = None,
     day: date | None = None,
     slot_batch_size: int | None = None,
+    planner: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> list[dict[str, str]]:
     indices = empty_slot_indices(tasks)
     if not indices:
@@ -449,6 +518,8 @@ def fill_next_batch(
         day=day,
         batch=_fill_batch_number(tasks, divisor),
         slot_batch_size=divisor,
+        planner=planner,
+        now=now,
     )
     for index, text in zip(indices[:count], contents):
         tasks[index]["task"] = text

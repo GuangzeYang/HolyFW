@@ -38,6 +38,7 @@ artifacts = [
   "attacker/opencode.json",
   "attacker/generator_system.md",
   "attacker/attacker_prompt_template.md",
+  "attacker/seed_lab_files.ps1",
   "attacker/skills/**",
 ]
 

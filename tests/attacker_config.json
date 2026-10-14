@@ -1,0 +1,39 @@
+{
+  "batch_size": 5,
+  "poll_interval_seconds": 15,
+  "base_time": 9,
+  "exec": {
+    "timeout_seconds": 900
+  },
+  "generator": {
+    "max_attempts": 5,
+    "generation_retry_interval_seconds": 1800,
+    "time_model": {
+      "tasks_per_role": 80,
+      "mu_am_minutes": 600,
+      "mu_pm_minutes": 945,
+      "sigma_am_minutes": 72,
+      "sigma_pm_minutes": 95,
+      "a_am": 0.82,
+      "a_pm": 1.20,
+      "phi": 0.65,
+      "sigma_eta": 0.25,
+      "avoid_five_minutes": true
+    },
+    "api_base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-pro",
+    "request_timeout_seconds": 300,
+    "max_tokens": 32776
+  },
+  "paths": {
+    "data_dir": "role_task",
+    "logs_dir": "logs"
+  },
+  "extract": {
+    "lab_nets": ["172.16.24.0/24"],
+    "attacker_ip": "",
+    "exclude_flows": [
+      {"peer_ip": "172.16.24.42", "image_contains": "avp"}
+    ]
+  }
+}

@@ -25,7 +25,13 @@ from common.schedule_shift import (
 
 from attacker.execute import execute_task
 from attacker.extract_pcap import lab_nets_from_config
-from attacker.generation import DEFAULT_BATCH_SIZE, fill_next_batch, load_generation_resources
+from attacker.generation import (
+    DEFAULT_BATCH_SIZE,
+    fill_next_batch,
+    load_generation_resources,
+    resolve_state_json_path,
+)
+from attacker.planner import record_campaign_progress_file
 from attacker.logging_setup import reattach_attacker_dated_file_handler
 from attacker.task_file import (
     all_completed,
@@ -426,6 +432,7 @@ def run_loop(
                 logs_dir=logs_dir,
                 day=target_day,
                 slot_batch_size=batch_size,
+                planner=generator.get("planner") if isinstance(generator.get("planner"), dict) else None,
             )
             save_attacker_tasks(task_path, filled, shift=shift_stamp)
             logger.info("Saved filled task file %s", task_path)
@@ -446,6 +453,8 @@ def run_loop(
                     timeout_seconds=timeout_seconds,
                     day=target_day,
                 )
+                if item.get("status") == "success":
+                    record_campaign_progress_file(item, resolve_state_json_path())
             save_attacker_tasks(task_path, tasks, shift=shift_stamp)
             logger.info("Saved execution state for planned_time=%s", item.get("planned_time"))
 

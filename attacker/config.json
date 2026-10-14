@@ -23,7 +23,22 @@
     "api_base_url": "https://api.deepseek.com",
     "model": "deepseek-v4-pro",
     "request_timeout_seconds": 300,
-    "max_tokens": 32776
+    "max_tokens": 32776,
+    "planner": {
+      "recent_action_limit": 20,
+      "foothold_max_discovery_per_batch": 1,
+      "foothold_min_collection_lateral": 2,
+      "min_batch_for_collection_quota": 3,
+      "max_same_technique": 2,
+      "cooldowns_hours": {
+        "success": 12,
+        "failure": 2,
+        "discovery.orientation": 24,
+        "discovery.host-scan": 24,
+        "discovery.port-scan": 12,
+        "discovery.share-enum": 4
+      }
+    }
   },
   "paths": {
     "data_dir": "role_task",

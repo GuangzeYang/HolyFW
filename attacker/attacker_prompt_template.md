@@ -32,11 +32,11 @@ Reference grammar:
 
 The catalog `requires` column says which state field to consume; the `using` clause names the source object and the `against` clause names the target. The grammar is uniform across all techniques.
 
-One-shot intents (given in the task text, not stored in state): the spray candidate password, a reset password, a file path to download, and a user to impersonate.
+One-shot intents are appended after the target, not stored in state: `query <name>`, `path <path>`, and `tool <filename>`. A spray candidate password, a reset password, and a user to impersonate may also appear in the task text. `query systeminfo` and `query dir`, and different paths or tool names, are different actions.
 
 ## 3. Technique ids
 
-Each id maps to exactly one command. Pick a row only when its `requires` fields already exist in `state` (or `requires` is `none`). Prefer rows whose `writes` fill missing knowledge; once the seed is filled, interleave refresh and collection.
+Each id maps to exactly one command. Pick a row only when its `requires` fields already exist in `state` (or `requires` is `none`). During `orientation` and `enumeration`, prefer rows whose `writes` fill missing knowledge. During `collection`, prefer read-only queries, file search, download of an uncollected discovered file, benign tool upload, and DC configuration collection. Discovery repeats only for a missing prerequisite or a `stale` object.
 
 Legend:
 
@@ -104,8 +104,10 @@ Legend:
 | `lateral.tool-transfer` | users.password, hosts, campaign.tools | upload tool to share | files[] |
 | `lateral.exec-winrm` | users.password, hosts | remote cmd via WinRM | hosts[].compromised |
 | `lateral.exec-schtasks` | users.password, hosts | remote scheduled task | hosts[].compromised |
+| `lateral.remote-query` | users.password or users.ntlm_hash, hosts | one read-only remote command | notes |
 | `collection.share-download` | hosts.shares, users.password | download file from share | files[] |
-| `collection.local-file` | users.password, hosts | collect local files | files[] |
+| `collection.remote-file-search` | users.password, hosts | list local files | hosts[].discovered_files |
+| `collection.local-file-download` | users.password, hosts, hosts.discovered_files | download one discovered file | files[] |
 | `collection.archive` | files | compress staged files | files[] |
 | `collection.sysvol` | users.password, domain.dc_fqdn | download from SYSVOL | files[] |
 | `collection.gpo-files` | users.password, domain.dc_fqdn | GPO Preferences xml | files[] |
@@ -150,7 +152,7 @@ Legend:
 - `campaign` resolves to the `campaign` object (`machine_account`, `tools_dir`, `tools`).
 - Secrets (hashes, passwords, SID) are never written into the task text — only object names appear.
 
-One-shot intents that appear in the task text rather than state: a single spray candidate password, a reset password, a file path to download, and a user to impersonate.
+One-shot intents appended after the target: `query <name>`, `path <path>`, and `tool <filename>`. A spray candidate password, a reset password, and a user to impersonate may also appear in the task text.
 
 ## 5. Cold-start ordering
 
@@ -168,13 +170,15 @@ On a fresh deployment, seed in this order (writes are in the catalog):
 
 ## 5b. Ongoing campaign
 
-After the seed, keep rotating toward the campaign goal. Map intents to catalog ids (no new commands):
+After the foothold (`campaign.stage` is `collection`), keep the batch inside `batch_constraints` and away from signatures in `cooldowns`. Map intents to catalog ids:
 
-- Expand privilege: `credential.*` → `privesc.*` → `lateral.*` (mark `hosts[].compromised`) → allowed `persistence.*` / `exfil.*`.
-- Refresh facts: `discovery.orientation`, `host-scan`, `host-identify`, `share-enum`, `group-enum`, `password-policy`, `trust-enum`, `user-enum-*`.
-- Domain shares: `discovery.share-enum` → `collection.share-download` → `collection.archive` → `exfil.smb`.
-- DC configuration (`hosts[].role` is `dc`): `password-policy`, `trust-enum`, `bloodhound`, `gpp-password`, `collection.sysvol` / `collection.gpo-files`, plus `share-enum` / `share-download` on that DC.
-- Employee host files (`role` is member or unknown, credentials already in state): `lateral.exec-*` or PTH, then `collection.local-file`.
+- Read-only inspection: `lateral.remote-query` with `query systeminfo`, `whoami`, `hostname`, `ipconfig`, `net-user`, `tasklist`, `sc-query`, or `query dir path <path>`.
+- Employee files: `collection.remote-file-search` on a member host, then a later batch's `collection.local-file-download` of one uncollected `hosts[].discovered_files` path.
+- Benign payload: `lateral.tool-transfer` of one name in `campaign.tools`.
+- DC configuration (`hosts[].role` is `dc`): `collection.sysvol`, `collection.gpo-files`, `collection.ldap-export`, then `collection.share-download` for a file already listed on that DC.
+- Domain shares that are already known: `collection.share-download` → `collection.archive` → `exfil.smb`.
+- Privilege expansion stays available when an objective still needs it: `credential.*` → `privesc.*` → `lateral.*` → allowed `persistence.*`.
+- Discovery is for a missing prerequisite or an object marked `stale`, not a routine refresh.
 
 ## 6. Worked examples (copy-paste commands)
 
@@ -240,7 +244,9 @@ opencode run "Use the ad-lateral skill: using the password of user alice, execut
 opencode run "Use the ad-lateral skill: using the password of user alice, execute lateral.delegation-enum against domain."
 opencode run "Use the ad-lateral skill: using the password of user svc_sql, execute lateral.delegation-s4u against host 172.16.24.11."
 opencode run "Use the ad-lateral skill: using the ccache_file of ticket tgt[0], execute lateral.pass-the-ticket against host 172.16.24.11."
-opencode run "Use the ad-lateral skill: using the tools of campaign, execute lateral.tool-transfer against host 172.16.24.11."
+opencode run "Use the ad-lateral skill: using the tools of campaign, execute lateral.tool-transfer against host 172.16.24.11 tool lab-payload-20m.bin."
+opencode run "Use the ad-lateral skill: using the password of user alice, execute lateral.remote-query against host 172.16.24.11 query systeminfo."
+opencode run "Use the ad-lateral skill: using the password of user alice, execute lateral.remote-query against host 172.16.24.11 query dir path C:\HolyFW."
 opencode run "Use the ad-lateral skill: using the password of user alice, execute lateral.exec-winrm against host 172.16.24.11."
 opencode run "Use the ad-lateral skill: using the password of user alice, execute lateral.exec-schtasks against host 172.16.24.11."
 ```
@@ -249,7 +255,8 @@ opencode run "Use the ad-lateral skill: using the password of user alice, execut
 
 ```
 opencode run "Use the ad-collection skill: using the password of user alice, execute collection.share-download against host 172.16.24.11."
-opencode run "Use the ad-collection skill: using the password of user alice, execute collection.local-file against host 172.16.24.11."
+opencode run "Use the ad-collection skill: using the password of user alice, execute collection.remote-file-search against host 172.16.24.11."
+opencode run "Use the ad-collection skill: using the password of user alice, execute collection.local-file-download against host 172.16.24.11 path C:\HolyFW\Documents\Finance\annual-report.bin."
 opencode run "Use the ad-collection skill: execute collection.archive against domain."
 opencode run "Use the ad-collection skill: using the password of user alice, execute collection.sysvol against domain."
 opencode run "Use the ad-collection skill: using the password of user alice, execute collection.ldap-export against domain."
@@ -285,7 +292,7 @@ Do:
 - Keep secrets out of the task text; only object names appear.
 - Use the stable technique ids (they double as the capture `--label`).
 - Schedule discovery before credential/privesc/lateral/collection/exfil/persistence on a cold start.
-- After the seed, keep scheduling toward the campaign goal: expand privilege, refresh known facts, and collect shares / DC config / employee files.
+- After the foothold, keep scheduling toward the campaign goal: read-only queries, uncollected discovered files, benign tool upload, and DC configuration. Repeat discovery only for a missing prerequisite or a stale object.
 - Pre-fill `campaign.machine_account` and `campaign.tools` before running the techniques that consume them.
 
 Don't:
