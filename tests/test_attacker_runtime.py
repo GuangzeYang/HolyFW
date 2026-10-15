@@ -25,6 +25,7 @@ from attacker.generation import (
 )
 from attacker.planner import (
     action_signature,
+    executed_today,
     filter_planner_batch,
     parse_task_action,
     record_campaign_progress,
@@ -113,6 +114,9 @@ CATALOG_TECHNIQUE_IDS = (
     "collection.ps-history",
     "collection.dns-zone",
     "collection.remote-stage",
+    "steal.smb",
+    "steal.psexec",
+    "steal.sftp",
     "exfil.smb",
     "exfil.chunked-smb",
     "exfil.http",
@@ -1157,6 +1161,10 @@ class GenerationMessageTests(unittest.TestCase):
         self.assertIn("lab_nets", user_payload["output"])
         self.assertNotIn("known_completed_tasks", user_payload)
         self.assertIn("recent_actions", user_payload)
+        self.assertIn("executed_today", user_payload)
+        self.assertEqual(user_payload["executed_today"], [])
+        self.assertTrue(user_payload["batch_constraints"]["opening_probe"])
+        self.assertIn("username enumeration", user_payload["output"])
         self.assertIn("cooldowns", user_payload)
         self.assertIn("batch_constraints", user_payload)
         self.assertIn(user_payload["campaign"]["stage"], {"orientation", "enumeration", "collection"})
@@ -1231,18 +1239,27 @@ class GenerationMessageTests(unittest.TestCase):
         self.assertIn("ad-credential", prompt_template)
         self.assertIn("ad-privesc", prompt_template)
         self.assertIn("ad-exfil", prompt_template)
+        self.assertIn("ad-steal", prompt_template)
         self.assertIsInstance(state, dict)
         self.assertIn("| id | requires | does | writes |", prompt_template)
         self.assertIn("requires", system_prompt)
         self.assertIn("FORBIDDEN", system_prompt)
         self.assertIn("Campaign goal", system_prompt)
         self.assertIn("batch_constraints", system_prompt)
+        self.assertIn("executed_today", system_prompt)
+        self.assertIn("opening_probe", system_prompt)
+        self.assertIn("lateral.exec-wmiexec", system_prompt)
+        self.assertIn("steal.smb", system_prompt)
+        self.assertIn("role_private_files", system_prompt)
+        self.assertIn("Company_Data", system_prompt)
         self.assertNotIn("Irregularly refresh", system_prompt)
         self.assertIn("share", system_prompt)
         self.assertIn("lab_nets", system_prompt)
         self.assertIn("172.16.24.0/24", prompt_template)
         self.assertNotIn("192.168.14.71", prompt_template)
-        self.assertIn("Ongoing campaign", prompt_template)
+        self.assertIn("Opening probe", prompt_template)
+        self.assertIn("Remote shell", prompt_template)
+        self.assertIn("`steal.smb`", prompt_template)
         self.assertIn("collection.share-download", prompt_template)
         self.assertIn("`collection.remote-file-search`", prompt_template)
         self.assertIn("`collection.local-file-download`", prompt_template)
@@ -1596,10 +1613,21 @@ class PlannerConstraintTests(unittest.TestCase):
             "Use the ad-discovery skill: execute discovery.trust-enum against domain.",
             "Use the ad-discovery skill: execute discovery.group-enum against domain.",
         ]
+        history = {
+            "task": (
+                "Use the ad-lateral skill: using the password of user alice, "
+                "execute lateral.exec-wmiexec against host 172.16.24.21."
+            ),
+            "completed_at": "2026-08-23T08:00:00",
+            "status": "success",
+            "planned_time": "08:00",
+            "started_at": "2026-08-23T08:00:00",
+            "task_id": "e" * 16,
+        }
         kept, reasons, quota_met = filter_planner_batch(
             scans,
             state=_foothold_state(),
-            tasks=[],
+            tasks=[history],
             batch_size=3,
             now=datetime(2026, 8, 23, 12, 0),
         )
@@ -1620,10 +1648,18 @@ class PlannerConstraintTests(unittest.TestCase):
             "path C:\\HolyFW\\missing.bin."
         )
         now = datetime(2026, 8, 23, 12, 0)
+        history = {
+            "task": "Use the ad-discovery skill: execute discovery.orientation against domain.",
+            "completed_at": "2026-08-23T08:00:00",
+            "status": "success",
+            "planned_time": "08:00",
+            "started_at": "2026-08-23T08:00:00",
+            "task_id": "f" * 16,
+        }
         kept, _reasons, quota_met = filter_planner_batch(
             [download, _query("systeminfo")],
             state=_foothold_state(),
-            tasks=[],
+            tasks=[history],
             batch_size=2,
             now=now,
         )
@@ -1632,7 +1668,7 @@ class PlannerConstraintTests(unittest.TestCase):
         rejected, reasons, _quota = filter_planner_batch(
             [missing],
             state=_foothold_state(),
-            tasks=[],
+            tasks=[history],
             batch_size=1,
             now=now,
         )
@@ -1643,7 +1679,7 @@ class PlannerConstraintTests(unittest.TestCase):
         already, reasons, _quota = filter_planner_batch(
             [download],
             state=collected,
-            tasks=[],
+            tasks=[history],
             batch_size=1,
             now=now,
         )
@@ -1667,6 +1703,161 @@ class PlannerConstraintTests(unittest.TestCase):
         self.assertEqual(objective["progress"]["files"], 1)
         self.assertIn("172.16.24.21", objective["progress"]["hosts"])
         self.assertFalse(record_campaign_progress(state, item))
+
+    def test_executed_today_keeps_same_day_task_text(self) -> None:
+        now = datetime(2026, 8, 23, 12, 0)
+        today = {
+            "task": "Use the ad-lateral skill: using the password of user alice, execute lateral.exec-wmiexec against host 172.16.24.21.",
+            "completed_at": "2026-08-23T09:00:00",
+            "status": "success",
+            "technique_id": "lateral.exec-wmiexec",
+            "planned_time": "09:00",
+            "started_at": "2026-08-23T09:00:00",
+            "task_id": "e" * 16,
+        }
+        yesterday = dict(today)
+        yesterday["completed_at"] = "2026-08-22T09:00:00"
+        yesterday["task"] = "Use the ad-discovery skill: execute discovery.orientation against domain."
+        rows = executed_today([yesterday, today], now=now)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["task"], today["task"])
+        self.assertEqual(rows[0]["technique_id"], "lateral.exec-wmiexec")
+
+    def test_opening_probe_keeps_user_enum_and_drops_shells(self) -> None:
+        now = datetime(2026, 8, 23, 12, 0)
+        user_enum = (
+            "Use the ad-discovery skill: using the password of user alice, "
+            "execute discovery.user-enum-ldap against domain."
+        )
+        share = (
+            "Use the ad-discovery skill: using the password of user alice, "
+            "execute discovery.share-enum against host 172.16.24.21."
+        )
+        shell = (
+            "Use the ad-lateral skill: using the password of user alice, "
+            "execute lateral.exec-wmiexec against host 172.16.24.21."
+        )
+        kept, reasons, quota_met = filter_planner_batch(
+            [shell, user_enum, share],
+            state=_foothold_state(),
+            tasks=[],
+            batch_size=3,
+            now=now,
+        )
+        self.assertEqual(kept, [user_enum, share])
+        self.assertTrue(quota_met)
+        self.assertTrue(any(reason.startswith("opening probe:") for reason in reasons))
+        scans = [
+            "Use the ad-discovery skill: execute discovery.password-policy against domain.",
+            "Use the ad-discovery skill: execute discovery.group-enum against domain.",
+            "Use the ad-discovery skill: execute discovery.trust-enum against domain.",
+        ]
+        _kept, reasons, quota_met = filter_planner_batch(
+            scans,
+            state=_foothold_state(),
+            tasks=[],
+            batch_size=3,
+            now=now,
+        )
+        self.assertFalse(quota_met)
+        self.assertTrue(any("username enumeration" in reason for reason in reasons))
+
+    def test_steal_path_must_be_role_private_files(self) -> None:
+        now = datetime(2026, 8, 23, 12, 0)
+        history = {
+            "task": "Use the ad-discovery skill: execute discovery.orientation against domain.",
+            "completed_at": "2026-08-23T08:00:00",
+            "status": "success",
+            "planned_time": "08:00",
+            "started_at": "2026-08-23T08:00:00",
+            "task_id": "a" * 16,
+        }
+        directory = (
+            "Use the ad-steal skill: using the password of user alice, "
+            "execute steal.smb against host 172.16.24.21 "
+            "path C:\\Users\\hr\\Desktop\\role_private_files."
+        )
+        invented = (
+            "Use the ad-steal skill: using the password of user alice, "
+            "execute steal.smb against host 172.16.24.21 "
+            "path C:\\Users\\hr\\Desktop\\role_private_files\\missing.docx."
+        )
+        outside = (
+            "Use the ad-steal skill: using the password of user alice, "
+            "execute steal.smb against host 172.16.24.21 "
+            "path C:\\HolyFW\\Documents\\Finance\\annual-report.bin."
+        )
+        state = _foothold_state()
+        state["hosts"][0]["discovered_files"].append(
+            {
+                "path": "C:\\Users\\hr\\Desktop\\role_private_files\\staffing-notes.docx",
+                "collected": False,
+            }
+        )
+        known = (
+            "Use the ad-steal skill: using the password of user alice, "
+            "execute steal.smb against host 172.16.24.21 "
+            "path C:\\Users\\hr\\Desktop\\role_private_files\\staffing-notes.docx."
+        )
+        sftp = (
+            "Use the ad-steal skill: using the password of user alice, "
+            "execute steal.sftp against host 172.16.24.21 "
+            "path C:\\Users\\hr\\Desktop\\role_private_files."
+        )
+        kept, reasons, _quota = filter_planner_batch(
+            [directory, invented, outside, sftp, known],
+            state=state,
+            tasks=[history],
+            batch_size=5,
+            now=now,
+        )
+        self.assertEqual(kept, [directory, known])
+        self.assertTrue(any("not an uncollected discovered file" in reason for reason in reasons))
+        self.assertTrue(any("must be under Desktop" in reason for reason in reasons))
+        self.assertTrue(any("sftp requires port 22" in reason for reason in reasons))
+        share = (
+            "Use the ad-steal skill: using the password of user alice, "
+            "execute steal.smb against host 172.16.24.11 "
+            "path \\\\172.16.24.11\\Company_Data\\HR-Private."
+        )
+        share_file = (
+            "Use the ad-steal skill: using the password of user alice, "
+            "execute steal.smb against host 172.16.24.11 "
+            "path \\\\172.16.24.11\\Company_Data\\Exchange\\ledger-notes.docx."
+        )
+        member_share = (
+            "Use the ad-steal skill: using the password of user alice, "
+            "execute steal.smb against host 172.16.24.21 "
+            "path \\\\172.16.24.11\\Company_Data\\Public."
+        )
+        share_sftp = (
+            "Use the ad-steal skill: using the password of user alice, "
+            "execute steal.sftp against host 172.16.24.11 "
+            "path \\\\172.16.24.11\\Company_Data\\HR-Private."
+        )
+        state["hosts"].append(
+            {
+                "ip": "172.16.24.11",
+                "role": "dc",
+                "open_ports": [445],
+                "discovered_files": [
+                    {
+                        "path": "\\\\172.16.24.11\\Company_Data\\Exchange\\ledger-notes.docx",
+                        "collected": False,
+                    }
+                ],
+            }
+        )
+        kept, reasons, _quota = filter_planner_batch(
+            [member_share, share, share_file, share_sftp],
+            state=state,
+            tasks=[history],
+            batch_size=4,
+            now=now,
+        )
+        self.assertEqual(kept, [share, share_file])
+        self.assertTrue(any("targets the domain controller" in reason for reason in reasons))
+        self.assertTrue(any("Company_Data theft uses SMB" in reason for reason in reasons))
 
 
 if __name__ == "__main__":

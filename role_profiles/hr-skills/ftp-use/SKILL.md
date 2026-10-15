@@ -69,7 +69,7 @@ On `upload`, `append`, and `update file`, commander may set `min_words` plus `to
 1. If `min_words` is present, write original English of at least that many whitespace-separated words about `topic` or the outline. No lorem ipsum. No invented credentials.
 2. If `min_words` is absent and `content` is present, use `content` unchanged.
 3. Do not expand paths or file names.
-4. Save as a local UTF-8 file (Desktop or `%TEMP%` using the remote name), then transfer that file.
+4. Save the local UTF-8 file only under `$env:USERPROFILE\Desktop\role_private_files` (create the folder first), using the remote file name, then transfer that file. Do not save it on the Desktop root or leave the finished copy only in `%TEMP%`.
 
 # Transfer helpers
 
@@ -135,7 +135,7 @@ except Exception:
 
 `path` is directory plus file name.
 
-1. Apply **Prose expansion** when `min_words` or `content` is set. Write the local file. Default local path: Desktop/`%TEMP%` / remote name.
+1. Apply **Prose expansion** when `min_words` or `content` is set. Write the local file under `$env:USERPROFILE\Desktop\role_private_files\<remote name>`. Create that folder if it is missing.
 2. If the local file is still missing, stop.
 3. `cwd` to the parent. Create missing parents one level at a time.
 4. If the remote name exists, stop unless overwrite was requested.
@@ -163,18 +163,18 @@ Overwrite an existing remote file. If it is missing, stop. Apply **Prose expansi
 
 ## download
 
-`{path: ...}` Optional `local path` (default Desktop/`<filename>`).
+`{path: ...}` Optional `local path`. The local file must be `$env:USERPROFILE\Desktop\role_private_files\<filename>`. If `local path` is omitted, that is the default. If `local path` is outside that folder, stop.
 
 1. Confirm remote exists (`SIZE` or `LIST`). If not, stop.
-2. Create a missing local parent and mention it. If the local file exists, stop unless overwrite was requested.
-3. Write `<filename>.part`, `retrbinary`, compare sizes, `os.replace` to the final name.
+2. Create `Desktop\role_private_files` if it is missing. If the local file exists, stop unless overwrite was requested.
+3. Write `<filename>.part` inside that folder, `retrbinary`, compare sizes, `os.replace` to the final name in the same folder.
 4. On failure, delete the `.part` file.
 
 ## copy
 
 `{source path: ..., destination path: ...}`
 
-No server-side COPY. `RETR` to a local temp, then `stor_compat` to the destination (both under `/hr` unless the prompt named another allowed path).
+No server-side COPY. `RETR` into `$env:USERPROFILE\Desktop\role_private_files\<filename>`, then `stor_compat` to the destination (both under `/hr` unless the prompt named another allowed path).
 
 Success: destination `SIZE` equals source `SIZE`. Destination parent: create stepwise if missing. Stop if the destination name exists unless overwrite was requested.
 

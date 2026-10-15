@@ -1,6 +1,6 @@
 # ftp-use prompt templates
 
-Pass the quoted string to `opencode run`. Paths are the real FTPS paths under `/programmer`. Login starts at `/`. For `upload` / `append` / `update file`, the agent writes a local document from `topic` and transfers it. `download` copies the remote file to the local Desktop.
+Pass the quoted string to `opencode run`. Paths are the real FTPS paths under `/programmer`. Login starts at `/`. For `upload` / `append` / `update file`, the agent writes a local document from `topic` and transfers it. `download` copies the remote file to `Desktop\role_private_files`.
 
 ## Grammar
 
@@ -14,7 +14,7 @@ Use the ftp-use skill, connect to the FTPS server, use <op> to <detail>, {<field
 | `upload` | `path`, `min_words` (500-800), `topic` (required), `local path` (optional), `content` (optional short outline) |
 | `append` | `path`, `min_words` (500-800), `topic` (required), `content` (optional short outline) |
 | `update file` | `path`, `min_words` (500-800), `topic` (required), `content` (optional short outline) |
-| `download` | `path`, `local path` (optional; default Desktop) |
+| `download` | `path`, `local path` (optional; default Desktop\role_private_files) |
 | `copy` | `source path`, `destination path` |
 | `move` | `source path`, `destination path` |
 | `rename` | `path`, `new name` |
@@ -39,7 +39,7 @@ opencode run "Use the ftp-use skill, connect to the FTPS server, use append to a
 ```
 
 ```text
-opencode run "Use the ftp-use skill, connect to the FTPS server, use download to download a file, {path: /programmer/sprint-notes.txt}"
+opencode run "Use the ftp-use skill, connect to the FTPS server, use download to download a file, {path: /programmer/sprint-notes.txt, local path: C:\Users\programmer\Desktop\role_private_files\sprint-notes.txt}"
 ```
 
 ```text

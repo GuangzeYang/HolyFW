@@ -61,6 +61,7 @@ Get-ChildItem -LiteralPath '\\172.16.24.11\Company_Data'
 - Create is not idempotent if the prompt wants a new unique name. Prefer the path the prompt gives. `New-Item -Force` on an existing folder is safe.
 - Delete: if `Test-Path` is false, the delete already succeeded; do not error.
 - Text files: `Set-Content` / `Add-Content` `-Encoding UTF8`.
+- Finished local files live only in `$env:USERPROFILE\Desktop\role_private_files`. Create that folder when it is missing. This includes share downloads and the local document written before an upload. Do not leave the finished file on the Desktop root. Word COM may `SaveAs` into `%TEMP%` because a direct Desktop save hangs; `Copy-Item` that result into `Desktop\role_private_files` before uploading it to the share.
 
 # Prose expansion
 
@@ -74,14 +75,14 @@ Commander sets `min_words` plus `topic` or a one-sentence `content` outline. Exp
 
 When `create file` / `update file` uses a `.docx` path, write a real Word document from the expanded prose, then **upload** it to the share. Do **not** `Set-Content` a `.docx` (that is not a Word file). Do not rename a `.txt` to `.docx`.
 
-1. Apply **Prose expansion** and write it to a local `.txt` (use the Write tool), e.g. `(Join-Path $env:TEMP 'opencode\<name>.txt')`.
-2. Convert to `.docx` with Word COM and save to a **local temp path**, then `Copy-Item` to the UNC path.
+1. Apply **Prose expansion** and write it to `$env:USERPROFILE\Desktop\role_private_files\<name>.txt`. Create that folder first.
+2. Convert to `.docx` with Word COM and save to a **local temp path**, then `Copy-Item` that `.docx` into `Desktop\role_private_files` and to the UNC path.
 3. Success: UNC `Test-Path` is `$true` and `(Get-Item -LiteralPath '<unc>').Length -gt 4000`.
 
 **Use `SaveAs([ref]$path,[ref]16)` to `$env:TEMP` — not `SaveAs2`, and not a OneDrive/Desktop path.** On this host `SaveAs2` (and saving to the redirected Desktop) hangs indefinitely; `SaveAs` to the temp dir works.
 
 ```powershell
-$srcTxt = Join-Path $env:TEMP 'opencode\<name>.txt'
+$srcTxt = Join-Path $env:USERPROFILE 'Desktop\role_private_files\<name>.txt'
 $local  = Join-Path $env:TEMP 'opencode\<name>.docx'
 $unc    = '\\172.16.24.11\Company_Data\<subpath>\<name>.docx'   # real UNC: two leading backslashes
 $text = (Get-Content -LiteralPath $srcTxt -Raw) -replace "`r`n","`r" -replace "`n","`r"
@@ -92,11 +93,14 @@ $doc.SaveAs([ref]$local, [ref]16); $doc.Close(); $word.Quit()
 [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null
 $parent = Split-Path -Parent $unc
 if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+$kept = Join-Path $env:USERPROFILE 'Desktop\role_private_files\<name>.docx'
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $kept) | Out-Null
+Copy-Item -LiteralPath $local -Destination $kept -Force
 Copy-Item -LiteralPath $local -Destination $unc -Force
 Test-Path -LiteralPath $unc; (Get-Item -LiteralPath $unc).Length
 ```
 
-If the command is killed by a timeout, run `Stop-Process -Name WINWORD -Force -ErrorAction SilentlyContinue`, then retry with the recipe above (avoid `$word.Selection.TypeText` loops — assigning `$doc.Content.Text` in one shot is reliable). If Word COM is genuinely unavailable, stop and report the error. Text files (`.txt`, `.md`, `.csv`) still use `Set-Content` / `Add-Content` `-Encoding UTF8` as below.
+If the command is killed by a timeout, run `Stop-Process -Name WINWORD -Force -ErrorAction SilentlyContinue`, then retry with the recipe above (avoid `$word.Selection.TypeText` loops — assigning `$doc.Content.Text` in one shot is reliable). If Word COM is genuinely unavailable, stop and report the error. After a successful SaveAs, also `Copy-Item` the local `.docx` into `$env:USERPROFILE\Desktop\role_private_files` (create the folder first). Do not leave the only copy in `%TEMP%`. Text files (`.txt`, `.md`, `.csv`) still use `Set-Content` / `Add-Content` `-Encoding UTF8` as below.
 
 # Operations
 
@@ -165,16 +169,18 @@ Success: destination `Test-Path` is `$true`. Destination parent must be an allow
 
 ## download
 
-`{path: ...}` Optional `local path` (default: `$env:USERPROFILE\Desktop\<filename>`).
+`{path: ...}` Optional `local path`. The local file must be `$env:USERPROFILE\Desktop\role_private_files\<filename>`. If `local path` is omitted, that is the default. If `local path` is outside that folder, stop.
 
-Copy the share file onto this host (download). Resolve `path` with Path mapping first.
+Copy the share file onto this host (download). Resolve `path` with Path mapping first. Create the local folder when it is missing.
 
 ```powershell
-$local = '<local path or Desktop\filename>'
+$localDir = Join-Path $env:USERPROFILE 'Desktop\role_private_files'
+New-Item -ItemType Directory -Force -Path $localDir | Out-Null
+$local = Join-Path $localDir '<filename>'
 Copy-Item -LiteralPath '<unc>' -Destination $local -Force
 ```
 
-Success: local `Test-Path` is `$true` and `(Get-Item $local).Length` equals the source length. Do not `Get-Content` a `.docx`.
+Success: local `Test-Path` is `$true`, the path is under `Desktop\role_private_files`, and `(Get-Item -LiteralPath $local).Length` equals the source length. Do not `Get-Content` a `.docx`.
 
 ## move
 

@@ -38,6 +38,12 @@ opencode run "Use the ad-persistence skill: using the machine_account of campaig
 opencode run "Use the ad-privesc skill: using the password of user alice, execute privesc.adcs-find against domain."
 ```
 
+## ad-steal
+
+```text
+opencode run "Use the ad-steal skill: using the password of user hr, execute steal.smb against host 172.16.24.21 path C:\Users\hr\Desktop\role_private_files."
+```
+
 ## ad-exfil
 
 ```text

@@ -223,7 +223,7 @@
       "Prefer create file, copy, download, and append over view-only folder listing.",
       "For create file, append, and update file: set min_words to an integer from 300 to 800. Do not write a long content value; at most one short topic sentence.",
       "create file write paths should end in .docx (preferred), or .txt, .md, or .csv. append and update file stay on .txt, .md, or .csv.",
-      "Use copy to place a .docx onto Exchange or Public (share-to-share). Use download to copy a share file onto the local Desktop."
+      "Use copy to place a .docx onto Exchange or Public (share-to-share). Use download to copy a share file into C:\\Users\\<this role>\\Desktop\\role_private_files\\<filename>. Always set local path to that folder. Do not download onto the Desktop root."
     ],
     "actions": [
       {
@@ -290,7 +290,8 @@
       "<detail> is a short phrase that restates the op (list a folder, upload a file, download a file). Do not add extra semantics.",
       "Prefer upload, download, append, copy, and update file over list-only folder listing.",
       "For upload, append, and update file: set min_words to an integer from 500 to 800. Do not write a long content value; at most one short topic sentence. The soldier expands the prose and uploads it.",
-      "Do not put min_words on list, download, copy, move, rename, create folder, delete file, delete folder, or path fields."
+      "Do not put min_words on list, download, copy, move, rename, create folder, delete file, delete folder, or path fields.",
+      "Local files for upload, append, update file, download, and the local side of copy live only in C:\\Users\\<this role>\\Desktop\\role_private_files\\. A download task sets local path to a file in that folder."
     ],
     "actions": [
       {

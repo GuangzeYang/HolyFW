@@ -2,10 +2,10 @@
   "schema_version": 2,
   "last_updated": "",
   "domain": {
-    "name": "",
-    "netbios": "",
-    "dc_fqdn": "",
-    "dc_ip": "",
+    "name": "ndrtest.local",
+    "netbios": "NDRTEST",
+    "dc_fqdn": "NDRTEST.LOCAL",
+    "dc_ip": "172.16.24.11",
     "dcs": [],
     "domain_sid": "",
     "user_count": 0,
@@ -20,7 +20,24 @@
     "updated_at": ""
   },
   "hosts": [],
-  "users": [],
+  "users": [
+    {
+      "username": "hr",
+      "upn": "hr@ndrtest.local",
+      "password": "Njupt@241",
+      "source": "operator",
+      "stale": false,
+      "updated_at": ""
+    },
+    {
+      "username": "Administrator",
+      "upn": "Administrator@ndrtest.local",
+      "password": "Njupt@240",
+      "source": "operator",
+      "stale": false,
+      "updated_at": ""
+    }
+  ],
   "wordlists": {
     "usernames": "wordlists/usernames.txt",
     "passwords": "wordlists/passwords.txt",

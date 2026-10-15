@@ -91,7 +91,7 @@ opencode run "Use the smb-access skill, connect to the SMB shared directory, use
 ```
 
 ```text
-opencode run "Use the smb-access skill, connect to the SMB shared directory, use download to download a file, {path: /Company_Data/Exchange/spec-notes.docx}"
+opencode run "Use the smb-access skill, connect to the SMB shared directory, use download to download a file, {path: /Company_Data/Exchange/spec-notes.docx, local path: C:\Users\manager\Desktop\role_private_files\spec-notes.docx}"
 ```
 
 ## ftp-use
@@ -111,7 +111,7 @@ opencode run "Use the ftp-use skill, connect to the FTPS server, use upload to u
 ```
 
 ```text
-opencode run "Use the ftp-use skill, connect to the FTPS server, use download to download a file, {path: /manager/spec-notes.txt}"
+opencode run "Use the ftp-use skill, connect to the FTPS server, use download to download a file, {path: /manager/spec-notes.txt, local path: C:\Users\manager\Desktop\role_private_files\spec-notes.txt}"
 ```
 
 ```text

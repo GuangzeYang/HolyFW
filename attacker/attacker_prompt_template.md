@@ -2,7 +2,7 @@
 
 This is a **command reference for the human operator / task scheduler**. It tells you the exact `opencode run "..."` text to issue in order to instruct the attacker agent.
 
-The mandatory execution protocol (pre-flight check, read state, bracket each action with capture, write back, rollback, display-filter file) lives in `attacker/skills/ad-attack/SKILL.md`. Technique catalogs live in the phase skills (`ad-discovery`, `ad-credential`, `ad-privesc`, `ad-lateral`, `ad-collection`, `ad-exfil`, `ad-persistence`). You do **not** repeat protocol in the task text — you only select the phase skill, the technique, and the objects.
+The mandatory execution protocol (pre-flight check, read state, bracket each action with capture, write back, rollback, display-filter file) lives in `attacker/skills/ad-attack/SKILL.md`. Technique catalogs live in the phase skills (`ad-discovery`, `ad-credential`, `ad-privesc`, `ad-lateral`, `ad-collection`, `ad-steal`, `ad-exfil`, `ad-persistence`). You do **not** repeat protocol in the task text — you only select the phase skill, the technique, and the objects.
 
 ## 1. How the command reaches the agent
 
@@ -21,7 +21,7 @@ The mandatory execution protocol (pre-flight check, read state, bracket each act
 Use the <phase-skill> skill: using the <field> of <object>, execute <technique-id> against <target-ref>.
 ```
 
-`<phase-skill>` follows the technique id prefix: `discovery.*` → `ad-discovery`, `credential.*` → `ad-credential`, `privesc.*` → `ad-privesc`, `lateral.*` → `ad-lateral`, `collection.*` → `ad-collection`, `exfil.*` → `ad-exfil`, `persistence.*` → `ad-persistence`.
+`<phase-skill>` follows the technique id prefix: `discovery.*` → `ad-discovery`, `credential.*` → `ad-credential`, `privesc.*` → `ad-privesc`, `lateral.*` → `ad-lateral`, `collection.*` → `ad-collection`, `steal.*` → `ad-steal`, `exfil.*` → `ad-exfil`, `persistence.*` → `ad-persistence`.
 
 Reference grammar:
 
@@ -36,7 +36,7 @@ One-shot intents are appended after the target, not stored in state: `query <nam
 
 ## 3. Technique ids
 
-Each id maps to exactly one command. Pick a row only when its `requires` fields already exist in `state` (or `requires` is `none`). During `orientation` and `enumeration`, prefer rows whose `writes` fill missing knowledge. During `collection`, prefer read-only queries, file search, download of an uncollected discovered file, benign tool upload, and DC configuration collection. Discovery repeats only for a missing prerequisite or a `stale` object.
+Each id maps to exactly one command. Pick a row only when its `requires` fields already exist in `state` (or `requires` is `none`). During `orientation` and `enumeration`, prefer rows whose `writes` fill missing knowledge. When `executed_today` is empty, prefer username enumeration and other discovery even if the foothold already exists. When `executed_today` is non-empty and the stage is `collection`, prefer a remote shell, SMB theft from `Desktop\role_private_files` or the domain controller `Company_Data` share, read-only queries, and DC configuration collection. Discovery repeats only for a missing prerequisite or a `stale` object.
 
 Legend:
 
@@ -116,6 +116,9 @@ Legend:
 | `collection.ps-history` | users.password, hosts | PowerShell ConsoleHost history | files[] |
 | `collection.dns-zone` | domain.name, domain.dc_ip | DNS AXFR / dnscmd enum | files[] |
 | `collection.remote-stage` | files, users.password, hosts.shares | put files on remote share | files[] |
+| `steal.smb` | users.password, hosts | SMB pull from role_private_files or Company_Data | files[] |
+| `steal.psexec` | users.password, hosts | SMB copy of that file via PsExec | files[] |
+| `steal.sftp` | users.password, hosts | SFTP pull when port 22 is open | files[] |
 | `exfil.smb` | files, users.password, hosts.shares | upload archive over SMB | files[] |
 | `exfil.chunked-smb` | files, users.password, hosts.shares | chunked SMB upload | files[] |
 | `exfil.http` | files, hosts | HTTP POST to target | notes |
@@ -168,12 +171,18 @@ On a fresh deployment, seed in this order (writes are in the catalog):
 8. `privesc.adcs-find` / other `privesc.*` whose `requires` are met
 9. Only then: lateral movement, collection, exfiltration, and persistence.
 
-## 5b. Ongoing campaign
+## 5b. Opening probe
 
-After the foothold (`campaign.stage` is `collection`), keep the batch inside `batch_constraints` and away from signatures in `cooldowns`. Map intents to catalog ids:
+When `executed_today` is empty, `batch_constraints.opening_probe` is true. Fill the batch with `discovery.*` only. Include at least one username enumeration whose `requires` are met (`discovery.user-enum-ldap` or `discovery.user-enum-sid` when a password exists, otherwise `discovery.user-enum-kerbrute`). Use the other slots for `discovery.share-enum`, `discovery.group-enum`, `discovery.host-identify`, `discovery.port-scan`, or `discovery.password-policy`. Do not emit a remote shell or a file-theft task in this batch.
 
+## 5c. Ongoing campaign
+
+After the foothold (`campaign.stage` is `collection`) and `executed_today` is non-empty, keep the batch inside `batch_constraints` and away from signatures in `cooldowns`. Do not repeat a completed task string from the current day. Map intents to catalog ids:
+
+- Remote shell: when a password and a host exist, include at least one of `lateral.exec-wmiexec`, `lateral.exec-smbexec`, `lateral.exec-psexec`, `lateral.exec-dcomexec`, `lateral.exec-atexec`, `lateral.exec-winrm`, or `lateral.exec-schtasks`. Pick a technique or host that is not already in `executed_today`.
+- File theft: include one `steal.smb` task. The path set is `C:\Users\<profile>\Desktop\role_private_files` (`hr`, `manager`, `accountancy`, `programmer`) and `\\<domain.dc_ip>\Company_Data` (`HR-Private`, `Public`, `Exchange`, `accountancy`, `IT-Dev`, `Management`). The domain controller is the SMB file server, so a share folder is a steal path and the target is the DC. Do not invent a filename. `steal.psexec` is the other SMB method. `steal.sftp` is only for a role desktop folder on a host that lists port 22.
 - Read-only inspection: `lateral.remote-query` with `query systeminfo`, `whoami`, `hostname`, `ipconfig`, `net-user`, `tasklist`, `sc-query`, or `query dir path <path>`.
-- Employee files: `collection.remote-file-search` on a member host, then a later batch's `collection.local-file-download` of one uncollected `hosts[].discovered_files` path.
+- Employee files already outside that folder: `collection.remote-file-search` on a member host, then a later batch's `collection.local-file-download` of one uncollected `hosts[].discovered_files` path. The search also lists `C:\Users\*\Desktop\role_private_files`.
 - Benign payload: `lateral.tool-transfer` of one name in `campaign.tools`.
 - DC configuration (`hosts[].role` is `dc`): `collection.sysvol`, `collection.gpo-files`, `collection.ldap-export`, then `collection.share-download` for a file already listed on that DC.
 - Domain shares that are already known: `collection.share-download` → `collection.archive` → `exfil.smb`.
@@ -257,6 +266,11 @@ opencode run "Use the ad-lateral skill: using the password of user alice, execut
 opencode run "Use the ad-collection skill: using the password of user alice, execute collection.share-download against host 172.16.24.11."
 opencode run "Use the ad-collection skill: using the password of user alice, execute collection.remote-file-search against host 172.16.24.11."
 opencode run "Use the ad-collection skill: using the password of user alice, execute collection.local-file-download against host 172.16.24.11 path C:\HolyFW\Documents\Finance\annual-report.bin."
+opencode run "Use the ad-steal skill: using the password of user hr, execute steal.smb against host 172.16.24.21 path C:\Users\hr\Desktop\role_private_files."
+opencode run "Use the ad-steal skill: using the password of user hr, execute steal.smb against host 172.16.24.21 path C:\Users\hr\Desktop\role_private_files\staffing-notes.docx."
+opencode run "Use the ad-steal skill: using the password of user hr, execute steal.psexec against host 172.16.24.21 path C:\Users\hr\Desktop\role_private_files\staffing-notes.docx."
+opencode run "Use the ad-steal skill: using the password of user hr, execute steal.sftp against host 172.16.24.21 path C:\Users\hr\Desktop\role_private_files\staffing-notes.docx."
+opencode run "Use the ad-steal skill: using the password of user hr, execute steal.smb against host 172.16.24.11 path \\172.16.24.11\Company_Data\HR-Private."
 opencode run "Use the ad-collection skill: execute collection.archive against domain."
 opencode run "Use the ad-collection skill: using the password of user alice, execute collection.sysvol against domain."
 opencode run "Use the ad-collection skill: using the password of user alice, execute collection.ldap-export against domain."

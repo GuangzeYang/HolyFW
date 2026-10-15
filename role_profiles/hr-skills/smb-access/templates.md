@@ -1,6 +1,6 @@
 # smb-access prompt templates
 
-Pass the quoted string to `opencode run`. Paths may use `/Company_Data/...`; the skill maps them to `\\172.16.24.11\Company_Data\...`. For `.docx`, the agent writes a Word document from `topic` and uploads it; `download` copies the share file to the local Desktop.
+Pass the quoted string to `opencode run`. Paths may use `/Company_Data/...`; the skill maps them to `\\172.16.24.11\Company_Data\...`. For `.docx`, the agent writes a Word document from `topic` and uploads it; `download` copies the share file to `Desktop\role_private_files`.
 
 ## Grammar
 
@@ -16,7 +16,7 @@ Use the smb-access skill, connect to the SMB shared directory, use <op> to <deta
 | `append` | `path` (`.txt` / `.md` / `.csv`), `min_words` (300-800), `topic` (required), `content` (optional short outline) |
 | `update file` | `path`, `min_words` (300-800), `topic` (required), `content` (optional short outline) |
 | `copy` | `source path`, `destination path` |
-| `download` | `path`, `local path` (optional; default Desktop) |
+| `download` | `path`, `local path` (optional; default Desktop\role_private_files) |
 | `move` | `source path`, `destination path` |
 | `rename` | `path`, `new name` |
 | `delete` | `path` |
@@ -38,7 +38,7 @@ opencode run "Use the smb-access skill, connect to the SMB shared directory, use
 ```
 
 ```text
-opencode run "Use the smb-access skill, connect to the SMB shared directory, use download to download a file, {path: /Company_Data/Exchange/staffing-notes.docx}"
+opencode run "Use the smb-access skill, connect to the SMB shared directory, use download to download a file, {path: /Company_Data/Exchange/staffing-notes.docx, local path: C:\Users\hr\Desktop\role_private_files\staffing-notes.docx}"
 ```
 
 ```text

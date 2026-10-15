@@ -29,7 +29,22 @@ EMPLOYEE_TECHNIQUES = frozenset(
     {
         "collection.local-file-download",
         "collection.share-download",
+        "steal.smb",
+        "steal.psexec",
+        "steal.sftp",
     }
+)
+USER_ENUM_TECHNIQUES = frozenset(
+    {
+        "discovery.user-enum-kerbrute",
+        "discovery.user-enum-ldap",
+        "discovery.user-enum-sid",
+    }
+)
+ROLE_PRIVATE_MARKER = "\\desktop\\role_private_files"
+SHARE_MARKER = "company_data"
+SHARE_FOLDERS = frozenset(
+    {"hr-private", "public", "exchange", "accountancy", "it-dev", "management"}
 )
 PAYLOAD_TECHNIQUES = frozenset({"lateral.tool-transfer"})
 DC_TECHNIQUES = frozenset(
@@ -354,6 +369,38 @@ def recent_actions(
     return rows
 
 
+def executed_today(
+    tasks: Sequence[Mapping[str, str]],
+    *,
+    now: datetime,
+) -> list[dict[str, str]]:
+    """Full text of tasks completed on the same local day as ``now``."""
+    day = _local_clock(now).date()
+    rows: list[dict[str, str]] = []
+    for item in tasks:
+        task = str(item.get("task") or "").strip()
+        completed_at = str(item.get("completed_at") or "").strip()
+        if not task or not completed_at:
+            continue
+        completed = parse_stamp(completed_at)
+        if completed is None or completed.date() != day:
+            continue
+        parsed = _parsed_from_item(item) or {}
+        signature = str(item.get("action_signature") or "")
+        if not signature and parsed:
+            signature = action_signature(parsed)
+        rows.append(
+            {
+                "task": task,
+                "status": str(item.get("status") or "unknown"),
+                "completed_at": completed_at,
+                "technique_id": str(item.get("technique_id") or parsed.get("technique") or ""),
+                "action_signature": signature,
+            }
+        )
+    return rows
+
+
 def active_cooldowns(
     tasks: Sequence[Mapping[str, str]],
     state: Mapping[str, Any],
@@ -389,6 +436,103 @@ def active_cooldowns(
     return list(cooling.values())
 
 
+def _user_enum_eligible(state: Mapping[str, Any]) -> bool:
+    """True when the state can support at least one username-enumeration row."""
+    domain = state.get("domain") if isinstance(state.get("domain"), dict) else {}
+    if not str(domain.get("name") or "").strip() or not str(domain.get("dc_ip") or "").strip():
+        return False
+    wordlists = state.get("wordlists") if isinstance(state.get("wordlists"), dict) else {}
+    if str(wordlists.get("usernames") or "").strip():
+        return True
+    users = state.get("users") if isinstance(state.get("users"), list) else []
+    return any(
+        isinstance(user, dict) and (user.get("password") or user.get("ntlm_hash"))
+        for user in users
+    )
+
+
+def _share_relative(path: str) -> str:
+    """Return the path from ``company_data`` downward, or an empty string."""
+    lowered = str(path or "").lower()
+    index = lowered.find(SHARE_MARKER)
+    if index < 0:
+        return ""
+    if index > 0 and lowered[index - 1] not in "\\":
+        return ""
+    return lowered[index:]
+
+
+def _share_directory(relative: str) -> bool:
+    parts = [part for part in relative.split("\\") if part]
+    if parts == [SHARE_MARKER]:
+        return True
+    return len(parts) == 2 and parts[0] == SHARE_MARKER and parts[1] in SHARE_FOLDERS
+
+
+def _is_dc_target(host: Mapping[str, Any], state: Mapping[str, Any], token: str) -> bool:
+    domain = _domain(state)
+    dc_ip = str(domain.get("dc_ip") or "").strip().lower()
+    dc_fqdn = str(domain.get("dc_fqdn") or "").strip().lower()
+    ip = str(host.get("ip") or "").strip().lower()
+    fqdn = str(host.get("fqdn") or "").strip().lower()
+    role = str(host.get("role") or "").strip().lower()
+    wanted = token.strip().lower()
+    return (
+        role == "dc"
+        or bool(dc_ip and wanted == dc_ip)
+        or bool(dc_ip and ip == dc_ip)
+        or bool(dc_fqdn and wanted == dc_fqdn)
+        or bool(dc_fqdn and fqdn == dc_fqdn)
+    )
+
+
+def _steal_host(state: Mapping[str, Any], token: str, *, share: bool) -> dict[str, Any] | None:
+    host = _matching_host(state, token)
+    if host is not None:
+        return host
+    if not share:
+        return None
+    dc_ip = str(_domain(state).get("dc_ip") or "").strip()
+    if token.strip().lower() == dc_ip.lower() and dc_ip:
+        return {"ip": dc_ip, "role": "dc"}
+    return None
+
+
+def _steal_rejection(parsed: Mapping[str, str], state: Mapping[str, Any]) -> str:
+    path = str(parsed.get("path") or "")
+    share_relative = _share_relative(path)
+    on_desktop = ROLE_PRIVATE_MARKER in path
+    if not on_desktop and not share_relative:
+        return "steal path must be under Desktop\\role_private_files or Company_Data"
+    token = _host_token(str(parsed.get("target") or ""))
+    host = _steal_host(state, token, share=bool(share_relative))
+    if host is None:
+        return "steal host is not in state"
+    if share_relative and not _is_dc_target(host, state, token):
+        return "Company_Data theft targets the domain controller"
+    technique = str(parsed.get("technique") or "")
+    if technique == "steal.sftp" and share_relative:
+        return "Company_Data theft uses SMB"
+    if technique == "steal.sftp":
+        ports = host.get("open_ports") if isinstance(host.get("open_ports"), list) else []
+        if ports and 22 not in ports and "22" not in {str(port) for port in ports}:
+            return "sftp requires port 22"
+    if on_desktop and path.endswith(ROLE_PRIVATE_MARKER):
+        return ""
+    if share_relative and _share_directory(share_relative):
+        return ""
+    files = host.get("discovered_files") if isinstance(host.get("discovered_files"), list) else []
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        if normalize_path(str(entry.get("path") or "")) != path:
+            continue
+        if entry.get("collected"):
+            return "file already collected"
+        return ""
+    return "steal file is not an uncollected discovered file"
+
+
 def _download_rejection(parsed: Mapping[str, str], state: Mapping[str, Any]) -> str:
     path = str(parsed.get("path") or "")
     if not path:
@@ -421,7 +565,17 @@ def batch_constraints_for(
     state: Mapping[str, Any],
     batch_size: int,
     config: Mapping[str, Any],
-) -> dict[str, int | None]:
+    tasks: Sequence[Mapping[str, str]] = (),
+    now: datetime | None = None,
+) -> dict[str, int | bool | None]:
+    opening = now is not None and not executed_today(tasks, now=now)
+    if opening:
+        return {
+            "max_discovery": None,
+            "min_collection_or_lateral": 0,
+            "max_same_technique": int(config["max_same_technique"]),
+            "opening_probe": True,
+        }
     foothold = foothold_ready(state)
     minimum = 0
     if foothold and int(batch_size) >= int(config["min_batch_for_collection_quota"]):
@@ -430,6 +584,7 @@ def batch_constraints_for(
         "max_discovery": int(config["foothold_max_discovery_per_batch"]) if foothold else None,
         "min_collection_or_lateral": minimum,
         "max_same_technique": int(config["max_same_technique"]),
+        "opening_probe": False,
     }
 
 
@@ -448,7 +603,8 @@ def filter_planner_batch(
     or lateral tasks. Callers retry unless this is the final attempt.
     """
     planner = config if isinstance(config, Mapping) else merge_planner_config(None)
-    constraints = batch_constraints_for(state, batch_size, planner)
+    constraints = batch_constraints_for(state, batch_size, planner, tasks, now)
+    opening = bool(constraints.get("opening_probe"))
     cooling = {
         row["signature"]
         for row in active_cooldowns(tasks, state, now, planner)
@@ -488,6 +644,14 @@ def filter_planner_batch(
             if download_reason:
                 reasons.append(f"{download_reason}: {text}")
                 continue
+        if technique.startswith("steal."):
+            steal_reason = _steal_rejection(parsed, state)
+            if steal_reason:
+                reasons.append(f"{steal_reason}: {text}")
+                continue
+        if opening and not technique.startswith("discovery."):
+            reasons.append(f"opening probe: {text}")
+            continue
         if (
             technique.startswith("discovery.")
             and max_discovery is not None
@@ -504,12 +668,27 @@ def filter_planner_batch(
             action_count += 1
         if len(kept) >= int(batch_size):
             break
-    minimum = int(constraints["min_collection_or_lateral"] or 0)
-    quota_met = action_count >= minimum
-    if not quota_met:
-        reasons.append(
-            f"need at least {minimum} collection or lateral tasks; got {action_count}"
+    if opening:
+        user_enum_count = sum(
+            1
+            for text in kept
+            if (parse_task_action(text) or {}).get("technique") in USER_ENUM_TECHNIQUES
         )
+        needs_user_enum = _user_enum_eligible(state)
+        quota_met = discovery_count > 0 and (user_enum_count > 0 or not needs_user_enum)
+        if not quota_met:
+            reasons.append(
+                "opening probe needs a username enumeration"
+                if needs_user_enum
+                else "opening probe needs discovery"
+            )
+    else:
+        minimum = int(constraints["min_collection_or_lateral"] or 0)
+        quota_met = action_count >= minimum
+        if not quota_met:
+            reasons.append(
+                f"need at least {minimum} collection or lateral tasks; got {action_count}"
+            )
     return kept, reasons, quota_met
 
 

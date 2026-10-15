@@ -1,4 +1,4 @@
-"""Fill empty attacker task slots in batches of five via the model client."""
+"""Fill empty attacker task slots in batches of three via the model client."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from attacker.planner import (
     active_cooldowns,
     batch_constraints_for,
     campaign_stage,
+    executed_today,
     filter_planner_batch,
     merge_planner_config,
     planner_state_view,
@@ -26,7 +27,7 @@ from attacker.planner import (
 )
 from attacker.task_file import empty_slot_indices
 
-DEFAULT_BATCH_SIZE = 5
+DEFAULT_BATCH_SIZE = 3
 ATTACKER_PACKAGE_DIR = Path(__file__).resolve().parent
 _HOST_TARGET_RE = re.compile(r"\bagainst\s+host\s+(\S+)", re.IGNORECASE)
 _SUBNET_TARGET_RE = re.compile(
@@ -242,6 +243,12 @@ def build_generation_messages(
     clock = now if now is not None else datetime.now().astimezone()
     view = planner_state_view(state)
     campaign = view.get("campaign") if isinstance(view.get("campaign"), dict) else {}
+    today_rows = executed_today(tasks, now=clock)
+    opening_line = (
+        " executed_today is empty: emit only discovery probes, and include one username enumeration whose requires are met."
+        if not today_rows
+        else " When executed_today is non-empty, include one remote shell and one steal.smb of a Desktop\\role_private_files path or a Company_Data share path on the domain controller."
+    )
     payload: dict[str, Any] = {
         "batch_size": int(batch_size),
         "lab_nets": list(nets),
@@ -251,8 +258,9 @@ def build_generation_messages(
             "objectives": campaign.get("objectives") or [],
         },
         "recent_actions": recent_actions(tasks, limit=int(config["recent_action_limit"])),
+        "executed_today": today_rows,
         "cooldowns": active_cooldowns(tasks, view, clock, config),
-        "batch_constraints": batch_constraints_for(view, int(batch_size), config),
+        "batch_constraints": batch_constraints_for(view, int(batch_size), config, tasks, clock),
         "prompt_template": prompt_template,
         "state": view,
         "output": (
@@ -263,7 +271,9 @@ def build_generation_messages(
             f"against host <ip> and against subnet <cidr> must lie in lab_nets {list(nets)}. "
             "Never copy example IPs or subnets from the prompt template. "
             "Obey batch_constraints and cooldowns. "
+            "Read executed_today and do not repeat a task already completed today. "
             "A different query, path, tool, host, or user is a different action."
+            + opening_line
         ),
     }
     if rejected:

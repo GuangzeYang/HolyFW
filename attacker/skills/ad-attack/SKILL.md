@@ -1,6 +1,6 @@
 ---
 name: ad-attack
-description: Shared Active Directory attack runtime for an attacker agent on a domain-joined Windows host. Holds state.json, changes.json, capture/state scripts, and the mandatory execution protocol (pre-flight, capture brackets, write-back, rollback, and the per-task display-filter file). Do not invoke this skill for a technique. Use the phase skill named in the task (ad-discovery, ad-credential, ad-privesc, ad-lateral, ad-collection, ad-exfil, ad-persistence).
+description: Shared Active Directory attack runtime for an attacker agent on a domain-joined Windows host. Holds state.json, changes.json, capture/state scripts, and the mandatory execution protocol (pre-flight, capture brackets, write-back, rollback, and the per-task display-filter file). Do not invoke this skill for a technique. Use the phase skill named in the task (ad-discovery, ad-credential, ad-privesc, ad-lateral, ad-collection, ad-steal, ad-exfil, ad-persistence).
 ---
 
 # AD Attack Runtime
@@ -16,6 +16,7 @@ This is the **shared runtime** for attacker phase skills. It does not contain a 
 | `privesc.*` | `ad-privesc` |
 | `lateral.*` | `ad-lateral` |
 | `collection.*` | `ad-collection` |
+| `steal.*` | `ad-steal` |
 | `exfil.*` | `ad-exfil` |
 | `persistence.*` | `ad-persistence` |
 
@@ -49,6 +50,7 @@ attacker/skills/
 ├── ad-privesc/SKILL.md
 ├── ad-lateral/SKILL.md
 ├── ad-collection/SKILL.md
+├── ad-steal/SKILL.md
 ├── ad-exfil/SKILL.md
 └── ad-persistence/SKILL.md
 ```
@@ -482,7 +484,7 @@ Task text names a **phase skill**, not `ad-attack`:
 Use the <phase-skill> skill: using the <field> of <object>, execute <technique-id> against <target-ref>.
 ```
 
-`<phase-skill>` is `ad-discovery`, `ad-credential`, `ad-privesc`, `ad-lateral`, `ad-collection`, `ad-exfil`, or `ad-persistence` according to the technique id prefix.
+`<phase-skill>` is `ad-discovery`, `ad-credential`, `ad-privesc`, `ad-lateral`, `ad-collection`, `ad-steal`, `ad-exfil`, or `ad-persistence` according to the technique id prefix.
 
 Reference grammar:
 
@@ -490,7 +492,7 @@ Reference grammar:
 - `<field>`: the object attribute to use (e.g. `password`, `ntlm_hash`, `kerberos_aes256`, `usernames`, `passwords`, `spns`, `open_ports`, `os`, `dc_ip`, `domain_sid`).
 - `<target-ref>`: `host <ip|fqdn|machine_account>`, `domain`, or `subnet <cidr>`.
 - The `using the <field> of <object>` clause is omitted for techniques with no source object (orientation, host-scan, port-scan).
-- Intent clauses follow the target: `query <name>`, `path <path>`, and `tool <filename>`. `lateral.remote-query` uses `query`. `collection.local-file-download` uses `path` of one uncollected `hosts[].discovered_files` entry. `lateral.tool-transfer` uses `tool` of one `campaign.tools` filename. A different query, path, or tool is a different action.
+- Intent clauses follow the target: `query <name>`, `path <path>`, and `tool <filename>`. `lateral.remote-query` uses `query`. `collection.local-file-download` uses `path` of one uncollected `hosts[].discovered_files` entry. `steal.*` uses `path` of `C:\Users\<profile>\Desktop\role_private_files`, or `\\<dc_ip>\Company_Data` and its folders `HR-Private`, `Public`, `Exchange`, `accountancy`, `IT-Dev`, and `Management`, or one uncollected file inside either location. `lateral.tool-transfer` uses `tool` of one `campaign.tools` filename. A different query, path, or tool is a different action.
 
 Examples:
 
@@ -501,6 +503,7 @@ Use the ad-credential skill: using the password of user alice, execute credentia
 Use the ad-privesc skill: using the password of user alice, execute privesc.adcs-find against domain.
 Use the ad-lateral skill: using the ntlm_hash of user svc_backup, execute lateral.pth-psexec against host 172.16.24.11.
 Use the ad-collection skill: using the password of user alice, execute collection.share-download against host 172.16.24.11.
+Use the ad-steal skill: using the password of user hr, execute steal.smb against host 172.16.24.21 path C:\Users\hr\Desktop\role_private_files.
 Use the ad-exfil skill: using the files of campaign, execute exfil.smb against host 172.16.24.11.
 Use the ad-persistence skill: using the ntlm_hash of user krbtgt, execute persistence.golden-ticket against domain.
 ```

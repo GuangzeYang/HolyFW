@@ -62,7 +62,7 @@ Inputs: a user object with `password` from `users`, plus the target host.
 Procedure (one atomic action — one read-only directory listing):
 
 ```
-python -m impacket.examples.wmiexec <domain.name>/<user>:<password>@<target-ip> "cmd /c dir /s /b C:\Users & dir /s /b C:\HolyFW"
+python -m impacket.examples.wmiexec <domain.name>/<user>:<password>@<target-ip> "cmd /c dir /s /b C:\Users\*\Desktop\role_private_files & dir /s /b C:\HolyFW"
 ```
 
 Read the existing `hosts[<index>].discovered_files` list, add each new path with `"collected": false`, and keep entries that are already `"collected": true`. Then replace the list:
