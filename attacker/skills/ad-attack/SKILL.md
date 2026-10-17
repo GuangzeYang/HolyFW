@@ -275,7 +275,49 @@ Then re-run the technique that originally produced that object (see "Rollback" i
 
 Time-window slicing of the domain SPAN happens later. This step writes **only** a Wireshark display filter for the packets this task generated, assuming the pcap has already been cut to the task window.
 
-After every network action in this task (the dispatched technique **and** any Local Elevation Protocol spray/brute against the DC), compose **one** display filter. Union multiple actions with `||`. Fill IPs from `state.json` and the local host. Then:
+Copy the technique **Template** and replace angle brackets only. Do not add, drop, or move any operator. A packet has two addresses, so never put three `ip.addr` tests in one `&&` group. Protocol names stay the ones in the template (`kerberos`, `ldap`, `smb`, `dns`, `msrpc`, `icmp`, `arp`, `http`, `ftp`). Do not invent `smb2` or a custom field.
+
+Four shapes. The filled file is one shape, or complete shapes joined with `||`.
+
+**One conversation.** The technique talks only to the domain controller, or only to the target. `<peer-ip>` is `<dc-ip>` or `<target-ip>`. Every protocol and port stays inside the second parentheses. No `||` outside that pair:
+
+```
+(ip.addr == <attacker-ip> && ip.addr == <peer-ip>) && (<protocol or port>)
+```
+
+**Domain logon, then the target.** A password or ticket is checked at the domain controller, then the operation runs against another host. Two conversations:
+
+```
+(ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (kerberos || tcp.port == 88 || udp.port == 88)) || (ip.addr == <attacker-ip> && ip.addr == <target-ip> && (<operation protocol or port>))
+```
+
+NTLM pass-through (pass-the-hash) adds one more complete clause for the target talking to the domain controller. It is not a bare port:
+
+```
+(ip.addr == <attacker-ip> && ip.addr == <target-ip> && (<operation protocol or port>)) || (ip.addr == <target-ip> && ip.addr == <dc-ip> && (ntlmssp || smb || tcp.port == 445 || tcp.port == 135))
+```
+
+**Subnet sweep** (`discovery.host-scan` only). Do not write one `ip.addr` per host. `<lab-cidr>` is the subnet in the task, one CIDR such as `172.16.24.0/24`:
+
+```
+ip.src == <attacker-ip> && ip.dst == <lab-cidr> && (icmp || arp || (tcp.flags.syn == 1 && tcp.flags.ack == 0))
+```
+
+A single-host port scan keeps one destination:
+
+```
+(ip.src == <attacker-ip> && ip.dst == <target-ip>) && (tcp.flags.syn == 1 && tcp.flags.ack == 0)
+```
+
+**No packets.** Orientation, local-groups, archive, a purely local persistence change, and any technique that failed before it sent traffic:
+
+```
+frame.number == 0
+```
+
+A same-task extra action (password spray, or Local Elevation Protocol) is another full parenthesized clause joined with `||`. Do not append `|| tcp.port == 135` outside the address pair.
+
+Then:
 
 ```
 python scripts/write_filter.py --expression "<display filter>"
@@ -283,10 +325,10 @@ python scripts/write_filter.py --expression "<display filter>"
 
 The script writes `{HOLYFW_ATTACKER_OUTPUT_DIR}/{HOLYFW_ATTACKER_TASK_ID}.txt` next to the task markdown. The file must contain the expression and nothing else.
 
-Allowed:
+Allowed (domain logon, then SMB on the target):
 
 ```
-ip.addr == 172.16.24.10 && ip.addr == 172.16.24.11 && (kerberos || ldap || tcp.port == 88 || tcp.port == 389)
+(ip.addr == 172.16.24.10 && ip.addr == 172.16.24.11 && (kerberos || tcp.port == 88 || udp.port == 88)) || (ip.addr == 172.16.24.10 && ip.addr == 172.16.24.21 && (smb || tcp.port == 445 || tcp.port == 139))
 ```
 
 Forbidden in the expression and in the txt file:
@@ -294,10 +336,10 @@ Forbidden in the expression and in the txt file:
 - a full tshark command (`tshark`, `-r`, `-Y`, `-w`)
 - time conditions (`frame.time_epoch`, `frame.time`)
 - comments, wrapping quotes, markdown fences
+- three `ip.addr` tests joined by `&&`
+- a sweep that lists every host address
 
-Host-local techniques that generate no packets (orientation, local-groups, archive, and any technique you marked failed before it sent traffic) still write a file. Use the sentinel `frame.number == 0`.
-
-Each phase skill's **Traffic Filter** block is the template. Substitute placeholders; do not leave `<attacker-ip>`, `<dc-ip>`, or `<target-ip>` in the file. Run Step 5 even when the attack command fails.
+Do not leave `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, or `<listener-ip>` in the file. Run Step 5 even when the attack command fails.
 
 ---
 
@@ -492,7 +534,7 @@ Reference grammar:
 - `<field>`: the object attribute to use (e.g. `password`, `ntlm_hash`, `kerberos_aes256`, `usernames`, `passwords`, `spns`, `open_ports`, `os`, `dc_ip`, `domain_sid`).
 - `<target-ref>`: `host <ip|fqdn|machine_account>`, `domain`, or `subnet <cidr>`.
 - The `using the <field> of <object>` clause is omitted for techniques with no source object (orientation, host-scan, port-scan).
-- Intent clauses follow the target: `query <name>`, `path <path>`, and `tool <filename>`. `lateral.remote-query` uses `query`. `collection.local-file-download` uses `path` of one uncollected `hosts[].discovered_files` entry. `steal.*` uses `path` of `C:\Users\<profile>\Desktop\role_private_files`, or `\\<dc_ip>\Company_Data` and its folders `HR-Private`, `Public`, `Exchange`, `accountancy`, `IT-Dev`, and `Management`, or one uncollected file inside either location. `lateral.tool-transfer` uses `tool` of one `campaign.tools` filename. A different query, path, or tool is a different action.
+- Intent clauses follow the target: `query <name>`, `path <path>`, and `tool <filename>`. `lateral.remote-query` uses `query`. `collection.local-file-download` uses `path` of one uncollected `hosts[].discovered_files` entry. `steal.*` uses `path` of `C:\Users\<profile>\Desktop\role_private_files`, or `\\<dc_ip>\Company_Data` and its folders `HR-Private`, `Public`, `Exchange`, `accountancy`, `IT-Dev`, and `Management`, or one uncollected file inside either location. The file server refuses a department account outside its own folder plus `Public` and `Exchange` (`hr` is refused on `IT-Dev`). `lateral.tool-transfer` uses `tool` of one `campaign.tools` filename. A different query, path, or tool is a different action.
 
 Examples:
 

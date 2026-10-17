@@ -9,7 +9,7 @@ Load this skill **only** when the dispatched task names `ad-discovery`. Do not l
 
 **Shared runtime.** `cd` to `~/.config/opencode/skills/ad-attack` (or the packaged `attacker/skills/ad-attack`) before any `python scripts/...` call. Follow the Mandatory Execution Protocol in the `ad-attack` skill, including Step 5 (write `{task_id}.txt`).
 
-**Traffic filter contract.** Time-window slicing is a later extract step. This skill writes **only** a Wireshark display filter — never a tshark command, never `frame.time_epoch`. Host-local techniques with no packets use `frame.number == 0`.
+**Traffic filter contract.** Time-window slicing is a later extract step. This skill writes **only** a Wireshark display filter — never a tshark command, never `frame.time_epoch`. Copy the technique Template and replace angle brackets only. The shapes in ad-attack Step 5 are: one address pair; a domain-controller clause joined with `||` to a target clause; or one subnet sweep. Do not list every scanned host. Do not put three `ip.addr` tests in one `&&` group. Host-local techniques with no packets use `frame.number == 0`.
 
 ## Phase 0: Orientation
 
@@ -44,7 +44,7 @@ python scripts/state.py add domain.dcs '{"fqdn": "<dc-fqdn>", "ip": "<dc-ip>", "
 - Derive `domain_sid` from `whoami /user`: take the user SID and drop the trailing RID (the part after the last `-`).
 - This is information gathering, not an attack action, so no capture brackets are required.
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -80,7 +80,7 @@ python scripts/state.py set domain.security_products '["<product1>", "<product2>
 
 Rollback: not applicable (re-run if the defensive stack changes).
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -117,7 +117,7 @@ python scripts/state.py set campaign.local_admins '["<account1>", "<account2>"]'
 Rollback: re-run if local membership changes.
 
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -160,7 +160,7 @@ python scripts/state.py add hosts '{"ip": "<ip>", "role": "unknown", "open_ports
 
 Rollback: not applicable (a failed scan is simply re-run).
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -169,7 +169,7 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.src == <attacker-ip> && (icmp || arp || (tcp.flags.syn == 1 && tcp.flags.ack == 0))
+ip.src == <attacker-ip> && ip.dst == <lab-cidr> && (icmp || arp || (tcp.flags.syn == 1 && tcp.flags.ack == 0))
 ```
 
 
@@ -201,7 +201,7 @@ python scripts/state.py merge hosts[<index>] '{"open_ports": [445, 135], "servic
 
 Rollback: not applicable.
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -210,7 +210,7 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.src == <attacker-ip> && ip.dst == <target-ip> && (icmp || arp || (tcp.flags.syn == 1 && tcp.flags.ack == 0) || tcp)
+(ip.src == <attacker-ip> && ip.dst == <target-ip>) && (tcp.flags.syn == 1 && tcp.flags.ack == 0)
 ```
 
 
@@ -236,7 +236,7 @@ python scripts/state.py add domain.usernames '"<username>"'
 
 Rollback: if a username list is later found to contain dead accounts, re-run this technique to refresh it.
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -245,7 +245,7 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (kerberos || tcp.port == 88 || udp.port == 88)
+(ip.addr == <attacker-ip> && ip.addr == <dc-ip>) && (kerberos || tcp.port == 88 || udp.port == 88)
 ```
 
 
@@ -272,7 +272,7 @@ python scripts/state.py set domain.user_count <n>
 
 Rollback: if the credential is rejected, `mark-stale` the user object and refresh it.
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -281,7 +281,7 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (ldap || tcp.port == 389 || tcp.port == 636)
+(ip.addr == <attacker-ip> && ip.addr == <dc-ip>) && (ldap || tcp.port == 389 || tcp.port == 636)
 ```
 
 
@@ -307,7 +307,7 @@ python scripts/state.py add domain.usernames '"<username>"'
 
 Rollback: if the credential is rejected, `mark-stale` the user object and refresh it.
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -316,7 +316,7 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (msrpc || smb || tcp.port == 445 || tcp.port == 135)
+(ip.addr == <attacker-ip> && ip.addr == <dc-ip>) && (msrpc || smb || tcp.port == 445 || tcp.port == 135)
 ```
 
 
@@ -350,7 +350,7 @@ python scripts/state.py merge hosts[<index>] '{"shares": ["Company_Data", "Publi
 
 Rollback: if a share list is stale, `mark-stale` the host object and re-run this technique.
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -359,7 +359,7 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.addr == <attacker-ip> && ip.addr == <target-ip> && (smb || nbns || tcp.port == 445 || tcp.port == 139)
+(ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (kerberos || tcp.port == 88 || udp.port == 88)) || (ip.addr == <attacker-ip> && ip.addr == <target-ip> && (smb || nbns || tcp.port == 445 || tcp.port == 139))
 ```
 
 
@@ -387,7 +387,7 @@ python scripts/state.py merge users[<index>] '{"groups": ["Domain Admins"]}'
 
 Rollback: if group membership is stale, `mark-stale` the user/group entry and re-run.
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -396,7 +396,7 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (smb || nbns || tcp.port == 445 || tcp.port == 139)
+(ip.addr == <attacker-ip> && ip.addr == <dc-ip>) && (smb || nbns || tcp.port == 445 || tcp.port == 139)
 ```
 
 
@@ -422,7 +422,7 @@ python scripts/state.py set domain.password_policy '{"lockout_threshold": 5, "mi
 
 Rollback: not applicable (re-run if the policy changes).
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -431,7 +431,7 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (smb || nbns || tcp.port == 445 || tcp.port == 139)
+(ip.addr == <attacker-ip> && ip.addr == <dc-ip>) && (smb || nbns || tcp.port == 445 || tcp.port == 139)
 ```
 
 
@@ -458,7 +458,7 @@ python scripts/state.py add domain.trusts '{"target": "child.corp.local", "direc
 
 Rollback: not applicable (re-run if the trust topology changes).
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -467,7 +467,7 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (ldap || tcp.port == 389 || tcp.port == 636)
+(ip.addr == <attacker-ip> && ip.addr == <dc-ip>) && (ldap || tcp.port == 389 || tcp.port == 636)
 ```
 
 
@@ -494,7 +494,7 @@ python scripts/state.py merge hosts[<index>] '{"fqdn": "<host>.<domain.name>", "
 
 Rollback: if the FQDN/machine account no longer resolves, `mark-stale` the host object and re-run this technique.
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -503,7 +503,7 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.addr == <attacker-ip> && (dns || icmp || udp.port == 53 || tcp.port == 53)
+(ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (dns || udp.port == 53 || tcp.port == 53)) || (ip.src == <attacker-ip> && ip.dst == <target-ip> && icmp)
 ```
 
 
@@ -530,7 +530,7 @@ python scripts/state.py add files '{"path": "<timestamp>_bloodhound.zip", "descr
 Rollback: re-run if the collection is incomplete or stale.
 
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -539,6 +539,6 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (ldap || dns || kerberos || tcp.port == 389 || tcp.port == 636 || tcp.port == 88 || udp.port == 53)
+(ip.addr == <attacker-ip> && ip.addr == <dc-ip>) && (ldap || dns || kerberos || tcp.port == 389 || tcp.port == 636 || tcp.port == 88 || udp.port == 53)
 ```
 

@@ -1252,6 +1252,7 @@ class GenerationMessageTests(unittest.TestCase):
         self.assertIn("steal.smb", system_prompt)
         self.assertIn("role_private_files", system_prompt)
         self.assertIn("Company_Data", system_prompt)
+        self.assertIn("file server refuses", system_prompt)
         self.assertNotIn("Irregularly refresh", system_prompt)
         self.assertIn("share", system_prompt)
         self.assertIn("lab_nets", system_prompt)

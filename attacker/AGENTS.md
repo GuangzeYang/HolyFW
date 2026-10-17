@@ -17,7 +17,7 @@ These rules are mandatory on every task.
 - Execute only the technique id in the task text. Do not substitute another technique from the skill catalog. Exception: the `ad-attack` **Local Elevation Protocol** (Step 0) is part of the mandatory execution protocol — running `net localgroup administrators`, and running `credential.brute-user` / `credential.password-spray` against the DC to obtain a local-administrator password for elevation, is protocol execution, not a technique substitution.
 - Resolve every command parameter from `state.json`. Never invent credentials, hashes, hostnames, or targets.
 - After a technique that mutates the target domain (new user, machine account, password reset, RBCD, DC config), append one record with `python scripts/changes.py add '{...}'`. Do not revert those changes yourself.
-- Before ending the task, write a display-filter-only `{task_id}.txt` with `python scripts/write_filter.py --expression "<filter>"`. The file must contain a Wireshark display filter expression only — no tshark command, no `frame.time_epoch`. Host-local techniques with no packets use `frame.number == 0`.
+- Before ending the task, write a display-filter-only `{task_id}.txt` with `python scripts/write_filter.py --expression "<filter>"`. Copy the technique Template and replace angle brackets only (ad-attack Step 5). The file must contain a Wireshark display filter expression only — no tshark command, no `frame.time_epoch`. Host-local techniques with no packets use `frame.number == 0`.
 
 # Domain mutation constraints
 

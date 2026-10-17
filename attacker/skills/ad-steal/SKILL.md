@@ -9,12 +9,13 @@ Load this skill **only** when the dispatched task names `ad-steal`. Do not load 
 
 **Shared runtime.** `cd` to `~/.config/opencode/skills/ad-attack` (or the packaged `attacker/skills/ad-attack`) before any `python scripts/...` call. Follow the Mandatory Execution Protocol in the `ad-attack` skill, including Step 5 (write `{task_id}.txt`).
 
-**Traffic filter contract.** Time-window slicing is a later extract step. This skill writes **only** a Wireshark display filter — never a tshark command, never `frame.time_epoch`.
+**Traffic filter contract.** Time-window slicing is a later extract step. This skill writes **only** a Wireshark display filter — never a tshark command, never `frame.time_epoch`. Copy the technique Template and replace angle brackets only. The shapes in ad-attack Step 5 are: one address pair; a domain-controller clause joined with `||` to a target clause; or one subnet sweep. Do not list every scanned host. Do not put three `ip.addr` tests in one `&&` group.
 
 **Path constraint.** Copy only from one of these locations. Do not read any other folder. Do not invent a filename. If the path is a directory, list it and copy one file found there. If the path is a file, copy that file only.
 
 - Role desktop: `C:\Users\<profile>\Desktop\role_private_files`. `<profile>` is `hr`, `manager`, `accountancy`, or `programmer`. Target is that role host.
 - Domain controller file share: `\\<dc_ip>\Company_Data` and its folders `HR-Private`, `Public`, `Exchange`, `accountancy`, `IT-Dev`, and `Management`. The domain controller is also the SMB file server. Target is `domain.dc_ip`. Use SMB (`steal.smb` or `steal.psexec`) for this share. Do not use `steal.sftp` for `Company_Data`.
+- Prior fact. The file server refuses a department account on any folder except its own department folder, `Public`, and `Exchange`: `hr` → `HR-Private`; `programmer` → `IT-Dev`; `accountancy` → `accountancy`; `manager` → `Management`. `hr` is refused on `IT-Dev`. The same account is refused on the `Company_Data` root and on another role's `Desktop\role_private_files`. `Administrator` is not refused on a `Company_Data` folder. Copy only a path this account can open.
 
 **Protocol order.** Use the technique named in the task. `steal.smb` is the primary pull. `steal.psexec` is the other SMB method. `steal.sftp` is only for a host that already lists port 22.
 
@@ -50,7 +51,7 @@ Set `"collected": true` on the matching `hosts[].discovered_files` entry when th
 
 Rollback: if the login or the path fails, mark the technique `failed`. Do not search other folders.
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -59,7 +60,7 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.addr == <attacker-ip> && ip.addr == <target-ip> && (smb || tcp.port == 445 || tcp.port == 139)
+(ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (kerberos || tcp.port == 88 || udp.port == 88)) || (ip.addr == <attacker-ip> && ip.addr == <target-ip> && (smb || tcp.port == 445 || tcp.port == 139))
 ```
 
 
@@ -90,7 +91,7 @@ Set `"collected": true` on the matching `discovered_files` entry when present.
 
 Rollback: if PsExec or the copy fails, mark the technique `failed`. Do not fall through to another technique in this task.
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -99,7 +100,7 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.addr == <attacker-ip> && ip.addr == <target-ip> && (smb || tcp.port == 445 || tcp.port == 139)
+(ip.addr == <attacker-ip> && ip.addr == <dc-ip> && (kerberos || tcp.port == 88 || udp.port == 88)) || (ip.addr == <attacker-ip> && ip.addr == <target-ip> && (smb || tcp.port == 445 || tcp.port == 139))
 ```
 
 
@@ -130,7 +131,7 @@ Set `"collected": true` on the matching `discovered_files` entry when present.
 
 Rollback: close the transport, then mark `failed`.
 
-Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Fill `<attacker-ip>`, `<dc-ip>`, and `<target-ip>` from `state.json` and the local host. Union extra network actions from this task (including Local Elevation Protocol) with `||`. Then:
+Traffic Filter (mandatory; expression only — no tshark command, no `frame.time_epoch`). Copy the Template and replace only `<attacker-ip>`, `<dc-ip>`, `<target-ip>`, `<lab-cidr>`, and `<listener-ip>`. Do not move any `||` outside its parentheses. A same-task extra action is another complete clause joined with `||`. Then:
 
 ```
 python scripts/write_filter.py --expression "<filled display filter>"
@@ -139,5 +140,5 @@ python scripts/write_filter.py --expression "<filled display filter>"
 Template:
 
 ```
-ip.addr == <attacker-ip> && ip.addr == <target-ip> && tcp.port == 22
+(ip.addr == <attacker-ip> && ip.addr == <target-ip>) && (tcp.port == 22)
 ```
