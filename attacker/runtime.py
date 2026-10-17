@@ -347,7 +347,7 @@ def run_loop(
     sleeper = sleep_fn or __import__("time").sleep
     initial_day = resolve_run_day(data_dir, now=clock(), explicit_day=day)
     task_path = tasks_file_path(data_dir, initial_day)
-    expected = int(time_model.get("tasks_per_role") or 39)
+    expected = int(time_model.get("tasks_per_role") or 70)
     config_display = config_path if config_path is not None else "(inline config)"
     if config is None:
         try:
